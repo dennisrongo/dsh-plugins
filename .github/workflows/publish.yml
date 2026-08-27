@@ -83,6 +83,32 @@ jobs:
           done
           exit $fail
 
+      # Fail before touching the registry, not partway through five packages.
+      # A run that authenticates for the first package and dies on the third
+      # leaves a half-published release, and npm publishes are effectively
+      # permanent. An empty secret is the likely cause: GitHub renders a set
+      # secret as *** in logs, so a blank NODE_AUTH_TOKEN means the value itself
+      # is empty, not that masking hid it.
+      - name: Check the npm token before publishing anything
+        if: github.event.inputs.dry-run != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN is unset or empty on this repository."
+            echo "Set it with:  gh secret set NPM_TOKEN --repo ${{ github.repository }}"
+            echo "Actions secrets are write-only, so an existing one cannot be inspected —"
+            echo "if it is already listed, re-set it; the stored value is empty."
+            exit 1
+          fi
+          if ! whoami_out=$(npm whoami 2>&1); then
+            echo "::error::npm rejected the token: ${whoami_out}"
+            echo "It may be expired, revoked, or a read-only token. Publishing needs an"
+            echo "automation token with write access to the @dennisrongo scope."
+            exit 1
+          fi
+          echo "authenticated to npm as ${whoami_out}"
+
       - name: Publish each package not already on npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
