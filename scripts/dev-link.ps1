@@ -27,8 +27,9 @@
 #      junction the profile serves this repo's lib/ directly: client-half edits
 #      deploy on browser refresh, host-half edits on profile restart.
 #
-# Windows only (junctions). Run from anywhere; paths are derived from this
-# script's location, never hardcoded.
+# The profile-junction half is Windows-only. For anchoring alone on any platform,
+# run `node scripts/anchor.mjs` directly. Paths are derived from this script's
+# location, never hardcoded.
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-link.ps1
@@ -137,71 +138,17 @@ function Set-Junction([string]$path, [string]$target) {
   return 'linked'
 }
 
-# Every @deepseek-ai package this plugin needs anchored: what it declares at
-# runtime, plus whatever its tsconfig maps for typechecking. Derived, so it
-# cannot drift out of date.
-function Get-NeededHostPackages($src) {
-  $needed = New-Object System.Collections.Generic.HashSet[string]
-  $pkg = Get-Content (Join-Path $src 'package.json') -Raw | ConvertFrom-Json
-  foreach ($field in 'dependencies', 'peerDependencies') {
-    if ($pkg.PSObject.Properties.Name -contains $field -and $pkg.$field) {
-      foreach ($n in $pkg.$field.PSObject.Properties.Name) {
-        if ($n -like '@deepseek-ai/*') { [void]$needed.Add(($n -split '/')[1]) }
-      }
-    }
-  }
-  $tsconfig = Join-Path $src 'tsconfig.json'
-  if (Test-Path $tsconfig) {
-    # Strip // comments; tsconfig allows them, ConvertFrom-Json does not.
-    $raw = (Get-Content $tsconfig -Raw) -replace '(?m)^\s*//.*$', ''
-    try {
-      $ts = $raw | ConvertFrom-Json
-      if ($ts.compilerOptions.paths) {
-        foreach ($key in $ts.compilerOptions.paths.PSObject.Properties.Name) {
-          if ($key -like '@deepseek-ai/*') { [void]$needed.Add(($key -split '/')[1]) }
-        }
-      }
-    } catch { Write-Host "  WARN  could not parse $tsconfig - tsconfig paths not anchored" ; $script:warn++ }
-  }
-  return $needed
-}
-
-Write-Host "repo        $repoRoot"
-Write-Host "host deps   $hostDeps"
-Write-Host ''
-Write-Host '=== dependency anchoring: @deepseek-ai -> dsh CLI host copy ==='
-
-foreach ($plugin in $Plugins) {
-  $src = Resolve-PluginSource $plugin
-  if (-not $src) { Write-Host "SKIP    $plugin (no package.json found)"; $skipped++; continue }
-
-  # A junctioned plugin resolves through its real path, so its own runtime deps
-  # must live in ITS node_modules — the profile's hoisted tree is off that path.
-  # A pruned node_modules is why the harness can die on a missing 'zod'.
-  $pkg = Get-Content (Join-Path $src 'package.json') -Raw | ConvertFrom-Json
-  if ($pkg.PSObject.Properties.Name -contains 'dependencies' -and $pkg.dependencies) {
-    foreach ($dep in $pkg.dependencies.PSObject.Properties.Name) {
-      if ($dep -like '@deepseek-ai/*') { continue }
-      if (-not (Test-Path (Join-Path $src "node_modules\$dep"))) {
-        Write-Host "  WARN  $plugin is missing runtime dep '$dep' - run 'pnpm install' at the repo root"
-        $warn++
-      }
-    }
-  }
-
-  $needed = Get-NeededHostPackages $src
-  if ($needed.Count -eq 0) { Write-Host "  --    $plugin needs no @deepseek-ai anchoring"; continue }
-
-  foreach ($short in ($needed | Sort-Object)) {
-    $target = Join-Path $hostDeps $short
-    if (-not (Test-Path $target)) {
-      Write-Host "  WARN  $plugin -> @deepseek-ai/$short not in the host copy"; $warn++; continue
-    }
-    $dst = Join-Path $src "node_modules\@deepseek-ai\$short"
-    if ((Set-Junction $dst $target) -eq 'linked') {
-      Write-Host "  IDENT $plugin -> @deepseek-ai/$short"; $ident++
-    } else { $already++ }
-  }
+# --- Job 1: delegate @deepseek-ai anchoring to the portable script -----------
+#
+# scripts/anchor.mjs owns this. It is Node, so the same implementation serves
+# Windows, macOS, Linux and CI, and there is only one place that knows how to
+# derive the needed package set from each manifest and tsconfig.
+Write-Host '=== dependency anchoring (scripts/anchor.mjs) ==='
+$anchor = Join-Path $PSScriptRoot 'anchor.mjs'
+& node $anchor "--host=$hostDeps"
+if ($LASTEXITCODE -ne 0) {
+  Write-Host 'FATAL   anchoring failed; not touching profiles.'
+  exit 1
 }
 
 # --- Desktop shared deps: report only ---------------------------------------

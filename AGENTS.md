@@ -20,8 +20,8 @@ plugins/dsh-weather      client only   — shell.overlay weather bar
 plugins/dsh-headless-plus CLI app      — --model/--resume/--continue
 plugins/dsh-superpowers  host          — system-prompt section
 fixtures/                seed content for tests; NOT workspace packages
-scripts/                 verify.mjs (portable), dev-link.ps1 (Windows),
-                         link-superpowers-skills.mjs (portable)
+scripts/                 verify.mjs, anchor.mjs, link-superpowers-skills.mjs (portable)
+                         dev-link.ps1 (Windows: anchors + junctions into profiles)
 ```
 
 Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package and
@@ -54,16 +54,17 @@ testing a stale bundle.
   `ERR_PNPM_IGNORED_BUILDS` and esbuild never fetches its binary.
 - **`autoInstallPeers` is off, deliberately.** The `@deepseek-ai/*` peers are dev-preview and
   partly unpublished; auto-install resolves them against the registry and 404s the install.
-  They are supplied at runtime by `scripts/dev-link.ps1`, never by this workspace.
+  They are supplied by `scripts/anchor.mjs` (portable) — or `dev-link.ps1`, which delegates to
+  it — never by this workspace.
 - **Declare what you import.** A junctioned plugin resolves through its REAL path, so the
   profile's hoisted tree is off the resolution path entirely. An undeclared runtime import
   works locally by accident and dies on a fresh install — this has already happened twice
   here (`commander` declared as a devDependency; `@deepseek-ai/schemastery` not declared at
   all). Declare `@deepseek-ai/*` as peers and everything else as dependencies, then re-run
-  `dev-link.ps1`, which derives what to anchor from the manifest and the tsconfig.
+  `scripts/anchor.mjs`, which derives what to anchor from the manifest and the tsconfig.
 - **`tsconfig.json` `paths` point at `./node_modules/@deepseek-ai/...`**, not at an absolute
-  path. Those entries only exist after `dev-link.ps1` runs; typecheck failing with
-  `TS2307: Cannot find module '@deepseek-ai/...'` means run the script, not add a stub.
+  path. Those entries only exist after `scripts/anchor.mjs` runs; typecheck failing with
+  `TS2307: Cannot find module '@deepseek-ai/...'` means run it, not add a stub.
 - **Every package is a BUNDLE and self-mounts.** `dsh.bundle.patch` points at the package's own
   `cordis.patch.yml`, and `dsh plugin add` appends the package to the profile's
   `dsh.profile.bundles`. Never also put an `insert:` row in a profile for one of these — a second

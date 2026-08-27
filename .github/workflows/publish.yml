@@ -1,0 +1,111 @@
+name: Publish to npm
+
+# Publishes every package under plugins/ that is not already on npm at its
+# current version, so a re-run after a partial failure is safe.
+#
+# Requires an NPM_TOKEN secret on THIS repository — Actions secrets are
+# write-only and cannot be shared between user-account repos, so a token set on
+# another repo is not visible here.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'npm dist-tag (default: latest)'
+        required: false
+        default: 'latest'
+      dry-run:
+        description: 'Resolve and pack, but do not publish'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      # The plugins declare the harness packages as PEERS and ship no copies of
+      # their own, so the tests and typecheck cannot resolve @deepseek-ai/*
+      # until they are anchored at a real dsh install. Same requirement as a
+      # developer machine — see scripts/anchor.mjs.
+      - name: Install the harness and anchor peers
+        run: |
+          npm i -g @deepseek-ai/dsh
+          node scripts/anchor.mjs
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Verify against the installed dsh
+        run: node scripts/verify.mjs
+
+      # A release tag must match the version being published, or it is unclear
+      # what the tag actually points at. All packages share a version here.
+      - name: Check release tag matches package versions
+        if: github.event_name == 'release'
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          fail=0
+          for dir in plugins/*/; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if [ "v$version" != "$TAG" ]; then
+              echo "::error::$name is $version but the release tag is $TAG"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Publish each package not already on npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DIST_TAG: ${{ github.event.inputs.tag || 'latest' }}
+          DRY_RUN: ${{ github.event.inputs.dry-run }}
+        run: |
+          published=0
+          skipped=0
+          for dir in plugins/*/; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip    $name@$version is already published"
+              skipped=$((skipped+1))
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "dry-run $name@$version would publish"
+              ( cd "$dir" && npm pack --dry-run )
+              continue
+            fi
+            echo "publish $name@$version"
+            ( cd "$dir" && npm publish --provenance --access public --tag "$DIST_TAG" )
+            published=$((published+1))
+          done
+          echo "published=$published skipped=$skipped"

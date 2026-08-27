@@ -10,7 +10,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 
 > **Status:** developed against dsh `0.1.1-rc.2`. dsh is a fast-moving `0.1.x` dev preview that promises breaking changes — re-verify against your installed version.
 >
-> **Platforms:** the plugins are plain Node and platform-agnostic, and DSH Desktop ships for Windows and macOS, so they should run on either. Of the tooling, `scripts/link-superpowers-skills.mjs` is cross-platform (junctions on Windows, symlinks elsewhere); `scripts/dev-link.ps1` is **Windows-only**. Everything here has been exercised on Windows against both the CLI and DSH Desktop; macOS and Linux are untested.
+> **Platforms:** the plugins are plain Node and platform-agnostic, and DSH Desktop ships for Windows and macOS, so they should run on either. Most tooling is portable Node — `verify.mjs`, `anchor.mjs`, `link-superpowers-skills.mjs`. Only `dev-link.ps1`'s profile-junction half is **Windows-only**. Everything here has been exercised on Windows against both the CLI and DSH Desktop; macOS and Linux are untested.
 
 ## Plugins
 
@@ -276,9 +276,10 @@ packages through the profile, so you can skip straight to step 6. This step is f
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-link.ps1 -Profiles web -DesktopProfiles web
+node scripts/anchor.mjs        # the portable half on its own, any platform
 ```
 
-Two jobs, and **both are undone by any `pnpm install`**, so re-run it afterwards:
+Two jobs, and **both are undone by any `pnpm install`**, so re-run afterwards:
 
 - **Profile junctions.** Points each profile's installed plugin at this repo so a rebuild
   self-deploys; pnpm otherwise materialises `file:` deps as copies frozen at install time.
@@ -291,10 +292,11 @@ Two jobs, and **both are undone by any `pnpm install`**, so re-run it afterwards
 It only touches plugins a profile actually declares, follows the package name (so unscoped
 packages work), and prints what it skipped.
 
-> **macOS / Linux:** this script is Windows-only. Install and run (steps 1–4, 6) work fine —
-> verified that a plain install boots and serves `/api` with no linking at all. What you lose
-> is the live-edit loop (re-run step 3 after a build, or symlink by hand) and this repo's
-> `pnpm run test` / `typecheck` for `dsh-todo`, which need the anchoring.
+> **macOS / Linux:** only the profile-junction half is Windows-only. The anchoring half is
+> portable — run `node scripts/anchor.mjs`, which is what makes `pnpm run test` and
+> `typecheck` resolve. Install and run (steps 1–4, 6) work fine anywhere; verified that a
+> plain install boots and serves `/api` with no linking at all. What you lose is the
+> live-edit loop (re-run step 3 after a build, or symlink by hand).
 
 ### 6. Verify
 
@@ -309,6 +311,19 @@ Cross-platform, exits non-zero on failure. It reports the dsh version on each su
 `404` on a probe means the package's `./typert` export wasn't registered — see the plugin's `AGENTS.md`. Then open the UI and confirm the tabs render; `Promise.allSettled` in the client swallows failures, so a tab can render while every call fails.
 
 **Run this after upgrading dsh.** A harness upgrade doesn't break `pnpm test` — that only proves this repo is self-consistent. What it breaks is resolution and the wire contract, which is what this checks.
+
+## Publishing
+
+`.github/workflows/publish.yml` publishes every package that isn't already on npm at its
+current version, so a re-run after a partial failure is safe. It installs the harness and runs
+`scripts/anchor.mjs` first (the tests can't resolve the peers otherwise), then build, test and
+`verify.mjs`, and publishes with npm provenance.
+
+Trigger it by publishing a GitHub release — the tag must match the package versions — or
+manually via `workflow_dispatch`, which also takes a dist-tag and a dry-run toggle.
+
+It needs an `NPM_TOKEN` secret **on this repository**: Actions secrets are write-only and
+cannot be shared between user-account repos, so a token set elsewhere isn't visible here.
 
 ## Development
 
@@ -330,7 +345,8 @@ One trap worth knowing: DSH Desktop runs a **profile-repair install** on startup
 plugins/     one self-contained package each (pnpm workspace members)
 fixtures/    seed content for tests; not workspace packages
 scripts/     verify.mjs                    — check the plugins against your installed dsh
-             dev-link.ps1                  — link the plugins into your profiles (Windows)
+             anchor.mjs                    — point each package's @deepseek-ai at that dsh
+             dev-link.ps1                  — anchor + junction into profiles (Windows)
              link-superpowers-skills.mjs   — link an upstream superpowers clone's skills
 ```
 

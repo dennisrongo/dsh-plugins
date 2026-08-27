@@ -11,6 +11,8 @@
   },
   "files": [
     "lib",
+    "!lib/client.body.cjs",
+    "!lib/*.test.mjs",
     "README.md",
     "cordis.patch.yml"
   ],
