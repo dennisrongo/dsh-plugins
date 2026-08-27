@@ -254,7 +254,7 @@ That's expected. These are mounted by the rows in step 4, not as bundle layers.
 # dsh-superpowers — any profile with a system prompt
 - insert:
     - id: superpowers
-      name: dsh-superpowers
+      name: '@dennisrongo/dsh-superpowers'
       config:
         superpowersRoot: /absolute/path/to/superpowers   # optional; see the plugin README
 ```
@@ -271,9 +271,9 @@ have its skills catalog stay current on a `git pull` rather than drifting as cop
   disabled: true
 - insert:
     - id: headless-plus-startup
-      name: 'dsh-headless-plus/startup'
+      name: '@dennisrongo/dsh-headless-plus/startup'
     - id: headless-plus-runner
-      name: 'dsh-headless-plus'
+      name: '@dennisrongo/dsh-headless-plus'
       inject: [headlessPlusStartup]
       config:
         task: !!js ctx.headlessPlusStartup.task

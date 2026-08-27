@@ -4,8 +4,11 @@ Registers the [Superpowers](https://github.com/obra/superpowers) methodology boo
 persistent system-prompt section. **No `/api` endpoints and no client half** — one host
 plugin, ~130 lines, `lib/index.js`, hand-written (there is no `src/` and no build step).
 
-The package name is **unscoped** (`dsh-superpowers`), so it installs to
-`node_modules/dsh-superpowers`.
+Published name is `@dennisrongo/dsh-superpowers`, so it installs to
+`node_modules/@dennisrongo/dsh-superpowers` while the folder here stays
+`plugins/dsh-superpowers`. The scope matters: the bare `dsh-superpowers` name on npm belongs
+to an unrelated plugin (`codeAnqiang-ma/dsh-superpowers`), so an unscoped install would
+fetch someone else's package.
 
 ## What it does
 
@@ -44,7 +47,7 @@ Both `id:` and `name:` are required — a bare `id:` is an id-targeted override 
 ```yaml
 - insert:
     - id: superpowers
-      name: dsh-superpowers
+      name: '@dennisrongo/dsh-superpowers'
       config:
         superpowersRoot: /absolute/path/to/superpowers
 ```

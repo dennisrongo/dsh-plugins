@@ -58,14 +58,21 @@ option; the probe list is a guess about where you keep clones.
 ```yaml
 # <profile>/cordis.patch.yml — add one row
 - id: superpowers
-  name: dsh-superpowers
+  name: '@dennisrongo/dsh-superpowers'
   config:
     superpowersRoot: /absolute/path/to/superpowers
 ```
 
-with `pnpm add "file:/absolute/path/to/dsh-plugins/plugins/dsh-superpowers"` in the profile.
-Note this package is **unscoped**, so it installs to `node_modules/dsh-superpowers` rather
-than under `@dennisrongo/`.
+with `pnpm add "file:/absolute/path/to/dsh-plugins/plugins/dsh-superpowers"` in the profile,
+or straight from GitHub:
+
+```bash
+dsh plugin --profile <name> add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-superpowers"
+```
+
+The folder is `plugins/dsh-superpowers` but the package is `@dennisrongo/dsh-superpowers`, so
+it installs under the scope. Mind the difference: the **unscoped** `dsh-superpowers` on npm is
+an unrelated plugin by another author, so `add dsh-superpowers` fetches theirs, not this one.
 
 ## Config
 

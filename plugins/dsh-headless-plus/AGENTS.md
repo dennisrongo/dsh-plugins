@@ -4,8 +4,11 @@ Replaces the stock dsh headless app with one that can choose a model and continu
 conversation. **No host service and no `/api` endpoints** — it is a CLI app, not a UI plugin,
 so the verification recipe here is a real headless run, not a wire probe.
 
-The package name is **unscoped** (`dsh-headless-plus`, not `@dennisrongo/...`), so it
-installs to `node_modules/dsh-headless-plus`.
+Published name is `@dennisrongo/dsh-headless-plus`, so it installs to
+`node_modules/@dennisrongo/dsh-headless-plus` while the folder here stays
+`plugins/dsh-headless-plus`. The scope is deliberate: the bare `dsh-superpowers` name was
+already taken on npm by an unrelated plugin, so both formerly-unscoped packages were scoped
+to keep the namespace ours.
 
 ## Two halves, two rows
 
@@ -39,9 +42,9 @@ insert rows — a bare `id:` is an id-targeted override and silently no-ops:
   disabled: true
 - insert:
     - id: headless-plus-startup
-      name: 'dsh-headless-plus/startup'
+      name: '@dennisrongo/dsh-headless-plus/startup'
     - id: headless-plus-runner
-      name: 'dsh-headless-plus'
+      name: '@dennisrongo/dsh-headless-plus'
       inject: [headlessPlusStartup]
       config:
         task: !!js ctx.headlessPlusStartup.task

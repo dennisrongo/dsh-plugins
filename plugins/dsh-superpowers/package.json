@@ -1,5 +1,5 @@
 {
-  "name": "dsh-superpowers",
+  "name": "@dennisrongo/dsh-superpowers",
   "version": "0.1.0",
   "description": "Superpowers methodology bootstrap for dsh: injects the using-superpowers skill as a persistent system-prompt section (session start + compaction-safe)",
   "type": "module",
