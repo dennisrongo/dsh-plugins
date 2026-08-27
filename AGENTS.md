@@ -20,13 +20,11 @@ plugins/dsh-weather      client only   — shell.overlay weather bar
 plugins/dsh-mission-control client only — shell.overlay fleet dashboard
 plugins/dsh-headless-plus CLI app      — --model/--resume/--continue
 plugins/dsh-superpowers  host          — system-prompt section
-fixtures/                seed content for tests; NOT workspace packages
 scripts/                 verify.mjs, anchor.mjs, link-superpowers-skills.mjs (portable)
                          dev-link.ps1 (Windows: anchors + junctions into profiles)
 ```
 
-Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package and
-anything under `fixtures/` does not.
+Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package.
 
 All six publish under `@dennisrongo/`, and the folder name is not the package name — a
 `cordis.patch.yml` row takes the **package** name (`@dennisrongo/dsh-superpowers`), while the

@@ -350,7 +350,6 @@ One trap worth knowing: DSH Desktop runs a **profile-repair install** on startup
 
 ```
 plugins/     one self-contained package each (pnpm workspace members)
-fixtures/    seed content for tests; not workspace packages
 scripts/     verify.mjs                    — check the plugins against your installed dsh
              anchor.mjs                    — point each package's @deepseek-ai at that dsh
              dev-link.ps1                  — anchor + junction into profiles (Windows)

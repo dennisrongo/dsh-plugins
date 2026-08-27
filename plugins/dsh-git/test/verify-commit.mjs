@@ -6,10 +6,9 @@
  * browser must change real bytes on disk.
  */
 import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 const URL_UNDER_TEST = process.env.DSH_URL ?? 'http://127.0.0.1:38080/'
 /**
@@ -22,8 +21,15 @@ const URL_UNDER_TEST = process.env.DSH_URL ?? 'http://127.0.0.1:38080/'
  * hand-maintained repo sitting next to the monorepo.
  */
 const REPO = process.env.DSH_REPO ?? join(tmpdir(), 'dsh-git-tree')
-/** Seed content for a freshly provisioned scratch tree. */
-const SEED = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'fixtures', 'dsh-git-tree')
+/** Seed README for a freshly provisioned scratch tree. */
+const SEED_README = `# dsh-git-tree
+
+Scratch workspace that exercises the \`@dennisrongo/dsh-git\` Changes tab.
+
+Provisioned by plugins/dsh-git/test/verify-commit.mjs — the tab reads this
+directory through the workspace registry, so anything committed here shows up
+in its history view. Safe to delete; the test recreates it.
+`
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
 const PORT = 39226
 
@@ -38,11 +44,7 @@ function ensureRepo() {
   if (!existsSync(REPO)) mkdirSync(REPO, { recursive: true })
   if (!existsSync(join(REPO, '.git'))) {
     execFileSync('git', ['init', '-q', '-b', 'main', REPO], { encoding: 'utf8' })
-    const readme = join(SEED, 'README.md')
-    writeFileSync(
-      join(REPO, 'README.md'),
-      existsSync(readme) ? readFileSync(readme, 'utf8') : '# dsh-git-tree\n\nScratch workspace for the dsh-git Changes tab.\n',
-    )
+    writeFileSync(join(REPO, 'README.md'), SEED_README)
     git('add', 'README.md')
     git('-c', 'user.name=dsh-git test', '-c', 'user.email=test@localhost',
         'commit', '-q', '-m', 'chore: seed the dsh-git scratch tree')
