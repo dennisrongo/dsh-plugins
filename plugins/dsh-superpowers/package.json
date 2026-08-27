@@ -1,0 +1,21 @@
+{
+  "name": "dsh-superpowers",
+  "version": "0.1.0",
+  "description": "Superpowers methodology bootstrap for dsh: injects the using-superpowers skill as a persistent system-prompt section (session start + compaction-safe)",
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dennisrongo/dsh-plugins.git",
+    "directory": "plugins/dsh-superpowers"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}

@@ -1,0 +1,488 @@
+/**
+ * dsh-weather — weather bar for the DeepSeek Harness web UI.
+ *
+ * A pure-consumer client plugin registering into the additive `shell.overlay`
+ * slot: a slim strip pinned to the top of the page showing current
+ * conditions, temperature, wind, and a short hourly outlook.
+ *
+ * Data comes from Open-Meteo (https://open-meteo.com) — free, no API key,
+ * CORS-enabled. Location resolution order:
+ *   1. localStorage override (`dsh-weather:location` = "City Name")
+ *   2. ipapi.co coarse IP geolocation (no key)
+ *   3. hard fallback: New York City
+ */
+import React from 'react'
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+
+/** Required services (cordis fiber inject — service access is granted per-fiber). */
+export const inject = ['slots']
+
+// ---------------------------------------------------------------------------
+// Types + pure logic (exported for the smoke test)
+// ---------------------------------------------------------------------------
+
+/** Temperature unit shown in the bar. */
+export type TempUnit = 'C' | 'F'
+
+export interface GeoResult {
+  latitude: number
+  longitude: number
+  label: string
+}
+
+export interface WeatherNow {
+  temperatureC: number
+  apparentC: number
+  weatherCode: number
+  isDay: boolean
+  windKph: number
+  humidity: number
+}
+
+export interface HourPoint {
+  /** Epoch ms. */
+  at: number
+  temperatureC: number
+  weatherCode: number
+}
+
+export interface WeatherState {
+  status: 'loading' | 'ready' | 'error'
+  where?: string
+  now?: WeatherNow
+  next?: HourPoint[]
+  fetchedAt?: number
+  error?: string
+}
+
+/** WMO weather interpretation code → emoji + short label. */
+export function describeCode(code: number, isDay = true): { icon: string; label: string } {
+  const d = isDay
+  if (code === 0) return { icon: d ? '☀️' : '🌙', label: 'Clear' }
+  if (code === 1) return { icon: d ? '🌤️' : '🌙', label: 'Mostly clear' }
+  if (code === 2) return { icon: '⛅', label: 'Partly cloudy' }
+  if (code === 3) return { icon: '☁️', label: 'Overcast' }
+  if (code === 45 || code === 48) return { icon: '🌫️', label: 'Fog' }
+  if (code >= 51 && code <= 55) return { icon: '🌦️', label: 'Drizzle' }
+  if (code >= 56 && code <= 57) return { icon: '🌧️', label: 'Freezing drizzle' }
+  if (code >= 61 && code <= 65) return { icon: '🌧️', label: 'Rain' }
+  if (code >= 66 && code <= 67) return { icon: '🌧️', label: 'Freezing rain' }
+  if (code >= 71 && code <= 77) return { icon: '🌨️', label: 'Snow' }
+  if (code >= 80 && code <= 82) return { icon: '🌦️', label: 'Showers' }
+  if (code >= 85 && code <= 86) return { icon: '🌨️', label: 'Snow showers' }
+  if (code === 95) return { icon: '⛈️', label: 'Thunderstorm' }
+  if (code >= 96 && code <= 99) return { icon: '⛈️', label: 'Thunderstorm + hail' }
+  return { icon: '🌡️', label: `Code ${code}` }
+}
+
+/** Format "14:00"-style local hour from an ISO string's hour component. */
+export function fmtHour(iso: string): string {
+  const h = Number(iso.slice(11, 13))
+  if (Number.isNaN(h)) return iso
+  const suffix = h >= 12 ? 'pm' : 'am'
+  const hr = h % 12 === 0 ? 12 : h % 12
+  return `${hr}${suffix}`
+}
+
+/** Celsius → Fahrenheit. */
+export function toF(celsius: number): number {
+  return celsius * 9 / 5 + 32
+}
+
+/** Render a Celsius reading in the active unit, rounded, e.g. "72°F". */
+export function fmtTemp(celsius: number, unit: TempUnit, withUnit = true): string {
+  const value = Math.round(unit === 'F' ? toF(celsius) : celsius)
+  return withUnit ? `${value}°${unit}` : `${value}°`
+}
+
+const REFRESH_MS = 15 * 60 * 1000
+const LOCATION_KEY = 'dsh-weather:location'
+const UNIT_KEY = 'dsh-weather:unit'
+
+/** Read the saved unit; defaults to Fahrenheit. */
+function loadUnit(): TempUnit {
+  try {
+    return window.localStorage.getItem(UNIT_KEY) === 'C' ? 'C' : 'F'
+  } catch {
+    return 'F'
+  }
+}
+
+/** Persist the unit choice; storage failures are non-fatal. */
+function saveUnit(unit: TempUnit): void {
+  try {
+    window.localStorage.setItem(UNIT_KEY, unit)
+  } catch {
+    // private mode / storage disabled — the toggle still works for this session
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fetching
+// ---------------------------------------------------------------------------
+
+/** Hard fallback when every geolocation provider is unreachable. */
+const DEFAULT_LOCATION: GeoResult = { latitude: 40.7128, longitude: -74.006, label: 'New York' }
+
+/** Per-provider budget. A hung provider must not stall the whole bar. */
+const GEO_TIMEOUT_MS = 4000
+
+/**
+ * Coarse IP geolocation providers, tried in order.
+ *
+ * Each entry normalizes its own response shape, because these APIs disagree on
+ * field names (`latitude` vs `lat`, string vs number coordinates). A provider
+ * returning null means "no usable fix" and the chain moves on.
+ *
+ * NOTE: ipapi.co was removed — it is now behind a Cloudflare bot challenge and
+ * answers 403 with an HTML interstitial, which is unusable from the browser.
+ */
+const GEO_PROVIDERS: { url: string; parse: (data: any) => GeoResult | null }[] = [
+  {
+    url: 'https://get.geojs.io/v1/ip/geo.json',
+    parse: (d) => {
+      // geojs returns coordinates as STRINGS.
+      const latitude = Number(d?.latitude)
+      const longitude = Number(d?.longitude)
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null
+      const region = d?.region ?? d?.country_code ?? ''
+      return { latitude, longitude, label: d?.city ? `${d.city}, ${region}`.replace(/, $/, '') : 'Current location' }
+    },
+  },
+  {
+    url: 'https://freeipapi.com/api/json',
+    parse: (d) => {
+      const latitude = Number(d?.latitude)
+      const longitude = Number(d?.longitude)
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null
+      const region = d?.regionName ?? d?.countryCode ?? ''
+      return { latitude, longitude, label: d?.cityName ? `${d.cityName}, ${region}`.replace(/, $/, '') : 'Current location' }
+    },
+  },
+]
+
+/** fetch + JSON with a hard timeout, so one dead host cannot stall the bar. */
+async function fetchJson(url: string, timeoutMs = GEO_TIMEOUT_MS): Promise<any> {
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { signal: ctrl.signal })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+async function resolveLocation(): Promise<GeoResult> {
+  const override = window.localStorage.getItem(LOCATION_KEY)
+  if (override) {
+    const q = encodeURIComponent(override)
+    const data = await fetchJson(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${q}&count=1&language=en&format=json`,
+    )
+    const hit = data?.results?.[0]
+    if (hit) {
+      return {
+        latitude: hit.latitude,
+        longitude: hit.longitude,
+        label: hit.admin1 ? `${hit.name}, ${hit.admin1}` : String(hit.name),
+      }
+    }
+    throw new Error(`unknown place "${override}"`)
+  }
+  // Try each provider in turn; a failure is expected traffic, not an error.
+  for (const provider of GEO_PROVIDERS) {
+    try {
+      const hit = provider.parse(await fetchJson(provider.url))
+      if (hit) return hit
+    } catch {
+      // provider down, blocked, or rate-limited — try the next one
+    }
+  }
+  return DEFAULT_LOCATION
+}
+
+async function fetchWeather(): Promise<WeatherState> {
+  const geo = await resolveLocation()
+  const url =
+    'https://api.open-meteo.com/v1/forecast' +
+    `?latitude=${geo.latitude}&longitude=${geo.longitude}` +
+    '&current=temperature_2m,apparent_temperature,relative_humidity_2m,is_day,weather_code,wind_speed_10m' +
+    '&hourly=temperature_2m,weather_code&forecast_days=2&wind_speed_unit=kmh&timezone=auto'
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`open-meteo HTTP ${res.status}`)
+  const data = await res.json()
+  const c = data.current
+  const times: string[] = data.hourly?.time ?? []
+  const temps: number[] = data.hourly?.temperature_2m ?? []
+  const codes: number[] = data.hourly?.weather_code ?? []
+  const nowMs = Date.now()
+  const next: HourPoint[] = []
+  for (let i = 0; i < times.length && next.length < 6; i++) {
+    const at = Date.parse(times[i])
+    if (Number.isNaN(at) || at < nowMs - 30 * 60 * 1000) continue
+    if (at === next[next.length - 1]?.at) continue
+    next.push({ at, temperatureC: temps[i], weatherCode: codes[i] })
+  }
+  return {
+    status: 'ready',
+    where: geo.label,
+    now: {
+      temperatureC: c.temperature_2m,
+      apparentC: c.apparent_temperature,
+      weatherCode: c.weather_code,
+      isDay: c.is_day === 1,
+      windKph: c.wind_speed_10m,
+      humidity: c.relative_humidity_2m,
+    },
+    next: next.filter((_, i) => i % 2 === 0).slice(0, 4),
+    fetchedAt: nowMs,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
+const BAR_STYLES = `
+.dshwx {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 8px;
+  z-index: 2147482900;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.12));
+  background: var(--dsw-specific-sidebar-fill, #1b1b1c);
+  color: var(--dsw-alias-label-secondary, #cfd3d6);
+  font: 400 12px/1.4 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
+  font-variant-numeric: tabular-nums;
+  box-shadow: var(--dsw-shadow-lv3, 0 0 1px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.12));
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 24px rgba(0,0,0,0.5); }
+.dshwx[hidden] { display: none; }
+.dshwx-icon { font-size: 15px; }
+.dshwx-temp {
+  color: var(--dsw-alias-label-primary, #f9fafb);
+  font-weight: 600; font-size: 13px;
+  font-family: inherit; font-variant-numeric: tabular-nums;
+  border: 0; background: transparent; padding: 1px 4px; margin: 0 -2px;
+  border-radius: 6px; cursor: pointer; line-height: inherit;
+}
+.dshwx-temp:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,0.08)); }
+.dshwx-temp:focus-visible { outline: 2px solid var(--dsw-alias-label-caption, #81858c); outline-offset: 1px; }
+.dshwx-label { color: var(--dsw-alias-label-secondary, #cfd3d6); }
+.dshwx-where {
+  color: var(--dsw-alias-label-tertiary, #adb2b8);
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+}
+.dshwx-sep { width: 1px; height: 14px; background: var(--dsw-alias-border-l2, rgba(255,255,255,0.12)); flex: none; }
+.dshwx-meta { color: var(--dsw-alias-label-caption, #81858c); font-size: 11px; }
+.dshwx-hours { display: flex; gap: 8px; align-items: center; }
+.dshwx-hour { display: flex; align-items: center; gap: 3px; color: var(--dsw-alias-label-caption, #81858c); font-size: 11px; }
+.dshwx-hour b { color: var(--dsw-alias-label-secondary, #cfd3d6); font-weight: 500; }
+.dshwx-refresh {
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--dsw-alias-label-caption, #81858c);
+  font-size: 12px; padding: 2px; border-radius: 50%;
+  display: grid; place-items: center;
+}
+.dshwx-refresh:hover { color: var(--dsw-alias-label-primary, #f9fafb); background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,0.08)); }
+.dshwx-refresh.busy { animation: dshwx-spin 0.9s linear infinite; }
+@keyframes dshwx-spin { to { transform: rotate(360deg); } }
+.dshwx-error { color: var(--dsw-alias-state-error-primary, #ef4444); font-size: 11.5px; }
+/* --- Responsive tiers ---------------------------------------------------
+   The bar is a single nowrap pill, so narrow screens shed detail rather than
+   wrap. Each tier also drops the separator that preceded the hidden group,
+   otherwise stray dividers float with nothing between them. */
+
+/* Tablet: drop the hourly outlook and the humidity/wind readout. */
+@media (max-width: 720px) {
+  .dshwx-hours, .dshwx-meta { display: none; }
+  .dshwx-sep-hours, .dshwx-sep-meta { display: none; }
+}
+
+/* Phone: tighten spacing, shrink the place name, and give the controls
+   touch-sized hit areas without changing the pill's visual weight. */
+@media (max-width: 520px) {
+  .dshwx {
+    gap: 7px;
+    padding: 4px 10px;
+    max-width: calc(100vw - 16px);
+    font-size: 11.5px;
+  }
+  .dshwx-where { max-width: 92px; }
+  .dshwx-icon { font-size: 14px; }
+  .dshwx-temp { font-size: 12.5px; padding: 5px 7px; margin: -4px -3px; }
+  .dshwx-refresh { padding: 7px; margin: -5px; }
+}
+
+/* Very narrow: the place name is the least load-bearing text — the icon,
+   temperature and condition carry the meaning. */
+@media (max-width: 380px) {
+  .dshwx-where, .dshwx-sep-where { display: none; }
+  .dshwx { gap: 6px; }
+}
+
+/* Coarse pointers (touch) get the larger hit areas at any width. */
+@media (pointer: coarse) {
+  .dshwx-temp { padding: 6px 8px; margin: -4px -4px; }
+  .dshwx-refresh { padding: 8px; margin: -6px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dshwx-refresh.busy { animation: none; }
+}
+`
+
+let stylesInjected = false
+function injectStyles() {
+  if (stylesInjected) return
+  stylesInjected = true
+  const tag = document.createElement('style')
+  tag.dataset.plugin = '@dennisrongo/dsh-weather'
+  tag.textContent = BAR_STYLES
+  document.head.appendChild(tag)
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+function WeatherBar(): React.JSX.Element {
+  const [state, setState] = React.useState<WeatherState>({ status: 'loading' })
+  const [busy, setBusy] = React.useState(false)
+  const [unit, setUnit] = React.useState<TempUnit>(loadUnit)
+
+  const toggleUnit = () => {
+    setUnit((prev) => {
+      const next = prev === 'C' ? 'F' : 'C'
+      saveUnit(next)
+      return next
+    })
+  }
+
+  React.useEffect(() => injectStyles(), [])
+
+  React.useEffect(() => {
+    let alive = true
+    const load = async () => {
+      setBusy(true)
+      try {
+        const next = await fetchWeather()
+        if (alive) setState(next)
+      } catch (e) {
+        if (alive) setState({ status: 'error', error: String((e as Error)?.message ?? e) })
+      } finally {
+        if (alive) setBusy(false)
+      }
+    }
+    void load()
+    const timer = window.setInterval(load, REFRESH_MS)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  const reload = () => {
+    // Trigger a refresh outside the effect cadence.
+    setBusy(true)
+    fetchWeather()
+      .then(setState)
+      .catch((e) => setState({ status: 'error', error: String((e as Error)?.message ?? e) }))
+      .finally(() => setBusy(false))
+  }
+
+  if (state.status === 'loading') {
+    return (
+      <div className="dshwx" aria-live="polite">
+        <span className="dshwx-icon">🌡️</span>
+        <span className="dshwx-label">Loading weather…</span>
+      </div>
+    )
+  }
+  if (state.status === 'error' || !state.now) {
+    return (
+      <div className="dshwx" aria-live="polite">
+        <span className="dshwx-icon">⚠️</span>
+        <span className="dshwx-error" title={state.error}>Weather unavailable</span>
+        <button className={`dshwx-refresh${busy ? ' busy' : ''}`} title="Retry" onClick={reload}>⟳</button>
+      </div>
+    )
+  }
+
+  const { icon, label } = describeCode(state.now.weatherCode, state.now.isDay)
+  const other: TempUnit = unit === 'C' ? 'F' : 'C'
+  const title = `${label} in ${state.where ?? ''} — feels like ${fmtTemp(state.now.apparentC, unit)}, humidity ${state.now.humidity}%, wind ${Math.round(state.now.windKph)} km/h · click the temperature for °${other}`
+  return (
+    <div className="dshwx" title={title} aria-live="polite">
+      <span className="dshwx-icon">{icon}</span>
+      <button
+        type="button"
+        className="dshwx-temp"
+        onClick={toggleUnit}
+        title={`Switch to °${other}`}
+        aria-label={`Temperature ${fmtTemp(state.now.temperatureC, unit)}. Switch to degrees ${other === 'F' ? 'Fahrenheit' : 'Celsius'}.`}
+      >
+        {fmtTemp(state.now.temperatureC, unit)}
+      </button>
+      <span className="dshwx-label">{label}</span>
+      {state.where ? (
+        <>
+          <span className="dshwx-sep dshwx-sep-where" />
+          <span className="dshwx-where">{state.where}</span>
+        </>
+      ) : null}
+      {state.next && state.next.length > 0 ? (
+        <>
+          <span className="dshwx-sep dshwx-sep-hours" />
+          <span className="dshwx-hours">
+            {state.next.map((h) => (
+              <span className="dshwx-hour" key={h.at}>
+                {new Date(h.at).getHours() % 12 || 12}{new Date(h.at).getHours() >= 12 ? 'pm' : 'am'}
+                {' '}{describeCode(h.weatherCode).icon}
+                <b>{fmtTemp(h.temperatureC, unit, false)}</b>
+              </span>
+            ))}
+          </span>
+        </>
+      ) : null}
+      <span className="dshwx-sep dshwx-sep-meta" />
+      <span className="dshwx-meta">💧{state.now.humidity}% 🌬️{Math.round(state.now.windKph)}km/h</span>
+      <button className={`dshwx-refresh${busy ? ' busy' : ''}`} title="Refresh weather" onClick={reload}>⟳</button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Plugin body
+// ---------------------------------------------------------------------------
+
+/**
+ * Client plugin body: register the weather bar into the additive
+ * shell.overlay seat.
+ * @param ctx - client root context.
+ */
+export function apply(ctx: ClientContext): void {
+  ctx.effect(
+    () =>
+      ctx.slots.inject('shell.overlay', () =>
+        ctx.slots.register(
+          { name: 'shell.overlay', id: 'dsh-weather' },
+          () => React.createElement(WeatherBar),
+        ),
+      ),
+    'dsh-weather: shell.overlay registration',
+  )
+}

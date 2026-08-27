@@ -1,0 +1,21 @@
+node_modules/
+*.log
+.DS_Store
+
+# pnpm's local content-addressable store, if a package ever sets store-dir.
+# A build cache, never source.
+.pnpm-store/
+
+# Plugin runtime state. dsh-todo writes one SQLite database per workspace at
+# <workspace>/.dsh/todo.db; when a package folder is itself opened as a
+# workspace, that lands here. It is user data, not source.
+.dsh/
+
+# Intermediate esbuild output. lib/index.js and lib/client.js are the real
+# artifacts; this is the pre-wrap CJS body that build/build.mjs wraps in the
+# host loader's closure-factory convention.
+**/lib/client.body.cjs
+
+# dsh-git does NOT commit its build output (dsh-todo and dsh-weather do — their
+# lib/ is checked in on purpose, so this stays scoped to the one package).
+/plugins/dsh-git/lib/

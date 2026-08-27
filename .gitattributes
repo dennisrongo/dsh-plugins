@@ -1,0 +1,13 @@
+# Normalize to LF in the repo and on checkout.
+#
+# lib/client.js is served byte-for-byte to the browser by the dsh web server,
+# and test/smoke.mjs asserts on exact marker strings in that bundle. Letting
+# git rewrite line endings per-platform would change the served bytes, so
+# every text file is pinned to LF rather than left to core.autocrlf.
+* text=auto eol=lf
+
+# Windows-only script: keep CRLF so PowerShell tooling stays happy.
+*.ps1 text eol=crlf
+
+# Lockfile is generated — collapse it in diffs and reviews.
+pnpm-lock.yaml linguist-generated=true -diff

@@ -1,0 +1,13 @@
+{
+  "name": "dsh-plugins",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo root for the @dennisrongo dsh plugins. Not published — pnpm needs a manifest at the workspace root.",
+  "license": "MIT",
+  "author": "Dennis Rongo",
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test"
+  }
+}

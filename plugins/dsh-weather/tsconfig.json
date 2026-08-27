@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "lib": ["ES2020", "DOM"],
+    "types": ["react"],
+    "baseUrl": ".",
+    "paths": {
+      // Type-only import in src/client.tsx. Resolved through the
+      // node_modules/@deepseek-ai junction that scripts/dev-link.ps1 creates,
+      // which points at the dsh CLI install — so this stays machine-independent
+      // and typechecks against the harness actually installed.
+      "@deepseek-ai/dsh-client-runtime/client": [
+        "./node_modules/@deepseek-ai/dsh-client-runtime/lib/types/client/index.d.ts"
+      ]
+    }
+  },
+  "include": ["src"]
+}

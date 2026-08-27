@@ -1,0 +1,65 @@
+{
+  "name": "@dennisrongo/dsh-git",
+  "version": "0.1.0",
+  "description": "Git source-control tab for DeepSeek Harness (dsh) — view, stage, AI-commit and sync a workspace's changes",
+  "type": "module",
+  "license": "MIT",
+  "author": "Dennis Rongo",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./typert": {
+      "default": "./lib/typert.host.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node build/build.mjs && node --experimental-strip-types test/smoke.mjs && node --experimental-strip-types test/host-ops.mjs",
+    "test:ui": "node test/verify-ui.mjs",
+    "test:ai": "node test/verify-ai.mjs",
+    "test:commit": "node test/verify-commit.mjs"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "immediately": true
+    }
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-workspace": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-agent-default-model": "^0.1.1-rc.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "esbuild": "^0.24.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "typescript": "^5.6.0"
+  }
+}

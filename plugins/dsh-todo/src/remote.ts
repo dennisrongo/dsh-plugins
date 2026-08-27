@@ -1,0 +1,111 @@
+/**
+ * Hand-written Typert Remote contribution for the host's `dshTodo` service.
+ *
+ * Shipped dsh packages get this file from the Typert generator. A third-party
+ * plugin has no generator step, so it is written by hand — but it must still
+ * satisfy the same contract the generator emits, because the two ends of the
+ * bridge have DIFFERENT requirements:
+ *
+ *   * The HOST gateway can fall back to `src-json` codecs, deriving wire fields
+ *     from the method's parameter names.
+ *   * The CLIENT `$mount` cannot. `requireStrictDescriptor` rejects any codec
+ *     whose `mode` is not `'strict'`, so a `src-json` contribution makes
+ *     `$mount` throw, the `remote.dshTodo` service never appears, and any UI
+ *     waiting on it silently never registers.
+ *
+ * Hence real zod schemas below. They are also a genuine boundary check on
+ * everything the host sends back.
+ *
+ * The shape must match what the host actually exports: namespace `dshTodo`,
+ * methods `list` and `replace`, each taking one JSON `request` parameter.
+ *
+ * @module @dennisrongo/dsh-todo/remote
+ */
+import { z } from 'zod'
+
+/** One stored todo item, as it crosses the wire. */
+const todoItemSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  done: z.boolean(),
+  createdAt: z.number(),
+  completedAt: z.number().optional(),
+  // Must be carried explicitly: these are strict codecs, so a field the schema
+  // does not name would be stripped off the wire and archiving would not persist.
+  archivedAt: z.number().optional(),
+})
+
+/** One workspace's whole durable record. */
+const todoListSchema = z.object({
+  items: z.array(todoItemSchema),
+  revision: z.number(),
+  updatedAt: z.number(),
+})
+
+const listRequestSchema = z.object({ workspaceId: z.string() })
+const listResultSchema = z.object({ list: todoListSchema })
+
+const replaceRequestSchema = z.object({
+  workspaceId: z.string(),
+  items: z.array(todoItemSchema),
+  ifRevision: z.union([z.number(), z.literal(null)]),
+})
+
+const replaceResultSchema = z.union([
+  z.object({ ok: z.literal(true), list: todoListSchema }),
+  z.object({
+    ok: z.literal(false),
+    code: z.literal('revision-conflict'),
+    list: todoListSchema,
+  }),
+])
+
+const PACKAGE = '@dennisrongo/dsh-todo'
+
+/**
+ * Build one direct, single-`request`-parameter descriptor.
+ * @param method - host method name, which is also the wire method.
+ * @param request - schema validating the outgoing request object.
+ * @param result - schema validating the host's reply.
+ * @returns the strict invocation descriptor.
+ */
+function descriptor(method: string, request: z.ZodType, result: z.ZodType) {
+  return {
+    id: `${PACKAGE}#dshTodo/${method}`,
+    service: 'dshTodo',
+    namespace: 'dshTodo',
+    method,
+    invocation: { kind: 'direct' as const },
+    parameters: [
+      {
+        name: 'request',
+        // Must equal the host method's PARAMETER NAME: the host resolves this
+        // endpoint through SRC discovery, which reads parameter names off the
+        // function source.
+        wire: 'request',
+        source: 'json' as const,
+        codec: {
+          mode: 'strict' as const,
+          typeSymbol: `${PACKAGE}/types#${method}Request`,
+          schema: request,
+        },
+      },
+    ],
+    result: {
+      mode: 'strict' as const,
+      typeSymbol: `${PACKAGE}/types#${method}Result`,
+      schema: result,
+    },
+  }
+}
+
+/** The contract the client half mounts via `ctx.remote.$mount(...)`. */
+export const TODO_REMOTE = {
+  package: PACKAGE,
+  descriptors: [
+    descriptor('list', listRequestSchema, listResultSchema),
+    descriptor('replace', replaceRequestSchema, replaceResultSchema),
+  ],
+}
+
+export default TODO_REMOTE

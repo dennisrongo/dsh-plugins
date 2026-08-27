@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    // The Typert @Remote decorator is a TC39 STANDARD decorator (it uses
+    // context.addInitializer), not a legacy TypeScript one. This must stay
+    // false or the marker never registers.
+    "experimentalDecorators": false,
+    "lib": ["ES2022", "DOM"],
+    "types": ["react", "node"],
+    "baseUrl": ".",
+    "paths": {
+      // Typecheck against the RUNNING dsh install, which is also what these
+      // peer dependencies resolve to at runtime (the profile sets
+      // autoInstallPeers: false, so no second copy is installed).
+      //
+      // This matters for more than convenience: the dsh install's cordis
+      // carries the service augmentations (`storageDomain`, `typert`, ...)
+      // that a bare cordis copy does not declare, and mixing the two produces
+      // two incompatible `Context` identities.
+      "@deepseek-ai/dsh-workspace": [
+        "./node_modules/@deepseek-ai/dsh-workspace/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-runtime/client": [
+        "./node_modules/@deepseek-ai/dsh-client-runtime/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/cordis": [
+        "./node_modules/@deepseek-ai/cordis/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-typert-protocol": [
+        "./node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-storage-domain": [
+        "./node_modules/@deepseek-ai/dsh-storage-domain/lib/types/index.d.ts"
+      ]
+    }
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "experimentalDecorators": false,
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "types": [
+      "react",
+      "node"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/dsh-client-runtime/client": [
+        "./node_modules/@deepseek-ai/dsh-client-runtime/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/cordis": [
+        "./node_modules/@deepseek-ai/cordis/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-typert-protocol": [
+        "./node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-llm": [
+        "./node_modules/@deepseek-ai/dsh-llm/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-agent-default-model": [
+        "./node_modules/@deepseek-ai/dsh-agent-default-model/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-workspace": [
+        "./node_modules/@deepseek-ai/dsh-workspace/lib/types/index.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}

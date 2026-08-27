@@ -1,0 +1,29 @@
+# pnpm workspace root for the dsh plugin monorepo.
+#
+# pnpm 11 does NOT read `pnpm` blocks out of package.json — workspace-level
+# configuration has to live here or it is silently ignored. The stale
+# `pnpm.onlyBuiltDependencies` blocks still present in some plugin
+# package.json files are vestigial for that reason; this file is the one
+# that counts.
+packages:
+  - plugins/*
+
+# esbuild is the only dependency allowed to run an install script (it fetches
+# its platform binary). Everything else stays unbuilt.
+onlyBuiltDependencies:
+  - esbuild
+
+# Peer dependencies MUST NOT be auto-installed. Every plugin here declares its
+# @deepseek-ai/* host packages as peers with dev-preview ranges; several are
+# unpublished, so auto-install resolves them against the npm registry and 404s
+# the whole install. The host packages are supplied at runtime by junctions
+# into the dsh CLI host copy (see dsh-dev-link.ps1), never by this workspace.
+autoInstallPeers: false
+
+# pnpm 11 moved build permissions to `allowBuilds`, which takes a MAP, and no
+# longer honours the `onlyBuiltDependencies` list above — that key is kept
+# because it is what the plugin packages document, but this is the one pnpm
+# actually reads. Without it, `pnpm install` fails ERR_PNPM_IGNORED_BUILDS and
+# esbuild never fetches its platform binary.
+allowBuilds:
+  esbuild: true
