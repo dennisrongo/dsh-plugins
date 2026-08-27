@@ -2,43 +2,67 @@
 
 Dennis Rongo's plugin collection for [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) — an MIT agent harness where every capability is a plugin.
 
-Everything here is built on the harness's public seams: service keys, the Typert bridge, `shell.*` slots, `ctx.cmdlineArgs`. No forks, no patched launcher, no vendored harness code.
+Everything here is built on the harness's public seams: cordis service keys, the Typert host/client bridge, `shell.*` slots, the system-prompt section registry, and `ctx.cmdlineArgs`. No forks, no patched launcher, no vendored harness code.
 
-**Both surfaces are supported.** Every plugin runs unchanged under the `dsh` CLI *and* the **DSH Desktop** app. The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness`) with its own profiles, so a plugin is installed once per profile on whichever surface you use — see [Install on a new machine](#install-on-a-new-machine).
+**Both surfaces are supported.** Every plugin runs unchanged under the `dsh` CLI *and* the **DSH Desktop** app. The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness`) with its own profiles, so you install a plugin once per profile on whichever surface you use.
 
 > **Status:** developed against dsh `0.1.1-rc.2`. dsh is a fast-moving `0.1.x` dev preview that promises breaking changes — re-verify against your installed version.
 >
-> **Platforms:** the plugins are plain Node and platform-agnostic. Of the tooling,
-> `scripts/link-superpowers-skills.mjs` is cross-platform (junctions on Windows, symlinks
-> elsewhere); `scripts/dev-link.ps1` is **Windows-only** — it creates junctions and knows
-> Windows profile locations. Everything here has been exercised on Windows; macOS and Linux
-> are untested.
+> **Platforms:** the plugins are plain Node and platform-agnostic. Of the tooling, `scripts/link-superpowers-skills.mjs` is cross-platform (junctions on Windows, symlinks elsewhere); `scripts/dev-link.ps1` is **Windows-only**. Everything has been exercised on Windows; macOS and Linux are untested.
 
 ## Plugins
 
-| Package | What it adds | Surface |
-|---|---|---|
-| [`dsh-todo`](plugins/dsh-todo) | Per-workspace todo list — a Todo tab backed by a host service | host + client |
-| [`dsh-git`](plugins/dsh-git) | Source-control "Changes" tab — stage, diff, AI-commit, sync | host + client |
-| [`dsh-weather`](plugins/dsh-weather) | Weather bar pinned in `shell.overlay` | client only |
-| [`dsh-headless-plus`](plugins/dsh-headless-plus) | `--model`, `--resume`, `--continue`, `--session-info` for the headless app | CLI app |
-| [`dsh-superpowers`](plugins/dsh-superpowers) | Injects the Superpowers methodology into every agent's system prompt | host |
+| Package | Adds | Halves | Endpoints |
+|---|---|---|---|
+| [`dsh-todo`](plugins/dsh-todo) | per-workspace todo list | host + client | `dshTodo/list`, `replace` |
+| [`dsh-git`](plugins/dsh-git) | source-control "Changes" tab | host + client | `dshGit/status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage` |
+| [`dsh-weather`](plugins/dsh-weather) | weather bar in the shell overlay | client only | — |
+| [`dsh-headless-plus`](plugins/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
+| [`dsh-superpowers`](plugins/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
+
+---
 
 ### `dsh-todo`
 
-Host service `dshTodo` owns one SQLite database per project at `<workspace>/.dsh/todo.db`, resolved through `workspaceRegistry`. The Todo tab reaches it over the Typert bridge. Endpoints: `dshTodo/list`, `dshTodo/replace`.
+A Todo tab scoped to the workspace you're working in, so each project keeps its own list instead of one global pile.
+
+**What you get.** A tab beside Chat and Trajectory with add/complete/reorder, `All` / `Open` / `Done` / `Archive` filters, an `n/m done` progress readout, and per-row archive. Completed work is **archived, not deleted** — an item carries an optional `archivedAt` stamp whose *presence* is the archived state, so there's one source of truth and no way to store an archived item without a date. Restoring clears the stamp.
+
+**How it works.** `TodoService extends TypertRemoteService` registers under the cordis key `dshTodo` and owns one SQLite database per project at `<workspace>/.dsh/todo.db`, resolved through `workspaceRegistry`. Writes use optimistic concurrency: every `replace` states the `revision` it observed, and the host rejects a stale write with `ok:false, code:'revision-conflict'` and the current list, rather than silently clobbering. A legacy central `~/.dsh/storages/dsh_todo.json` is migrated on first read.
+
+**Endpoints.** `POST /api/dshTodo/list` → `{ list: { items, revision, updatedAt } }`; `POST /api/dshTodo/replace` → the new list or a revision conflict. Both take a single parameter named `request`.
+
+**Requires.** The storage rows (`storage`, `storage-json`, `storage-domain`) — `@deepseek-ai/dsh-web-app` composes these by default — plus `workspaceRegistry` from `dsh-base`.
+
+---
 
 ### `dsh-git`
 
-Host service `dshGit` runs git in the workspace directory, serialises writes per repo root, and drafts commit messages through `llm`. Endpoints: `dshGit/status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`.
+Source control for the workspace, without leaving the harness.
+
+**What you get.** A Changes tab showing branch, upstream ahead/behind, and a file list split into staged and unstaged, with per-row stage/unstage/discard and a diff pane. An **✦AI message** button drafts a commit message from the staged diff through the harness's own `llm` service, then `Commit all` commits. Recent history is listed underneath. A directory that isn't a repository reports `repo: false` and offers `Initialize repository` rather than erroring.
+
+**How it works.** `GitService extends TypertRemoteService` under the cordis key `dshGit`, shelling out to `git` in the workspace directory. Writes are **serialised per repository root** through an internal queue, so two tabs can't interleave a stage and a commit. Paths from the client go through `assertSafePath`, which refuses absolute paths and `..` escapes. Untracked files have no diff for git to produce, so their contents are synthesized into a `/dev/null` patch — otherwise clicking a new file would show a blank pane and look broken. `push` without a remote fails as data (`{ ok: false, output }`), not an exception.
+
+**Endpoints.** `status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage` under `POST /api/dshGit/<method>`, each taking one parameter named `request`.
+
+**Requires.** `workspaceRegistry` and `llm` (both composed by `dsh-base`) and `agentDefaultModel` for message drafting. Its `lib/` is **not committed** — build before installing.
+
+---
 
 ### `dsh-weather`
 
-Pure consumer: fetches Open-Meteo straight from the browser and renders into the additive `shell.overlay` slot. No host service, no endpoints, no API key.
+Current conditions pinned to the bottom of the web UI: temperature, condition, location, a short hourly outlook, humidity and wind.
+
+**How it works.** A pure-consumer client plugin registering into the additive `shell.overlay` slot — no host service, no endpoints, no API key. It fetches [Open-Meteo](https://open-meteo.com/) directly from the browser (CORS-enabled). Readings are always fetched in **Celsius** and converted at render time, so the °F/°C toggle needs no refetch; the choice persists in `localStorage["dsh-weather:unit"]` and defaults to °F. Location resolves from `localStorage["dsh-weather:location"]`, then a geo-provider chain, then a hard fallback to New York; every network path degrades to a visible error state rather than throwing into the shell.
+
+**Accessibility is deliberate:** the unit toggle is a real `<button>` with an `aria-label`, the bar is `aria-live="polite"`, focus is styled via `:focus-visible`, and `prefers-reduced-motion` disables the refresh spinner.
+
+---
 
 ### `dsh-headless-plus`
 
-Replaces the stock one-shot headless app:
+The stock headless app answers one task and exits, with no way to choose a model or continue a conversation. This replaces it.
 
 | Stock headless | `headless-plus` |
 |---|---|
@@ -51,23 +75,32 @@ Replaces the stock one-shot headless app:
 ```bash
 dsh --profile headless-plus --model anthropic/claude-sonnet-4-6 "refactor the auth module"
 dsh --profile headless-plus --continue "now add tests"
+dsh --profile headless-plus --resume session-6f2ca6dc-… "pick up where we left off"
 ```
+
+**How it works.** Two rows replace the two stock ones: a startup row that owns the flag family via `ctx.cmdlineArgs` (each app owns its own flags, so this doesn't collide with the launcher), and a runner row that receives the parsed task by injection. Resuming goes through the public `ctx.agents.resume()` with `ResumeAgentOptions`; `--resume latest` maps the workspace to its session directory using the same slug rule as `dsh-session-persistence-jsonl`. Model overrides go through `ctx.agentDefaultModel`. Note this package is **unscoped** — it installs to `node_modules/dsh-headless-plus`.
+
+---
 
 ### `dsh-superpowers`
 
-Registers the [Superpowers](https://github.com/obra/superpowers) methodology bootstrap as a persistent system-prompt section — compaction-safe, replacing the upstream SessionStart hook that dsh has no shell for. Nothing is vendored: it reads `skills/using-superpowers/SKILL.md` from your own clone, located via `superpowersRoot`, then `SUPERPOWERS_ROOT`, then a probe of common clone paths under `$HOME`.
+Makes the [Superpowers](https://github.com/obra/superpowers) methodology mandatory-first for every agent in a profile, rather than a skill the model may or may not reach for.
 
-To have the clone's skills catalog update on a plain `git pull` rather than drifting as copies:
+**How it works.** Upstream delivers its bootstrap through a SessionStart hook that must re-fire on `startup|clear|compact`. dsh has no hook shell, but its system prompt is a layered, ordered section registry that is **reassembled after compaction** — so one registered section covers all three upstream trigger points for the life of the session, with no gap where the bootstrap can fall out. It sits at order `-50`, just before persona.
+
+**Nothing is vendored.** The section body is read from your own clone of the upstream repo at profile start, located via `superpowersRoot`, then `SUPERPOWERS_ROOT`, then a probe of common clone paths under `$HOME`. So `git pull` + a profile restart is the entire update path. To have the clone's *skills catalog* follow a pull too, instead of drifting as copies:
 
 ```bash
 node scripts/link-superpowers-skills.mjs     # --dry-run to preview, --restore to undo
 ```
 
-Each of `dsh-todo`, `dsh-git` and `dsh-weather` carries an `AGENTS.md` with its endpoints, mount row, dev loop and a verification recipe.
+---
 
-## Install on a new machine
+`dsh-todo`, `dsh-git` and `dsh-weather` each carry an `AGENTS.md` with endpoints, mount row, dev loop and a verification recipe. See [AGENTS.md](AGENTS.md) for the repo as a whole.
 
-### 1. Prerequisites
+## Installing
+
+### Prerequisites
 
 ```bash
 node --version     # 22+
@@ -76,35 +109,66 @@ npm i -g @deepseek-ai/dsh
 dsh --version
 ```
 
-The plugins declare their `@deepseek-ai/*` dependencies as **peers** and deliberately do not install their own copies — they resolve to the copies inside your global `dsh` install. That keeps one physical copy of `cordis` and `dsh-typert-protocol` in play, which is what step 4 wires up.
+These plugins declare their `@deepseek-ai/*` packages as **peers** and deliberately don't install their own copies — they resolve to the ones inside your global `dsh` install. Step 5 is what wires that up.
 
-### 2. Clone and build
+### 1. Clone and build
 
 ```bash
 git clone https://github.com/dennisrongo/dsh-plugins.git
 cd dsh-plugins
 pnpm install
-pnpm run build
+pnpm run build      # required: dsh-git does not commit its lib/
 pnpm run test
 ```
 
-### 3. Install the plugins you want into a profile
+### 2. Pick or create a profile
 
-A dsh profile is a folder with a `package.json` and a `cordis.patch.yml`. Install each plugin into the profile as a `file:` dependency, using a **native absolute Windows path with forward slashes** — the MSYS `/c/...` form fails with `LINKED_PKG_DIR_NOT_FOUND`:
+A profile is a directory under `$DSH_HOME/profiles/<name>` (`~/.dsh/profiles` for the CLI; `%APPDATA%\dsh-desktop\harness\profiles` for DSH Desktop) holding a `package.json` and a `cordis.patch.yml`.
 
-```bash
-# dsh CLI profile
-cd ~/.dsh/profiles/web
-pnpm add "file:C:/path/to/dsh-plugins/plugins/dsh-todo" \
-         "file:C:/path/to/dsh-plugins/plugins/dsh-git" \
-         "file:C:/path/to/dsh-plugins/plugins/dsh-weather"
+`web` and `headless` have built-in templates, so installing into them creates them if absent. **Any other name you must scaffold yourself** — declare the bundle stack in `package.json`:
+
+```json
+{
+  "name": "dsh-profile-my-web",
+  "private": true,
+  "dsh": {
+    "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] }
+  }
+}
 ```
 
-For **DSH Desktop**, the same applies under its own home — `%APPDATA%\dsh-desktop\harness\profiles\<name>`. If that profile's `node_modules` was created by a different pnpm major, `pnpm add` refuses with `ERR_PNPM_UNEXPECTED_STORE`; edit the profile's `package.json` by hand instead and let step 4 supply the live module.
+Use `@deepseek-ai/dsh-headless` instead of `dsh-web-app` for a headless profile. Don't edit `cordis.yml` — it's generated; `cordis.patch.yml` is your layer.
 
-Then mount each one in the profile's `cordis.patch.yml`. **Every insert row needs both `id:` and `name:`** — a bare `id:` is an id-targeted override and silently does nothing:
+### 3. Install the plugins
+
+`dsh plugin` forwards to pnpm inside the profile directory:
+
+```bash
+dsh plugin --profile web add \
+  "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-todo" \
+  "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-git" \
+  "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-weather"
+```
+
+On Windows use a **native absolute path with forward slashes** — the MSYS `/c/...` form fails with `LINKED_PKG_DIR_NOT_FOUND`.
+
+You'll see one warning per plugin:
+
+```
+dsh: warning: @dennisrongo/dsh-todo declares no dsh.bundle — installed as a
+plain dependency, not a profile layer
+```
+
+That's expected. These are mounted by the rows in step 4, not as bundle layers.
+
+> **DSH Desktop:** same command with the desktop's profile. If that profile's `node_modules` was created by a different pnpm major you'll get `ERR_PNPM_UNEXPECTED_STORE`; edit the profile's `package.json` by hand instead and let step 5 supply the live module.
+
+### 4. Mount them in `cordis.patch.yml`
+
+**Every insert row needs both `id:` and `name:`.** A bare `id:` is an id-targeted override of an existing row and silently does nothing.
 
 ```yaml
+# web/headless UI plugins — one row mounts both halves of a plugin
 - insert:
     - id: dsh-weather
       name: '@dennisrongo/dsh-weather'
@@ -114,34 +178,57 @@ Then mount each one in the profile's `cordis.patch.yml`. **Every insert row need
       name: '@dennisrongo/dsh-git'
 ```
 
-Restart the profile. One row mounts both halves of a plugin — the host service and the browser tab.
+```yaml
+# dsh-superpowers — any profile with a system prompt
+- insert:
+    - id: superpowers
+      name: dsh-superpowers
+      config:
+        superpowersRoot: /absolute/path/to/superpowers   # optional; see the plugin README
+```
 
-### 4. Wire up the dev loop
+```yaml
+# dsh-headless-plus — replaces the two stock headless rows
+- id: headless-startup
+  disabled: true
+- id: headless-runner
+  disabled: true
+- insert:
+    - id: headless-plus-startup
+      name: 'dsh-headless-plus/startup'
+    - id: headless-plus-runner
+      name: 'dsh-headless-plus'
+      inject: [headlessPlusStartup]
+      config:
+        task: !!js ctx.headlessPlusStartup.task
+```
+
+Then restart the profile.
+
+### 5. Link for development (Windows)
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-link.ps1 -Profiles web -DesktopProfiles web
 ```
 
-This does two things, and **both are undone by any `pnpm install`**, so re-run it afterwards:
+Two jobs, and **both are undone by any `pnpm install`**, so re-run it afterwards:
 
-- Junctions each profile's `node_modules\@dennisrongo\<plugin>` at this repo, so a rebuild self-deploys. pnpm otherwise materialises `file:` deps as copies frozen at install time.
-- Junctions each package's `node_modules\@deepseek-ai\*` at your global `dsh` install. A junctioned plugin resolves through its **real** path, so Node looks for dependencies here rather than in the profile — without this the harness dies at boot with `ERR_MODULE_NOT_FOUND`, and `pnpm typecheck` cannot resolve its types either.
+- Junctions each profile's installed plugin at this repo, so a rebuild self-deploys. pnpm otherwise materialises `file:` deps as copies frozen at install time.
+- Junctions each package's `node_modules\@deepseek-ai\*` at your global `dsh` install. A junctioned plugin resolves through its **real** path, so Node looks for dependencies here rather than in the profile — without this the harness dies at boot with `ERR_MODULE_NOT_FOUND`, and `pnpm typecheck` can't resolve its types either.
 
-The script only touches plugins a profile actually declares, and prints what it skipped. `-IdentityOnly` skips the profile junctions.
+It only touches plugins a profile actually declares, follows the package name (so unscoped packages work), and prints what it skipped. `-IdentityOnly` skips the profile junctions.
 
-### 5. Verify
+### 6. Verify
 
 ```bash
-dsh --profile web --port 38111 --no-open        # capture the output; ERR_MODULE_NOT_FOUND here is a broken junction
+dsh --profile web --port 38111 --no-open        # capture output; ERR_MODULE_NOT_FOUND here is a broken junction
 curl -s -X POST http://127.0.0.1:38111/api/dshTodo/list -H 'content-type: application/json' \
   -d '{"type":"client-request","rpcId":"t1","method":"dshTodo/list","payload":{"args":{"request":{"workspaceId":"<id>"}}}}'
 ```
 
-`200` with `"ok":true` means mounted. `404` means the package's `./typert` export was not registered — see the plugin's `AGENTS.md`. Workspace ids live in `~/.dsh/storages/workspace.json`.
+`200` with `"ok":true` means mounted. `404` means the package's `./typert` export wasn't registered — see the plugin's `AGENTS.md`. Workspace ids live in `~/.dsh/storages/workspace.json` under `tables.workspaces`. Then open the UI and confirm the tabs render.
 
 ## Development
-
-One pnpm workspace:
 
 ```bash
 pnpm install          # all packages
@@ -149,9 +236,9 @@ pnpm run build        # pnpm -r --if-present run build
 pnpm run test         # pnpm -r --if-present run test
 ```
 
-Client-half edits deploy on a **browser refresh**; host-half edits need a **profile restart**.
+Client-half edits deploy on a **browser refresh**; host-half edits need a **profile restart**. Registering a *new* `./typert` export needs a full restart either way — the loader caches its per-package verdict for the process lifetime.
 
-Workspace configuration lives in `pnpm-workspace.yaml` — pnpm 11 ignores `pnpm` blocks in `package.json`. Build permissions are `allowBuilds` (a map); the older `onlyBuiltDependencies` list is no longer read. `autoInstallPeers` is off because the `@deepseek-ai/*` peers are dev-preview and partly unpublished, so auto-install 404s against the registry.
+Workspace configuration lives in `pnpm-workspace.yaml`: pnpm 11 ignores `pnpm` blocks in `package.json`, build permissions are `allowBuilds` (a map, not the older `onlyBuiltDependencies` list), and `autoInstallPeers` is off because the `@deepseek-ai/*` peers are dev-preview and partly unpublished.
 
 One trap worth knowing: DSH Desktop runs a **profile-repair install** on startup that prunes this repo's per-package `node_modules` — which takes `zod` with it and makes the harness refuse to boot (`Cannot find package 'zod'`). Recovery is `pnpm install` at the root, then `scripts\dev-link.ps1`.
 
@@ -164,7 +251,7 @@ scripts/     dev-link.ps1                  — link the plugins into your profil
              link-superpowers-skills.mjs   — link an upstream superpowers clone's skills
 ```
 
-`dsh-todo`, `dsh-git` and `dsh-weather` were consolidated here from standalone repos via subtree merge, so their original commits remain ancestors of `main`.
+`dsh-todo`, `dsh-git` and `dsh-weather` were consolidated here from standalone repos.
 
 ## License
 
