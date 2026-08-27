@@ -16,6 +16,8 @@ node_modules/
 # host loader's closure-factory convention.
 **/lib/client.body.cjs
 
-# dsh-git does NOT commit its build output (dsh-todo and dsh-weather do — their
-# lib/ is checked in on purpose, so this stays scoped to the one package).
-/plugins/dsh-git/lib/
+# NOTE: every package commits its built lib/ on purpose. These plugins are
+# installed straight from GitHub subdirectories
+# (pnpm add "github:owner/repo#path:/plugins/<name>"), and a git install runs no
+# build step — an uncommitted lib/ means the package arrives with no output and
+# fails to load. Rebuild and commit lib/ when you change src/.

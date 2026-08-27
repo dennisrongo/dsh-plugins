@@ -100,7 +100,48 @@ node scripts/link-superpowers-skills.mjs     # --dry-run to preview, --restore t
 
 `dsh-todo`, `dsh-git` and `dsh-weather` each carry an `AGENTS.md` with endpoints, mount row, dev loop and a verification recipe. See [AGENTS.md](AGENTS.md) for the repo as a whole.
 
-## Installing
+## Install one plugin from GitHub
+
+You don't have to clone this repo to use a plugin. pnpm can install a single package out of a
+subdirectory, and `dsh plugin` forwards to pnpm inside the profile directory, so one command
+per plugin is enough:
+
+```bash
+# pick the ones you want; --profile is the profile to install into
+dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-todo"
+dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-git"
+dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-weather"
+
+# CLI-app and prompt plugins go in a headless-style profile
+dsh plugin --profile headless add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-headless-plus"
+dsh plugin --profile headless add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-superpowers"
+```
+
+Several at once is fine — `dsh plugin --profile web add "github:…#path:/plugins/dsh-todo" "github:…#path:/plugins/dsh-git"`.
+
+Pin to a tag or branch by naming the ref before the path:
+
+```bash
+dsh plugin --profile web add "github:dennisrongo/dsh-plugins#main&path:/plugins/dsh-todo"
+```
+
+Quote the argument — `#` and `&` are shell metacharacters. `git+https://github.com/dennisrongo/dsh-plugins.git#path:/plugins/dsh-todo` works identically if you prefer the explicit form.
+
+Two things to know:
+
+- **`dsh-git` will not work installed this way.** It doesn't commit its `lib/`, and a git
+  install runs no build, so you get a package with no output. Clone and build it instead
+  (below). `dsh-todo`, `dsh-weather`, `dsh-headless-plus` and `dsh-superpowers` all ship their
+  built `lib/` and install fine from GitHub.
+- Each plugin still needs its **mount row** in the profile's `cordis.patch.yml` — installing
+  it is not enough. Rows are in [step 4](#4-mount-them-in-cordispatchyml), and you'll see a
+  `declares no dsh.bundle` warning on install, which is expected.
+
+Then restart the profile and [verify](#6-verify).
+
+## Installing from a clone
+
+Clone if you want `dsh-git`, want to edit the plugins, or want to run the tests.
 
 ### Prerequisites
 
