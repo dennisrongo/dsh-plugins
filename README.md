@@ -21,6 +21,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | [`dsh-weather`](plugins/dsh-weather) | weather bar in the shell overlay | client only | — |
 | [`dsh-headless-plus`](plugins/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
 | [`dsh-superpowers`](plugins/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
+| [`dsh-mission-control`](plugins/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox | client only | — |
 
 ---
 
@@ -98,7 +99,17 @@ node scripts/link-superpowers-skills.mjs     # --dry-run to preview, --restore t
 
 ---
 
-`dsh-todo`, `dsh-git` and `dsh-weather` each carry an `AGENTS.md` with endpoints, mount row, dev loop and a verification recipe. See [AGENTS.md](AGENTS.md) for the repo as a whole.
+### `dsh-mission-control`
+
+One glass panel over the whole agent fleet, floating above the stock web UI.
+
+**What you get.** A `shell.overlay` dashboard with a **Fleet** list of every session (root and subagents) showing running / waiting / done, a **swarm tree** of coordinator → worker lineages, a **stats strip** (session count, running, subagents, waiting-on-you), estimated **token burn** broken down by model, and a **permission inbox** surfacing sessions blocked on `approval` / `question` / `plan-review`.
+
+**How it works.** A pure consumer on public faces only — `ctx.sessions.list` as an ObservableSnapshot bridged into React, `sessionStats` projections (turns / steps / llmMs / decodeTokens), and `PendingInteraction` off the session summaries. No services, no tools, no presets and no host half; it floats over the stock UI without touching it. CSS is namespaced `dshmc-`.
+
+---
+
+Every package carries an `AGENTS.md` with its endpoints, mount row, dev loop and a verification recipe. See [AGENTS.md](AGENTS.md) for the repo as a whole.
 
 ## Install a plugin
 
@@ -110,6 +121,7 @@ it. `dsh plugin` forwards to pnpm inside the profile directory:
 dsh plugin --profile web add @dennisrongo/dsh-todo
 dsh plugin --profile web add @dennisrongo/dsh-git
 dsh plugin --profile web add @dennisrongo/dsh-weather
+dsh plugin --profile web add @dennisrongo/dsh-mission-control
 
 # CLI-app and prompt plugins, in a headless-style profile
 dsh plugin --profile headless add @dennisrongo/dsh-headless-plus

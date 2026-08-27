@@ -39,6 +39,24 @@ importers:
         specifier: ^14.0.0
         version: 14.0.3
 
+  plugins/dsh-mission-control:
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.31
+      esbuild:
+        specifier: ^0.24.0
+        version: 0.24.2
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.0
+        version: 18.3.1(react@18.3.1)
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
   plugins/dsh-superpowers: {}
 
   plugins/dsh-todo:

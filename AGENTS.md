@@ -1,6 +1,6 @@
 # AGENTS.md — dsh-plugins
 
-Five plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under `plugins/`
+Six plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under `plugins/`
 is self-contained: its own `package.json`, exports map, build and tests. Per-package
 `AGENTS.md` files cover endpoints and verification; this file covers the repo.
 
@@ -17,6 +17,7 @@ Read `README.md` for what each plugin does and how to install it. Read the packa
 plugins/dsh-todo         host + client — Todo tab, service key dshTodo
 plugins/dsh-git          host + client — Changes tab, service key dshGit
 plugins/dsh-weather      client only   — shell.overlay weather bar
+plugins/dsh-mission-control client only — shell.overlay fleet dashboard
 plugins/dsh-headless-plus CLI app      — --model/--resume/--continue
 plugins/dsh-superpowers  host          — system-prompt section
 fixtures/                seed content for tests; NOT workspace packages
@@ -27,7 +28,7 @@ scripts/                 verify.mjs, anchor.mjs, link-superpowers-skills.mjs (po
 Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package and
 anything under `fixtures/` does not.
 
-All five publish under `@dennisrongo/`, and the folder name is not the package name — a
+All six publish under `@dennisrongo/`, and the folder name is not the package name — a
 `cordis.patch.yml` row takes the **package** name (`@dennisrongo/dsh-superpowers`), while the
 folder stays `plugins/dsh-superpowers`. Keep the scope: the bare `dsh-superpowers` on npm is
 an unrelated plugin by another author, and unscoped generic names in this space get taken.

@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/dsh-client-runtime": [
+        "./node_modules/@deepseek-ai/dsh-client-runtime/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-runtime/client": [
+        "./node_modules/@deepseek-ai/dsh-client-runtime/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/cordis": [
+        "./node_modules/@deepseek-ai/cordis/lib/types/index.d.ts"
+      ]
+    }
+  },
+  "include": ["src"]
+}
