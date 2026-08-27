@@ -67,5 +67,14 @@
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "typescript": "^5.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dennisrongo/dsh-plugins.git",
+    "directory": "plugins/dsh-git"
+  },
+  "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-git#readme",
+  "bugs": {
+    "url": "https://github.com/dennisrongo/dsh-plugins/issues"
   }
 }

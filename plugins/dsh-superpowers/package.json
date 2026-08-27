@@ -29,5 +29,9 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-superpowers#readme",
+  "bugs": {
+    "url": "https://github.com/dennisrongo/dsh-plugins/issues"
   }
 }

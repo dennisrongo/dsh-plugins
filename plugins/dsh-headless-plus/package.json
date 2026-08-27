@@ -40,5 +40,9 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-headless-plus#readme",
+  "bugs": {
+    "url": "https://github.com/dennisrongo/dsh-plugins/issues"
   }
 }
