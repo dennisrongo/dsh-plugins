@@ -11,6 +11,9 @@
     "./package.json": "./package.json"
   },
   "files": ["lib", "README.md"],
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dennisrongo/dsh-plugins.git",

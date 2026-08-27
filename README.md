@@ -111,6 +111,10 @@ dsh --version
 
 These plugins declare their `@deepseek-ai/*` packages as **peers** and deliberately don't install their own copies — they resolve to the ones inside your global `dsh` install. Step 5 is what wires that up.
 
+You also need the harness itself configured with a model provider before any of this is
+useful — that's dsh's own setup (`~/.dsh/settings.yaml` and credentials), not something these
+plugins touch.
+
 ### 1. Clone and build
 
 ```bash
@@ -118,6 +122,15 @@ git clone https://github.com/dennisrongo/dsh-plugins.git
 cd dsh-plugins
 pnpm install
 pnpm run build      # required: dsh-git does not commit its lib/
+```
+
+`pnpm run test` and `pnpm run typecheck` need step 5's anchoring first — `dsh-todo`'s smoke
+test imports `@deepseek-ai/cordis` directly, and on a bare clone that fails with
+`ERR_MODULE_NOT_FOUND`. Build works without it (the harness packages are marked external).
+If you want the tests before touching a profile, run just the anchoring half now:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-link.ps1 -IdentityOnly
 pnpm run test
 ```
 
@@ -125,9 +138,10 @@ pnpm run test
 
 A profile is a directory under `$DSH_HOME/profiles/<name>` (`~/.dsh/profiles` for the CLI; `%APPDATA%\dsh-desktop\harness\profiles` for DSH Desktop) holding a `package.json` and a `cordis.patch.yml`.
 
-`web` and `headless` have built-in templates, so installing into them creates them if absent. **Any other name you must scaffold yourself** — declare the bundle stack in `package.json`:
+`web` and `headless` have built-in templates, so installing into them creates the directory, its manifest, an empty `cordis.patch.yml`, and the pnpm settings below. **Any other name you must scaffold yourself** — two files:
 
 ```json
+// <profile>/package.json
 {
   "name": "dsh-profile-my-web",
   "private": true,
@@ -136,6 +150,17 @@ A profile is a directory under `$DSH_HOME/profiles/<name>` (`~/.dsh/profiles` fo
   }
 }
 ```
+
+```yaml
+# <profile>/pnpm-workspace.yaml — do not skip this
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+```
+
+That second file is what dsh writes for its own template profiles, and `autoInstallPeers: false` matters: these plugins declare the harness packages as peers, and with auto-install on, pnpm fetches its own copies from npm — at versions that don't even match the declared ranges, since the published `@deepseek-ai/*` releases lag the version bundled with `dsh`. You end up with duplicate harness packages in the profile and a latent module-identity problem.
 
 Use `@deepseek-ai/dsh-headless` instead of `dsh-web-app` for a headless profile. Don't edit `cordis.yml` — it's generated; `cordis.patch.yml` is your layer.
 
@@ -187,6 +212,10 @@ That's expected. These are mounted by the rows in step 4, not as bundle layers.
         superpowersRoot: /absolute/path/to/superpowers   # optional; see the plugin README
 ```
 
+This one needs a clone of [obra/superpowers](https://github.com/obra/superpowers) on disk. To
+have its skills catalog stay current on a `git pull` rather than drifting as copies, also run
+`node scripts/link-superpowers-skills.mjs` (cross-platform).
+
 ```yaml
 # dsh-headless-plus — replaces the two stock headless rows
 - id: headless-startup
@@ -205,7 +234,12 @@ That's expected. These are mounted by the rows in step 4, not as bundle layers.
 
 Then restart the profile.
 
-### 5. Link for development (Windows)
+### 5. Optional: link for live editing (Windows)
+
+**Installing is done — the plugins work at this point.** A plain install resolves the harness
+packages through the profile, so you can skip straight to step 6. This step is for editing
+*this repo* and seeing the change without reinstalling, plus it's what makes this repo's own
+`pnpm run test` and `pnpm run typecheck` resolve.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-link.ps1 -Profiles web -DesktopProfiles web
@@ -213,10 +247,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-link.ps1 -Profil
 
 Two jobs, and **both are undone by any `pnpm install`**, so re-run it afterwards:
 
-- Junctions each profile's installed plugin at this repo, so a rebuild self-deploys. pnpm otherwise materialises `file:` deps as copies frozen at install time.
-- Junctions each package's `node_modules\@deepseek-ai\*` at your global `dsh` install. A junctioned plugin resolves through its **real** path, so Node looks for dependencies here rather than in the profile — without this the harness dies at boot with `ERR_MODULE_NOT_FOUND`, and `pnpm typecheck` can't resolve its types either.
+- **Profile junctions.** Points each profile's installed plugin at this repo so a rebuild
+  self-deploys; pnpm otherwise materialises `file:` deps as copies frozen at install time.
+- **Dependency anchoring.** Points each package's `node_modules\@deepseek-ai\*` at your
+  global `dsh` install. Once a plugin is junctioned it resolves through its **real** path, so
+  Node looks for dependencies here rather than in the profile — without anchoring a
+  *junctioned* plugin dies at boot with `ERR_MODULE_NOT_FOUND`. `-IdentityOnly` does this
+  half alone.
 
-It only touches plugins a profile actually declares, follows the package name (so unscoped packages work), and prints what it skipped. `-IdentityOnly` skips the profile junctions.
+It only touches plugins a profile actually declares, follows the package name (so unscoped
+packages work), and prints what it skipped.
+
+> **macOS / Linux:** this script is Windows-only. Install and run (steps 1–4, 6) work fine —
+> verified that a plain install boots and serves `/api` with no linking at all. What you lose
+> is the live-edit loop (re-run step 3 after a build, or symlink by hand) and this repo's
+> `pnpm run test` / `typecheck` for `dsh-todo`, which need the anchoring.
 
 ### 6. Verify
 
