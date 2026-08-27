@@ -100,40 +100,35 @@ node scripts/link-superpowers-skills.mjs     # --dry-run to preview, --restore t
 
 `dsh-todo`, `dsh-git` and `dsh-weather` each carry an `AGENTS.md` with endpoints, mount row, dev loop and a verification recipe. See [AGENTS.md](AGENTS.md) for the repo as a whole.
 
-## Install one plugin from GitHub
+## Install a plugin
 
-You don't have to clone this repo to use a plugin. pnpm can install a single package out of a
-subdirectory, and `dsh plugin` forwards to pnpm inside the profile directory, so one command
-per plugin is enough:
+All five are on npm, and each declares `dsh.bundle` — so one command installs **and** mounts
+it. `dsh plugin` forwards to pnpm inside the profile directory:
 
 ```bash
-# pick the ones you want; --profile is the profile to install into
+# web/desktop UI plugins
+dsh plugin --profile web add @dennisrongo/dsh-todo
+dsh plugin --profile web add @dennisrongo/dsh-git
+dsh plugin --profile web add @dennisrongo/dsh-weather
+
+# CLI-app and prompt plugins, in a headless-style profile
+dsh plugin --profile headless add @dennisrongo/dsh-headless-plus
+dsh plugin --profile headless add @dennisrongo/dsh-superpowers
+```
+
+Several at once is fine. Restart the profile and it's live — there is no
+`cordis.patch.yml` row to write; see [step 4](#4-nothing-to-mount--but-read-this-if-youre-upgrading)
+if you're upgrading from a version that needed one.
+
+Prefer the git source — to track `main`, or to pick up a change before it's released?
+
+```bash
 dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-todo"
-dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-git"
-dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-weather"
-
-# CLI-app and prompt plugins go in a headless-style profile
-dsh plugin --profile headless add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-headless-plus"
-dsh plugin --profile headless add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-superpowers"
+dsh plugin --profile web add "github:dennisrongo/dsh-plugins#main&path:/plugins/dsh-todo"   # pin a ref
 ```
 
-Several at once is fine — `dsh plugin --profile web add "github:…#path:/plugins/dsh-todo" "github:…#path:/plugins/dsh-git"`.
-
-Pin to a tag or branch by naming the ref before the path:
-
-```bash
-dsh plugin --profile web add "github:dennisrongo/dsh-plugins#main&path:/plugins/dsh-todo"
-```
-
-Quote the argument — `#` and `&` are shell metacharacters. `git+https://github.com/dennisrongo/dsh-plugins.git#path:/plugins/dsh-todo` works identically if you prefer the explicit form.
-
-All five ship their built `lib/`, so a git install works even though it runs no build step,
-and each declares `dsh.bundle` — so the install also **mounts** it. Restart the profile and
-it's live; nothing to edit by hand.
-
-If you previously installed these plugins and hand-wrote `insert:` rows for them, delete those
-rows first — see [step 4](#4-nothing-to-mount--but-read-this-if-youre-upgrading). Then
-[verify](#6-verify).
+Quote the argument — `#` and `&` are shell metacharacters. All five ship their built `lib/`,
+so a git install works even though it runs no build step.
 
 ## Installing from a clone
 
