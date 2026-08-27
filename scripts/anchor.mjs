@@ -26,11 +26,10 @@
  * Host lookup order: --host, then DSH_HOST_DEPS, then `npm root -g`, then the
  * platform default. Exits non-zero if the host cannot be found or a link fails.
  */
-import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveDsh } from './host-deps.mjs'
 
 const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir'
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -44,28 +43,8 @@ const value = (n) => {
 }
 const dryRun = flag('dry-run')
 
-/** Where the installed dsh keeps its own @deepseek-ai copies. */
-function resolveHostDeps() {
-  const explicit = value('host') ?? process.env.DSH_HOST_DEPS
-  if (explicit) return resolve(explicit)
-
-  const candidates = []
-  try {
-    const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', shell: process.platform === 'win32' }).trim()
-    if (npmRoot) candidates.push(join(npmRoot, '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'))
-  } catch { /* npm not on PATH; fall through to defaults */ }
-
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
-    candidates.push(join(appData, 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'))
-  } else {
-    candidates.push('/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai')
-    candidates.push(join(homedir(), '.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'))
-  }
-  return candidates.find((c) => existsSync(c)) ?? null
-}
-
-const hostDeps = resolveHostDeps()
+const resolved = resolveDsh(value('host') ?? process.env.DSH_HOST_DEPS)
+const hostDeps = resolved?.hostDeps ?? null
 if (!hostDeps) {
   console.error('Could not locate the dsh install\'s @deepseek-ai copies.')
   console.error('  Install the harness:  npm i -g @deepseek-ai/dsh')

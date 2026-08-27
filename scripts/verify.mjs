@@ -34,6 +34,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { readVersion, resolveDesktopDsh, resolveDsh } from './host-deps.mjs'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const pluginRoot = join(repoRoot, 'plugins')
@@ -54,31 +55,22 @@ const ok = (msg) => console.log(`  ok    ${msg}`)
 
 // --- 1. which harness are we verifying against? -----------------------------
 console.log('=== harness ===')
-const cliHost = join(
-  process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'),
-  'npm', 'node_modules', '@deepseek-ai', 'dsh',
-)
-const version = (p) => {
-  try { return JSON.parse(readFileSync(join(p, 'package.json'), 'utf8')).version }
-  catch { return null }
+const cli = resolveDsh(process.env.DSH_HOST_DEPS)
+console.log(`  dsh CLI              ${cli ? cli.version ?? '(version unreadable)' : 'not found'}`)
+if (cli) console.log(`  at                   ${cli.dshRoot}`)
+const desktopRoot = resolveDesktopDsh()
+const desktopVersion = desktopRoot ? readVersion(desktopRoot) : null
+console.log(`  DSH Desktop bundle   ${desktopVersion ?? (process.platform === 'win32' ? 'not installed' : 'n/a on this platform')}`)
+if (cli && desktopVersion && cli.version !== desktopVersion) {
+  console.log('  note  the two surfaces run different dsh versions — verify both, and expect')
+  console.log('        module identity to matter more than usual.')
 }
-const cliVersion = version(cliHost)
-console.log(`  dsh CLI              ${cliVersion ?? 'not found'}`)
-const desktopBundle = join(
-  process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'),
-  'Programs', 'DSH Desktop', 'resources', 'app', 'node_modules', '@deepseek-ai', 'dsh',
-)
-const desktopVersion = version(desktopBundle)
-console.log(`  DSH Desktop bundle   ${desktopVersion ?? 'not installed'}`)
-if (cliVersion && desktopVersion && cliVersion !== desktopVersion) {
-  console.log(`  note  the two surfaces run different dsh versions — verify both, and expect`)
-  console.log(`        module identity to matter more than usual.`)
-}
-if (!cliVersion) {
-  console.log('  FAIL  no dsh CLI install found; nothing can be anchored against it')
+if (!cli) {
+  console.log('  FAIL  no dsh install found; nothing can be anchored against it')
+  console.log('        install it (npm i -g @deepseek-ai/dsh) or set DSH_HOST_DEPS')
   process.exit(1)
 }
-const hostDeps = norm(join(cliHost, 'node_modules'))
+const hostDeps = norm(cli.hostDeps)
 
 // --- 2-4. per package -------------------------------------------------------
 const packages = readdirSync(pluginRoot, { withFileTypes: true })
@@ -115,7 +107,7 @@ for (const name of packages) {
   for (const spec of [...specs].sort()) {
     let resolved
     try { resolved = req.resolve(spec) }
-    catch (e) { fail(`${spec} does not resolve (${e.code}) — run scripts/dev-link.ps1`); continue }
+    catch (e) { fail(`${spec} does not resolve (${e.code}) — run \`node scripts/anchor.mjs\``); continue }
     if (norm(resolved).startsWith(hostDeps)) ok(`${spec} → dsh CLI copy`)
     else if (norm(resolved).includes('.pnpm')) fail(`${spec} → .pnpm store copy, NOT the dsh CLI: ${resolved}`)
     else fail(`${spec} → unexpected location: ${resolved}`)
