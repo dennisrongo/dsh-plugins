@@ -630,18 +630,6 @@ assert.equal(exports.computeRate(1000, 2000, 5000), 200)
 assert.equal(exports.computeRate(undefined, 2000, 5000), 0)
 assert.equal(exports.computeRate(2000, 1000, 5000), 0, 'negative deltas floor at 0')
 
-// sparklinePoints: normalized polyline, flat when constant
-{
-  const pts = exports.sparklinePoints([0, 5, 10], 64, 14)
-  const [x1, y1] = pts.split(' ')[0].split(',').map(Number)
-  const [x3, y3] = pts.split(' ')[2].split(',').map(Number)
-  assert.ok(x3 > x1, 'x increases')
-  assert.equal(y1, 12, 'max value maps to bottom pad')
-  assert.equal(y3, 2, 'min value maps to top pad')
-  const flat = exports.sparklinePoints([7, 7, 7], 64, 14)
-  assert.ok(flat.endsWith(',7.0'), 'constant series renders mid line')
-}
-
 // newWaitKeys: dedup across calls
 {
   const seen = new Set()

@@ -96,7 +96,6 @@ __export(client_exports, {
   shouldOpenHistory: () => shouldOpenHistory,
   shouldPullCatalog: () => shouldPullCatalog,
   skipPomodoro: () => skipPomodoro,
-  sparklinePoints: () => sparklinePoints,
   stageRank: () => stageRank,
   stageRows: () => stageRows,
   startPomodoro: () => startPomodoro,
@@ -159,15 +158,6 @@ function estimateCost(usage, price) {
 function computeRate(prevOut, nowOut, elapsedMs) {
   if (prevOut === void 0 || elapsedMs <= 0) return 0;
   return Math.max(0, (nowOut - prevOut) / (elapsedMs / 1e3));
-}
-function sparklinePoints(values, width, height, pad = 2) {
-  if (values.length === 0) return "";
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min;
-  const stepX = values.length > 1 ? (width - pad * 2) / (values.length - 1) : 0;
-  const yFor = (v) => span === 0 ? height / 2 : pad + (1 - (v - min) / span) * (height - pad * 2);
-  return values.map((v, i) => `${(pad + i * stepX).toFixed(1)},${yFor(v).toFixed(1)}`).join(" ");
 }
 function newWaitKeys(waits, seen) {
   const fresh = [];
@@ -557,57 +547,105 @@ var PANEL_STYLES = `
   --mc-msg-line: 1.45;
   --mc-ease: var(--ds-ease-in-out, cubic-bezier(0.4, 0, 0.2, 1));
 }
+/* Docked right rail. The shell frame is a grid (sidebar | conversation |
+   details) whose side seats are single-occupant and already filled, so this
+   panel cannot claim a real column without shadowing a shipped one. Instead it
+   mimics the sidebar's framing: flush to the viewport edge, full height, no
+   rounding or float gap, and a single hairline on the INNER edge only \u2014 the
+   same seam the sidebar presents to the conversation. It still floats above
+   the chat rather than reflowing it; that is the one honest difference. */
 .dshmc {
   position: fixed;
-  right: 16px;
-  top: 16px;
-  bottom: 16px;
+  right: 0;
+  top: 0;
+  bottom: 0;
   width: 400px;
-  max-width: calc(100vw - 32px);
+  max-width: 100vw;
   display: flex;
   flex-direction: column;
-  border-radius: 14px;
-  border: 1px solid var(--mc-border);
+  border-radius: 0;
+  /* Inner (left) seam only: the outer edges meet the viewport, so a full
+     border would draw hairlines against nothing and break the docked read. */
+  border: 0;
+  border-left: 1px solid var(--mc-border);
   background: var(--mc-bg);
   color: var(--mc-text);
   font: 400 13px/1.5 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
   font-variant-numeric: tabular-nums;
-  box-shadow: var(--dsw-shadow-lv3, 0 0 1px rgba(0,0,0,0.2), 0 12px 32px rgba(0,0,0,0.12));
+  /* Soft cast onto the conversation keeps the layering legible without the
+     lifted-card look of a floating panel. */
+  box-shadow: -8px 0 24px rgba(0,0,0,0.10);
   z-index: 2147483000;
   pointer-events: auto;
   overflow: hidden;
   animation: mc-in 0.22s var(--mc-ease);
 }
 body[data-ds-dark-theme] .dshmc {
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 16px 48px rgba(0,0,0,0.55);
+  box-shadow: -8px 0 28px rgba(0,0,0,0.38);
 }
+/* Slides in from the docked edge instead of rising like a card. */
 @keyframes mc-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.995); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+/* On a narrow viewport a fixed 400px rail would bury the conversation it
+   floats over. Yield width rather than cover the app whole. */
+@media (max-width: 720px) {
+  .dshmc { width: min(400px, 88vw); }
 }
 .dshmc *,
 .dshmc-stage * { box-sizing: border-box; }
 .dshmc[hidden] { display: none; }
 
-/* Header \u2014 flat, shell-weight title */
+/* Frame reservation (see the paddingRight effect). The shell frame is a grid
+   that fills its parent with no explicit width, and it does NOT declare
+   box-sizing \u2014 under content-box, padding-right would widen the element past
+   the viewport instead of narrowing its columns, so the chat would not reflow
+   at all. Pinning border-box with a full-width basis makes the padding eat
+   into the frame, which is what shrinks the center column and its composer.
+   Scoped to the attribute the effect sets, so the shell is untouched while the
+   rail is closed or in stage mode. */
+[data-dshmc-reserved] {
+  box-sizing: border-box !important;
+  width: 100% !important;
+}
+
+/* Header \u2014 icon rail on the left, mirroring the shell sidebar's logoRow:
+   controls lead, centered on their own row, no title.
+
+   The top padding keeps these controls out of DSH Desktop's window-drag strip.
+   On Windows the app builds its window with titleBarStyle 'hidden' and its
+   preload appends a full-width drag region (#dsh-desktop-windows-drag-region,
+   top 0, height 36px) carrying -webkit-app-region: drag. A drag region is
+   resolved by the compositor BEFORE hit-testing, so it swallows clicks even
+   though it sets pointer-events: none \u2014 and it sits at z-index 2147483644,
+   above this panel's 2147483000. Raising z-index therefore cannot fix it; the
+   control has to sit outside the strip (or opt out of dragging, which the
+   buttons do below). The browser has no such region, which is why the same
+   markup worked in the web UI and died in the desktop app.
+
+   Clearing 36px also keeps the buttons clear of the caption controls and the
+   native menu button, which share that strip on the right edge where this rail
+   docks. Non-Windows desktop and plain web get 0px and are unaffected. */
+.dshmc {
+  --mc-titlebar-h: 0px;
+}
+body.dsh-desktop-windows-titlebar-layout .dshmc {
+  --mc-titlebar-h: 36px;
+}
 .dshmc-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
-  padding: 14px 14px 12px;
+  padding: calc(8px + var(--mc-titlebar-h)) 10px 8px;
   border-bottom: 1px solid var(--mc-border-subtle);
-}
-.dshmc-title {
-  font-weight: 500;
-  font-size: 14px;
-  line-height: 22px;
-  letter-spacing: 0;
 }
 .dshmc-sub { color: var(--mc-text-3); font-size: 11.5px; margin-top: 1px; }
 .dshmc-sub b { color: var(--mc-text-2); font-weight: 500; }
-.dshmc-header > div:first-child { flex: 1; min-width: 0; }
+/* Stage-bar exit button only \u2014 the panel header no longer has a close button
+   (it collapses via the panel-right icon instead). The Stage bar supplies its
+   own alignment, so no auto margin is carried here. */
 .dshmc-close {
-  margin-left: auto;
   flex: none;
   width: 28px; height: 28px;
   display: grid; place-items: center;
@@ -618,21 +656,39 @@ body[data-ds-dark-theme] .dshmc {
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease);
 }
 .dshmc-close:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
+/* Leads the header now (was margin-left:auto, pinned right). */
 .dshmc-header-actions {
-  margin-left: auto;
   flex: none;
   display: flex; align-items: center; gap: 2px;
 }
-.dshmc-header-actions .dshmc-close { margin-left: 0; }
+/* Same metric as the shell sidebar's .iconButton: 28px circle, secondary
+   label color, hover fill from the shared interactive token. */
 .dshmc-icon-btn {
   flex: none;
   width: 28px; height: 28px;
-  display: grid; place-items: center;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  padding: 0;
   border: 0; border-radius: 50%;
   background: transparent;
   color: var(--mc-text-3); cursor: pointer;
   font-size: 13px; line-height: 1;
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease);
+}
+/* Glyphs never shrink in a flex row and never swallow the button's click.
+   pointer-events: none also matters on the desktop app: the preload's no-drag
+   allowlist covers "button" but NOT "svg", so a glyph left as its own hit
+   target could land back inside the window-drag region. */
+.dshmc-icon-btn > svg { flex: none; pointer-events: none; }
+
+/* Belt-and-braces for DSH Desktop's Windows drag strip. The preload already
+   grants "button" no-drag, but this panel is a plugin overlay the shell does
+   not know about, and the explicit [data-dsh-no-drag] hook is the documented
+   contract rather than an incidental tag match \u2014 so state it directly and
+   survive any future narrowing of that allowlist. */
+.dshmc-icon-btn,
+.dshmc-header {
+  -webkit-app-region: no-drag;
 }
 .dshmc-icon-btn:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
 .dshmc-icon-btn.on { background: var(--mc-surface-active); color: var(--mc-text); }
@@ -847,18 +903,27 @@ body[data-ds-dark-theme] .dshmc {
   align-items: center;
   gap: 2px;
 }
+/* 28px to match .dshmc-icon-btn (itself the shell sidebar's metric), so the
+   16px glyphs keep the same optical padding as the header icons. The square
+   radius is kept deliberately: it distinguishes the transport row from the
+   circular header controls without changing the icon metric. */
 .dshmc-pomo-btn {
-  width: 24px; height: 24px;
-  display: grid; place-items: center;
-  border: 0; border-radius: 6px;
+  width: 28px; height: 28px;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  padding: 0;
+  border: 0; border-radius: 7px;
   background: transparent;
   color: var(--mc-text-3);
   cursor: pointer;
-  font-size: 10px; line-height: 1;
+  line-height: 1;
   font-family: inherit;
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease),
     transform 0.15s var(--mc-ease);
 }
+/* Matches the header rule: glyphs never shrink, and never become the hit
+   target (the desktop drag-region allowlist covers "button" but not "svg"). */
+.dshmc-pomo-btn > svg { flex: none; pointer-events: none; }
 .dshmc-pomo-btn:hover {
   background: var(--mc-surface-hover);
   color: var(--mc-text);
@@ -904,84 +969,6 @@ body[data-ds-dark-theme] .dshmc {
 }
 .dshmc-settings-row + .dshmc-settings-row { margin-top: 6px; }
 
-/* Burn strip (header, under the sub line) \u2014 cost row + model chips */
-.dshmc-burn {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-top: 7px;
-}
-.dshmc-burn-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.dshmc-burn-cost {
-  color: var(--mc-text);
-  font-weight: 500;
-  font-size: 15px;
-  letter-spacing: -0.01em;
-  font-variant-numeric: tabular-nums;
-  transition: color 0.3s var(--mc-ease), text-shadow 0.3s var(--mc-ease);
-}
-/* Burn is actively climbing: the cost figure warms up and breathes */
-.dshmc-burn.is-burning .dshmc-burn-cost {
-  color: var(--mc-amber-label);
-  animation: mc-burn-glow 2.2s ease-in-out infinite;
-}
-@keyframes mc-burn-glow {
-  0%, 100% { text-shadow: 0 0 0 transparent; }
-  50% { text-shadow: 0 0 10px color-mix(in srgb, var(--mc-amber) 55%, transparent); }
-}
-.dshmc-burn.is-burning .dshmc-burn-tokens { color: var(--mc-text-2); }
-/* Tokens tick up: brief lift on each change */
-.dshmc-burn-tokens.is-bumped { animation: mc-burn-tick 0.45s var(--mc-ease); }
-@keyframes mc-burn-tick {
-  0% { transform: none; opacity: 1; }
-  35% { transform: translateY(-1.5px); opacity: 0.65; }
-  100% { transform: none; opacity: 1; }
-}
-.dshmc-burn-est {
-  margin-left: 4px;
-  font-size: 10.5px;
-  font-weight: 400;
-  color: var(--mc-text-4);
-}
-.dshmc-burn-tokens {
-  color: var(--mc-text-3);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.dshmc-burn-models {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.dshmc-burn-model {
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--mc-accent);
-  background: color-mix(in srgb, var(--mc-accent) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--mc-accent) 25%, transparent);
-  border-radius: 999px;
-  padding: 1.5px 8px;
-  font-variant-numeric: tabular-nums;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dshmc-spark { margin-left: auto; flex: none; opacity: 0.9; color: var(--mc-accent); }
-.dshmc-spark polyline { stroke: currentColor; }
-/* Live sparkline pulses and draws a soft trail */
-.dshmc-burn.is-burning .dshmc-spark {
-  color: var(--mc-green);
-  animation: mc-spark-live 2.2s ease-in-out infinite;
-}
-@keyframes mc-spark-live {
-  0%, 100% { opacity: 0.55; filter: none; }
-  50% { opacity: 1; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mc-green) 65%, transparent)); }
-}
 
 /* Mode tabs \u2014 full-width segmented control on its own row */
 .dshmc-modes {
@@ -1761,7 +1748,14 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   font: 400 13px/1.5 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
   font-variant-numeric: tabular-nums;
   pointer-events: auto;
-  animation: mc-in 0.22s var(--mc-ease);
+  /* Full-screen surface: fades up in place. It must NOT share the panel's
+     slide-from-the-right entrance, which only reads correctly on a rail
+     docked to that edge. */
+  animation: mc-stage-in 0.22s var(--mc-ease);
+}
+@keyframes mc-stage-in {
+  from { opacity: 0; transform: scale(0.995); }
+  to { opacity: 1; transform: none; }
 }
 .dshmc-stage-bar {
   display: flex;
@@ -1916,9 +1910,6 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   .dshmc-stat.is-bumped-card,
   .dshmc-stat-value.is-bumped,
   .dshmc-rate,
-  .dshmc-burn.is-burning .dshmc-burn-cost,
-  .dshmc-burn.is-burning .dshmc-spark,
-  .dshmc-burn-tokens.is-bumped,
   .dshmc-pomo.is-running .dshmc-pomo-progress,
   .dshmc-pomo.is-running .dshmc-pomo-pulse,
   .dshmc-pomo.is-ending .dshmc-pomo-clock,
@@ -1937,7 +1928,6 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   /* Keep the standing state color that the animation would otherwise carry */
   .dshmc-row.is-running { box-shadow: inset 2px 0 0 var(--mc-green); }
   .dshmc-row.is-waiting { box-shadow: inset 2px 0 0 var(--mc-amber); }
-  .dshmc-burn.is-burning .dshmc-spark { color: var(--mc-green); opacity: 1; }
   .dshmc-rate { opacity: 1; }
   .dshmc-caret { transition: none; }
   /* The rotation is decorative; aria-expanded still conveys the state. */
@@ -1955,7 +1945,6 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   .dshmc-pomo-btn:active { transform: none; }
   .dshmc-stat { transition: none; }
   .dshmc-stat-value { transition: none; }
-  .dshmc-burn-cost { transition: none; }
 }
 `;
 var stylesInjected = false;
@@ -2345,22 +2334,19 @@ function fleetOutTokens(list) {
   }
   return total;
 }
-function useFleetPulse(active, list, maxPoints = 60) {
+function useFleetPulse(active, list) {
   const now = useTicker(active, 1e3);
   const total = fleetOutTokens(list);
-  const [pulse, setPulse] = import_react.default.useState({ rate: 0, history: [] });
-  const [seenTotal, setSeenTotal] = import_react.default.useState(void 0);
+  const [pulse, setPulse] = import_react.default.useState({ rate: 0 });
   import_react.default.useEffect(() => {
     if (!active) return;
     setPulse((p) => {
       const prev = p.prev ?? { at: now, out: total };
       const elapsed = elapsedSince(prev.at, now);
       const rate = elapsed >= 900 ? computeRate(prev.out, total, elapsed) : p.rate;
-      const history = elapsed >= 4500 ? [...p.history, rate].slice(-maxPoints) : p.history;
-      return { rate, history, prev: { at: now, out: total } };
+      return { rate, prev: { at: now, out: total } };
     });
-    if (seenTotal === void 0 && total > 0) setSeenTotal(total);
-  }, [now, active, total, maxPoints, seenTotal]);
+  }, [now, active, total]);
   return pulse;
 }
 function useSessionRate(out, active) {
@@ -2423,32 +2409,6 @@ function useWaitNotifications(waits) {
       if (p === "granted") notify();
     });
   }, [waits]);
-}
-function useFleetBurn(list) {
-  return import_react.default.useMemo(() => {
-    let inTok = 0;
-    let outTok = 0;
-    let known = 0;
-    const costByModel = /* @__PURE__ */ new Map();
-    for (const id of list.ids) {
-      const row = list.byId[id];
-      const usage = row?.projectionValues?.tokenUsage;
-      if (!usage) continue;
-      known++;
-      inTok += usage.uncachedInputTokens + usage.cacheReadTokens;
-      outTok += usage.outputTokens;
-      const model = MODEL_OF_SESSION.get(id);
-      const price = priceRowFor(model?.split("/")[1] ?? model);
-      const cost = estimateCost(usage, price);
-      if (cost > 0) {
-        const label = model ? model.split("/")[1] ?? model : "unknown";
-        costByModel.set(label, (costByModel.get(label) ?? 0) + cost);
-      }
-    }
-    const totalCost = [...costByModel.values()].reduce((a, b) => a + b, 0);
-    const byModel = [...costByModel.entries()].map(([model, cost]) => ({ model, cost, share: totalCost > 0 ? cost / totalCost : 0 })).sort((a, b) => b.cost - a.cost).slice(0, 4);
-    return { known, tokens: { in: inTok, out: outTok }, cost: totalCost, byModel };
-  }, [list]);
 }
 function sessionFaceOf(ctx, id) {
   try {
@@ -3326,6 +3286,58 @@ function StageView({
     ] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-stage-grid", children: tiles.map((row) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StageTile, { ctx, row, modelDirs, now, onJump: () => onJump(row.id) }, row.id)) })
   ] });
 }
+var ICON_SIZE = 16;
+function Glyph({ children }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+    "svg",
+    {
+      width: ICON_SIZE,
+      height: ICON_SIZE,
+      viewBox: "0 0 16 16",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "1.5",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      "aria-hidden": "true",
+      focusable: "false",
+      children
+    }
+  );
+}
+function IconPanelRight() {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Glyph, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { x: "2", y: "2.75", width: "12", height: "10.5", rx: "2.5" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("line", { x1: "10", y1: "2.75", x2: "10", y2: "13.25" })
+  ] });
+}
+function IconSettings() {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Glyph, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("circle", { cx: "8", cy: "8", r: "2.25" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M12.9 9.8a1.1 1.1 0 0 0 .22 1.21l.04.04a1.33 1.33 0 1 1-1.89 1.89l-.04-.04a1.1 1.1 0 0 0-1.21-.22 1.1 1.1 0 0 0-.67 1v.11a1.33 1.33 0 1 1-2.67 0v-.06a1.1 1.1 0 0 0-.72-1 1.1 1.1 0 0 0-1.21.22l-.04.04a1.33 1.33 0 1 1-1.89-1.89l.04-.04a1.1 1.1 0 0 0 .22-1.21 1.1 1.1 0 0 0-1-.67h-.11a1.33 1.33 0 1 1 0-2.67h.06a1.1 1.1 0 0 0 1-.72 1.1 1.1 0 0 0-.22-1.21l-.04-.04a1.33 1.33 0 1 1 1.89-1.89l.04.04a1.1 1.1 0 0 0 1.21.22h.05a1.1 1.1 0 0 0 .67-1v-.11a1.33 1.33 0 1 1 2.67 0v.06a1.1 1.1 0 0 0 .67 1 1.1 1.1 0 0 0 1.21-.22l.04-.04a1.33 1.33 0 1 1 1.89 1.89l-.04.04a1.1 1.1 0 0 0-.22 1.21v.05a1.1 1.1 0 0 0 1 .67h.11a1.33 1.33 0 1 1 0 2.67h-.06a1.1 1.1 0 0 0-1 .67Z" })
+  ] });
+}
+function IconPlay() {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Glyph, { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M5.5 3.4v9.2l7-4.6z", fill: "currentColor", stroke: "none" }) });
+}
+function IconPause() {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Glyph, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { x: "5", y: "3.5", width: "2.2", height: "9", rx: "0.9", fill: "currentColor", stroke: "none" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { x: "8.8", y: "3.5", width: "2.2", height: "9", rx: "0.9", fill: "currentColor", stroke: "none" })
+  ] });
+}
+function IconReset() {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Glyph, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M3.2 8a4.8 4.8 0 1 0 1.5-3.48" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M2.6 3.2v3.1h3.1" })
+  ] });
+}
+function IconSkip() {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Glyph, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M4 3.8v8.4l6-4.2z", fill: "currentColor", stroke: "none" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("line", { x1: "11.6", y1: "3.8", x2: "11.6", y2: "12.2" })
+  ] });
+}
 function StatCard({
   value,
   label,
@@ -3583,7 +3595,7 @@ function PomodoroBar({
           onClick: () => setState((s) => s.running ? pausePomodoro(s, Date.now()) : startPomodoro(s, Date.now(), config)),
           "aria-label": state.running ? `Pause ${label} timer` : `Start ${label} timer`,
           title: state.running ? "Pause" : "Start",
-          children: state.running ? "\u2759\u2759" : "\u25B6"
+          children: state.running ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconPause, {}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconPlay, {})
         }
       ),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -3593,7 +3605,7 @@ function PomodoroBar({
           onClick: () => setState((s) => resetPomodoro(s, config)),
           "aria-label": "Reset current interval",
           title: "Reset",
-          children: "\u21BA"
+          children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconReset, {})
         }
       ),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -3603,7 +3615,7 @@ function PomodoroBar({
           onClick: () => setState((s) => skipPomodoro(s, config)),
           "aria-label": `Skip to ${phaseLabel(nextPhase(state.phase, state.phase === "work" ? state.completed + 1 : state.completed))}`,
           title: "Skip",
-          children: "\u23ED"
+          children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconSkip, {})
         }
       ),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -3614,7 +3626,7 @@ function PomodoroBar({
           "aria-label": "Configure pomodoro durations",
           "aria-expanded": settingsOpen,
           title: "Durations",
-          children: "\u2699"
+          children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconSettings, {})
         }
       )
     ] })
@@ -3751,9 +3763,7 @@ function MissionControl({ ctx }) {
     }),
     [settings.workMinutes, settings.breakMinutes, settings.longBreakMinutes]
   );
-  const burn = useFleetBurn(list);
   const pulse = useFleetPulse(counts.active > 0, list);
-  const tokensBumped = useBump(burn.tokens.in + burn.tokens.out, 450);
   useWaitNotifications(pendingWaits);
   const sample = import_react.default.useMemo(() => {
     const m = /* @__PURE__ */ new Map();
@@ -3786,6 +3796,29 @@ function MissionControl({ ctx }) {
   );
   const close = () => setOpen(false);
   const reopen = () => setOpen(true);
+  const panelRef = import_react.default.useRef(null);
+  const reserveWidth = open && !stageOpen;
+  import_react.default.useEffect(() => {
+    if (!reserveWidth) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const frame = panel.closest("[data-shell-overlay]")?.parentElement;
+    if (!frame) return;
+    const prev = frame.style.paddingRight;
+    frame.setAttribute("data-dshmc-reserved", "");
+    const apply2 = () => {
+      const w = panel.getBoundingClientRect().width;
+      frame.style.paddingRight = w > 0 ? `${Math.round(w)}px` : "";
+    };
+    apply2();
+    const ro = new ResizeObserver(apply2);
+    ro.observe(panel);
+    return () => {
+      ro.disconnect();
+      frame.style.paddingRight = prev;
+      frame.removeAttribute("data-dshmc-reserved");
+    };
+  }, [reserveWidth]);
   const modelDirs = (() => {
     try {
       return ctx.modelDirectories;
@@ -3810,61 +3843,32 @@ function MissionControl({ ctx }) {
     );
   }
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc", hidden: !open, "data-burn-known": burn.known, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-header", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-title", children: "Mission Control" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-sub", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: counts.running }),
-            " running \xB7 ",
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: counts.subagents }),
-            " subagents \xB7 ",
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: pendingWaits.length }),
-            " waiting"
-          ] }),
-          burn.cost > 0 || burn.tokens.out > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-            "div",
-            {
-              className: `dshmc-burn${counts.active > 0 ? " is-burning" : ""}`,
-              title: "Estimated from token counts \xD7 public list prices. Not billing.",
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-burn-row", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "dshmc-burn-cost", children: [
-                    "$",
-                    burn.cost < 0.01 && burn.cost > 0 ? "<0.01" : burn.cost.toFixed(2),
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshmc-burn-est", children: "est" })
-                  ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: `dshmc-burn-tokens${tokensBumped ? " is-bumped" : ""}`, children: [
-                    fmtTokens(burn.tokens.in + burn.tokens.out),
-                    " tokens"
-                  ] }),
-                  pulse.history.length > 2 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { className: "dshmc-spark", viewBox: "0 0 64 14", width: "64", height: "14", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("polyline", { points: sparklinePoints(pulse.history, 64, 14), fill: "none", stroke: "currentColor", strokeWidth: "1.25", strokeLinejoin: "round", strokeLinecap: "round" }) }) : null
-                ] }),
-                burn.byModel.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-burn-models", children: burn.byModel.slice(0, 3).map((m) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "dshmc-burn-model", children: [
-                  m.model,
-                  " \xB7 ",
-                  Math.round(m.share * 100),
-                  "%"
-                ] }, m.model)) }) : null
-              ]
-            }
-          ) : null
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-header-actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-            "button",
-            {
-              className: `dshmc-icon-btn${settingsOpen ? " on" : ""}`,
-              onClick: () => setSettingsOpen((v) => !v),
-              "aria-label": "Mission Control settings",
-              "aria-expanded": settingsOpen,
-              title: "Settings",
-              children: "\u2699"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "dshmc-close", onClick: close, "aria-label": "Close Mission Control", children: "\xD7" })
-        ] })
-      ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc", hidden: !open, ref: panelRef, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-header", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-header-actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          "button",
+          {
+            className: "dshmc-icon-btn",
+            "data-dsh-no-drag": "",
+            onClick: close,
+            "aria-label": "Collapse Mission Control",
+            title: "Collapse",
+            children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconPanelRight, {})
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          "button",
+          {
+            className: `dshmc-icon-btn${settingsOpen ? " on" : ""}`,
+            "data-dsh-no-drag": "",
+            onClick: () => setSettingsOpen((v) => !v),
+            "aria-label": "Mission Control settings",
+            "aria-expanded": settingsOpen,
+            title: "Settings",
+            children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconSettings, {})
+          }
+        )
+      ] }) }),
       settingsOpen ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-settings", role: "group", "aria-label": "Mission Control settings", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-settings-row", children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", { className: "dshmc-settings-label", htmlFor: "dshmc-sessions-per-workspace", children: "Sessions per workspace" }),

@@ -246,19 +246,6 @@ export function computeRate(prevOut: number | undefined, nowOut: number, elapsed
   return Math.max(0, (nowOut - prevOut) / (elapsedMs / 1000))
 }
 
-/** Map a value series to SVG polyline points, min-max normalized (flat line at mid when constant). */
-export function sparklinePoints(values: readonly number[], width: number, height: number, pad = 2): string {
-  if (values.length === 0) return ''
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const span = max - min
-  const stepX = values.length > 1 ? (width - pad * 2) / (values.length - 1) : 0
-  const yFor = (v: number) => (span === 0 ? height / 2 : pad + (1 - (v - min) / span) * (height - pad * 2))
-  return values
-    .map((v, i) => `${(pad + i * stepX).toFixed(1)},${yFor(v).toFixed(1)}`)
-    .join(' ')
-}
-
 /** Keys of waits not yet notified; records them into `seen`. Pure logic seam for the notify effect. */
 export function newWaitKeys<T extends { key: string }>(waits: readonly T[], seen: Set<string>): string[] {
   const fresh: string[] = []
@@ -1062,57 +1049,105 @@ const PANEL_STYLES = `
   --mc-msg-line: 1.45;
   --mc-ease: var(--ds-ease-in-out, cubic-bezier(0.4, 0, 0.2, 1));
 }
+/* Docked right rail. The shell frame is a grid (sidebar | conversation |
+   details) whose side seats are single-occupant and already filled, so this
+   panel cannot claim a real column without shadowing a shipped one. Instead it
+   mimics the sidebar's framing: flush to the viewport edge, full height, no
+   rounding or float gap, and a single hairline on the INNER edge only — the
+   same seam the sidebar presents to the conversation. It still floats above
+   the chat rather than reflowing it; that is the one honest difference. */
 .dshmc {
   position: fixed;
-  right: 16px;
-  top: 16px;
-  bottom: 16px;
+  right: 0;
+  top: 0;
+  bottom: 0;
   width: 400px;
-  max-width: calc(100vw - 32px);
+  max-width: 100vw;
   display: flex;
   flex-direction: column;
-  border-radius: 14px;
-  border: 1px solid var(--mc-border);
+  border-radius: 0;
+  /* Inner (left) seam only: the outer edges meet the viewport, so a full
+     border would draw hairlines against nothing and break the docked read. */
+  border: 0;
+  border-left: 1px solid var(--mc-border);
   background: var(--mc-bg);
   color: var(--mc-text);
   font: 400 13px/1.5 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
   font-variant-numeric: tabular-nums;
-  box-shadow: var(--dsw-shadow-lv3, 0 0 1px rgba(0,0,0,0.2), 0 12px 32px rgba(0,0,0,0.12));
+  /* Soft cast onto the conversation keeps the layering legible without the
+     lifted-card look of a floating panel. */
+  box-shadow: -8px 0 24px rgba(0,0,0,0.10);
   z-index: 2147483000;
   pointer-events: auto;
   overflow: hidden;
   animation: mc-in 0.22s var(--mc-ease);
 }
 body[data-ds-dark-theme] .dshmc {
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 16px 48px rgba(0,0,0,0.55);
+  box-shadow: -8px 0 28px rgba(0,0,0,0.38);
 }
+/* Slides in from the docked edge instead of rising like a card. */
 @keyframes mc-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.995); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+/* On a narrow viewport a fixed 400px rail would bury the conversation it
+   floats over. Yield width rather than cover the app whole. */
+@media (max-width: 720px) {
+  .dshmc { width: min(400px, 88vw); }
 }
 .dshmc *,
 .dshmc-stage * { box-sizing: border-box; }
 .dshmc[hidden] { display: none; }
 
-/* Header — flat, shell-weight title */
+/* Frame reservation (see the paddingRight effect). The shell frame is a grid
+   that fills its parent with no explicit width, and it does NOT declare
+   box-sizing — under content-box, padding-right would widen the element past
+   the viewport instead of narrowing its columns, so the chat would not reflow
+   at all. Pinning border-box with a full-width basis makes the padding eat
+   into the frame, which is what shrinks the center column and its composer.
+   Scoped to the attribute the effect sets, so the shell is untouched while the
+   rail is closed or in stage mode. */
+[data-dshmc-reserved] {
+  box-sizing: border-box !important;
+  width: 100% !important;
+}
+
+/* Header — icon rail on the left, mirroring the shell sidebar's logoRow:
+   controls lead, centered on their own row, no title.
+
+   The top padding keeps these controls out of DSH Desktop's window-drag strip.
+   On Windows the app builds its window with titleBarStyle 'hidden' and its
+   preload appends a full-width drag region (#dsh-desktop-windows-drag-region,
+   top 0, height 36px) carrying -webkit-app-region: drag. A drag region is
+   resolved by the compositor BEFORE hit-testing, so it swallows clicks even
+   though it sets pointer-events: none — and it sits at z-index 2147483644,
+   above this panel's 2147483000. Raising z-index therefore cannot fix it; the
+   control has to sit outside the strip (or opt out of dragging, which the
+   buttons do below). The browser has no such region, which is why the same
+   markup worked in the web UI and died in the desktop app.
+
+   Clearing 36px also keeps the buttons clear of the caption controls and the
+   native menu button, which share that strip on the right edge where this rail
+   docks. Non-Windows desktop and plain web get 0px and are unaffected. */
+.dshmc {
+  --mc-titlebar-h: 0px;
+}
+body.dsh-desktop-windows-titlebar-layout .dshmc {
+  --mc-titlebar-h: 36px;
+}
 .dshmc-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
-  padding: 14px 14px 12px;
+  padding: calc(8px + var(--mc-titlebar-h)) 10px 8px;
   border-bottom: 1px solid var(--mc-border-subtle);
-}
-.dshmc-title {
-  font-weight: 500;
-  font-size: 14px;
-  line-height: 22px;
-  letter-spacing: 0;
 }
 .dshmc-sub { color: var(--mc-text-3); font-size: 11.5px; margin-top: 1px; }
 .dshmc-sub b { color: var(--mc-text-2); font-weight: 500; }
-.dshmc-header > div:first-child { flex: 1; min-width: 0; }
+/* Stage-bar exit button only — the panel header no longer has a close button
+   (it collapses via the panel-right icon instead). The Stage bar supplies its
+   own alignment, so no auto margin is carried here. */
 .dshmc-close {
-  margin-left: auto;
   flex: none;
   width: 28px; height: 28px;
   display: grid; place-items: center;
@@ -1123,21 +1158,39 @@ body[data-ds-dark-theme] .dshmc {
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease);
 }
 .dshmc-close:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
+/* Leads the header now (was margin-left:auto, pinned right). */
 .dshmc-header-actions {
-  margin-left: auto;
   flex: none;
   display: flex; align-items: center; gap: 2px;
 }
-.dshmc-header-actions .dshmc-close { margin-left: 0; }
+/* Same metric as the shell sidebar's .iconButton: 28px circle, secondary
+   label color, hover fill from the shared interactive token. */
 .dshmc-icon-btn {
   flex: none;
   width: 28px; height: 28px;
-  display: grid; place-items: center;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  padding: 0;
   border: 0; border-radius: 50%;
   background: transparent;
   color: var(--mc-text-3); cursor: pointer;
   font-size: 13px; line-height: 1;
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease);
+}
+/* Glyphs never shrink in a flex row and never swallow the button's click.
+   pointer-events: none also matters on the desktop app: the preload's no-drag
+   allowlist covers "button" but NOT "svg", so a glyph left as its own hit
+   target could land back inside the window-drag region. */
+.dshmc-icon-btn > svg { flex: none; pointer-events: none; }
+
+/* Belt-and-braces for DSH Desktop's Windows drag strip. The preload already
+   grants "button" no-drag, but this panel is a plugin overlay the shell does
+   not know about, and the explicit [data-dsh-no-drag] hook is the documented
+   contract rather than an incidental tag match — so state it directly and
+   survive any future narrowing of that allowlist. */
+.dshmc-icon-btn,
+.dshmc-header {
+  -webkit-app-region: no-drag;
 }
 .dshmc-icon-btn:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
 .dshmc-icon-btn.on { background: var(--mc-surface-active); color: var(--mc-text); }
@@ -1352,18 +1405,27 @@ body[data-ds-dark-theme] .dshmc {
   align-items: center;
   gap: 2px;
 }
+/* 28px to match .dshmc-icon-btn (itself the shell sidebar's metric), so the
+   16px glyphs keep the same optical padding as the header icons. The square
+   radius is kept deliberately: it distinguishes the transport row from the
+   circular header controls without changing the icon metric. */
 .dshmc-pomo-btn {
-  width: 24px; height: 24px;
-  display: grid; place-items: center;
-  border: 0; border-radius: 6px;
+  width: 28px; height: 28px;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  padding: 0;
+  border: 0; border-radius: 7px;
   background: transparent;
   color: var(--mc-text-3);
   cursor: pointer;
-  font-size: 10px; line-height: 1;
+  line-height: 1;
   font-family: inherit;
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease),
     transform 0.15s var(--mc-ease);
 }
+/* Matches the header rule: glyphs never shrink, and never become the hit
+   target (the desktop drag-region allowlist covers "button" but not "svg"). */
+.dshmc-pomo-btn > svg { flex: none; pointer-events: none; }
 .dshmc-pomo-btn:hover {
   background: var(--mc-surface-hover);
   color: var(--mc-text);
@@ -1409,84 +1471,6 @@ body[data-ds-dark-theme] .dshmc {
 }
 .dshmc-settings-row + .dshmc-settings-row { margin-top: 6px; }
 
-/* Burn strip (header, under the sub line) — cost row + model chips */
-.dshmc-burn {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-top: 7px;
-}
-.dshmc-burn-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.dshmc-burn-cost {
-  color: var(--mc-text);
-  font-weight: 500;
-  font-size: 15px;
-  letter-spacing: -0.01em;
-  font-variant-numeric: tabular-nums;
-  transition: color 0.3s var(--mc-ease), text-shadow 0.3s var(--mc-ease);
-}
-/* Burn is actively climbing: the cost figure warms up and breathes */
-.dshmc-burn.is-burning .dshmc-burn-cost {
-  color: var(--mc-amber-label);
-  animation: mc-burn-glow 2.2s ease-in-out infinite;
-}
-@keyframes mc-burn-glow {
-  0%, 100% { text-shadow: 0 0 0 transparent; }
-  50% { text-shadow: 0 0 10px color-mix(in srgb, var(--mc-amber) 55%, transparent); }
-}
-.dshmc-burn.is-burning .dshmc-burn-tokens { color: var(--mc-text-2); }
-/* Tokens tick up: brief lift on each change */
-.dshmc-burn-tokens.is-bumped { animation: mc-burn-tick 0.45s var(--mc-ease); }
-@keyframes mc-burn-tick {
-  0% { transform: none; opacity: 1; }
-  35% { transform: translateY(-1.5px); opacity: 0.65; }
-  100% { transform: none; opacity: 1; }
-}
-.dshmc-burn-est {
-  margin-left: 4px;
-  font-size: 10.5px;
-  font-weight: 400;
-  color: var(--mc-text-4);
-}
-.dshmc-burn-tokens {
-  color: var(--mc-text-3);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.dshmc-burn-models {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.dshmc-burn-model {
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--mc-accent);
-  background: color-mix(in srgb, var(--mc-accent) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--mc-accent) 25%, transparent);
-  border-radius: 999px;
-  padding: 1.5px 8px;
-  font-variant-numeric: tabular-nums;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dshmc-spark { margin-left: auto; flex: none; opacity: 0.9; color: var(--mc-accent); }
-.dshmc-spark polyline { stroke: currentColor; }
-/* Live sparkline pulses and draws a soft trail */
-.dshmc-burn.is-burning .dshmc-spark {
-  color: var(--mc-green);
-  animation: mc-spark-live 2.2s ease-in-out infinite;
-}
-@keyframes mc-spark-live {
-  0%, 100% { opacity: 0.55; filter: none; }
-  50% { opacity: 1; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mc-green) 65%, transparent)); }
-}
 
 /* Mode tabs — full-width segmented control on its own row */
 .dshmc-modes {
@@ -2266,7 +2250,14 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   font: 400 13px/1.5 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
   font-variant-numeric: tabular-nums;
   pointer-events: auto;
-  animation: mc-in 0.22s var(--mc-ease);
+  /* Full-screen surface: fades up in place. It must NOT share the panel's
+     slide-from-the-right entrance, which only reads correctly on a rail
+     docked to that edge. */
+  animation: mc-stage-in 0.22s var(--mc-ease);
+}
+@keyframes mc-stage-in {
+  from { opacity: 0; transform: scale(0.995); }
+  to { opacity: 1; transform: none; }
 }
 .dshmc-stage-bar {
   display: flex;
@@ -2421,9 +2412,6 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   .dshmc-stat.is-bumped-card,
   .dshmc-stat-value.is-bumped,
   .dshmc-rate,
-  .dshmc-burn.is-burning .dshmc-burn-cost,
-  .dshmc-burn.is-burning .dshmc-spark,
-  .dshmc-burn-tokens.is-bumped,
   .dshmc-pomo.is-running .dshmc-pomo-progress,
   .dshmc-pomo.is-running .dshmc-pomo-pulse,
   .dshmc-pomo.is-ending .dshmc-pomo-clock,
@@ -2442,7 +2430,6 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   /* Keep the standing state color that the animation would otherwise carry */
   .dshmc-row.is-running { box-shadow: inset 2px 0 0 var(--mc-green); }
   .dshmc-row.is-waiting { box-shadow: inset 2px 0 0 var(--mc-amber); }
-  .dshmc-burn.is-burning .dshmc-spark { color: var(--mc-green); opacity: 1; }
   .dshmc-rate { opacity: 1; }
   .dshmc-caret { transition: none; }
   /* The rotation is decorative; aria-expanded still conveys the state. */
@@ -2460,7 +2447,6 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   .dshmc-pomo-btn:active { transform: none; }
   .dshmc-stat { transition: none; }
   .dshmc-stat-value { transition: none; }
-  .dshmc-burn-cost { transition: none; }
 }
 `
 
@@ -3145,26 +3131,30 @@ function fleetOutTokens(list: SessionListStateLike): number {
   return total
 }
 
-/** Fleet tok/s + burn history: samples while running; keeps last N points for the sparkline. */
-function useFleetPulse(active: boolean, list: SessionListStateLike, maxPoints = 60): {
-  rate: number
-  history: readonly number[]
-} {
+/**
+ * Fleet output-token rate (tok/s), sampled on a 1s tick while anything is
+ * active. Feeds the per-row rate readout.
+ *
+ * This used to also retain a rolling history for the header sparkline; both
+ * that chart and the burn strip it lived in are gone, so only the instantaneous
+ * rate is kept — retaining a 60-point series nothing renders was pure work on a
+ * timer.
+ */
+function useFleetPulse(active: boolean, list: SessionListStateLike): { rate: number } {
   const now = useTicker(active, 1000)
   const total = fleetOutTokens(list)
-  const [pulse, setPulse] = React.useState<{ rate: number; history: number[]; prev?: { at: number; out: number } }>({ rate: 0, history: [] })
-  const [seenTotal, setSeenTotal] = React.useState<number | undefined>(undefined)
+  const [pulse, setPulse] = React.useState<{ rate: number; prev?: { at: number; out: number } }>({ rate: 0 })
   React.useEffect(() => {
     if (!active) return
     setPulse((p) => {
       const prev = p.prev ?? { at: now, out: total }
       const elapsed = elapsedSince(prev.at, now)
+      // Below the sampling floor the previous rate stands rather than being
+      // recomputed from a too-short interval.
       const rate = elapsed >= 900 ? computeRate(prev.out, total, elapsed) : p.rate
-      const history = elapsed >= 4500 ? [...p.history, rate].slice(-maxPoints) : p.history
-      return { rate, history, prev: { at: now, out: total } }
+      return { rate, prev: { at: now, out: total } }
     })
-    if (seenTotal === undefined && total > 0) setSeenTotal(total)
-  }, [now, active, total, maxPoints, seenTotal])
+  }, [now, active, total])
   return pulse
 }
 
@@ -3240,43 +3230,6 @@ function useWaitNotifications(waits: readonly { wait: { key: string }; title: st
     if (Notification.permission === 'granted') notify()
     else if (Notification.permission !== 'denied') void Notification.requestPermission().then((p) => { if (p === 'granted') notify() })
   }, [waits])
-}
-
-/** Fleet-wide token usage + estimated cost, from row-retained projection values. */
-function useFleetBurn(list: SessionListStateLike): {
-  known: number
-  tokens: { in: number; out: number }
-  cost: number
-  byModel: { model: string; cost: number; share: number }[]
-} {
-  return React.useMemo(() => {
-    let inTok = 0
-    let outTok = 0
-    let known = 0
-    const costByModel = new Map<string, number>()
-    for (const id of list.ids) {
-      const row = list.byId[id]
-      const usage = (row as { projectionValues?: { tokenUsage?: TokenUsageLike } } | undefined)
-        ?.projectionValues?.tokenUsage
-      if (!usage) continue
-      known++
-      inTok += usage.uncachedInputTokens + usage.cacheReadTokens
-      outTok += usage.outputTokens
-      const model = MODEL_OF_SESSION.get(id)
-      const price = priceRowFor(model?.split('/')[1] ?? model)
-      const cost = estimateCost(usage, price)
-      if (cost > 0) {
-        const label = model ? (model.split('/')[1] ?? model) : 'unknown'
-        costByModel.set(label, (costByModel.get(label) ?? 0) + cost)
-      }
-    }
-    const totalCost = [...costByModel.values()].reduce((a, b) => a + b, 0)
-    const byModel = [...costByModel.entries()]
-      .map(([model, cost]) => ({ model, cost, share: totalCost > 0 ? cost / totalCost : 0 }))
-      .sort((a, b) => b.cost - a.cost)
-      .slice(0, 4)
-    return { known, tokens: { in: inTok, out: outTok }, cost: totalCost, byModel }
-  }, [list])
 }
 
 /** Live conversation snapshot subset used by grid tiles. */
@@ -4542,6 +4495,105 @@ function StageView({
   )
 }
 
+/*
+ * Header glyphs, drawn inline at the shell sidebar's icon geometry: a 16px box
+ * on a 28px circular button, 1.5px strokes on `currentColor`.
+ *
+ * The shell draws its own from `@deepseek-ai/dsh-client-ui-primitives`
+ * (`IconPanelLeftOutline16`), but that package is not a resolvable dependency
+ * here and this plugin is a deliberate pure consumer — importing shell
+ * internals would trade a two-element SVG for a hard dependency on a private
+ * surface. Matching the geometry gets the same result at no coupling cost.
+ */
+const ICON_SIZE = 16
+
+/**
+ * Shared glyph frame. Every icon in the panel is drawn on this one geometry, so
+ * a size or stroke change lands everywhere at once instead of drifting per
+ * call site — which is how the pomodoro row ended up with 10px text glyphs
+ * beside the header's 16px SVGs, the same ⚙ rendering at two sizes.
+ */
+function Glyph({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <svg
+      width={ICON_SIZE}
+      height={ICON_SIZE}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {children}
+    </svg>
+  )
+}
+
+/** Panel-collapse glyph: the sidebar's panel icon mirrored for a right-hand rail. */
+function IconPanelRight(): React.JSX.Element {
+  return (
+    <Glyph>
+      <rect x="2" y="2.75" width="12" height="10.5" rx="2.5" />
+      <line x1="10" y1="2.75" x2="10" y2="13.25" />
+    </Glyph>
+  )
+}
+
+/** Settings gear, replacing the bare ⚙ text glyph so both buttons share a metric. */
+function IconSettings(): React.JSX.Element {
+  return (
+    <Glyph>
+      <circle cx="8" cy="8" r="2.25" />
+      <path d="M12.9 9.8a1.1 1.1 0 0 0 .22 1.21l.04.04a1.33 1.33 0 1 1-1.89 1.89l-.04-.04a1.1 1.1 0 0 0-1.21-.22 1.1 1.1 0 0 0-.67 1v.11a1.33 1.33 0 1 1-2.67 0v-.06a1.1 1.1 0 0 0-.72-1 1.1 1.1 0 0 0-1.21.22l-.04.04a1.33 1.33 0 1 1-1.89-1.89l.04-.04a1.1 1.1 0 0 0 .22-1.21 1.1 1.1 0 0 0-1-.67h-.11a1.33 1.33 0 1 1 0-2.67h.06a1.1 1.1 0 0 0 1-.72 1.1 1.1 0 0 0-.22-1.21l-.04-.04a1.33 1.33 0 1 1 1.89-1.89l.04.04a1.1 1.1 0 0 0 1.21.22h.05a1.1 1.1 0 0 0 .67-1v-.11a1.33 1.33 0 1 1 2.67 0v.06a1.1 1.1 0 0 0 .67 1 1.1 1.1 0 0 0 1.21-.22l.04-.04a1.33 1.33 0 1 1 1.89 1.89l-.04.04a1.1 1.1 0 0 0-.22 1.21v.05a1.1 1.1 0 0 0 1 .67h.11a1.33 1.33 0 1 1 0 2.67h-.06a1.1 1.1 0 0 0-1 .67Z" />
+    </Glyph>
+  )
+}
+
+/* Pomodoro transport glyphs. Filled shapes for play/pause read better than
+   strokes at this size, so they set `fill` and clear the inherited stroke. */
+
+/** Play triangle (start the timer). */
+function IconPlay(): React.JSX.Element {
+  return (
+    <Glyph>
+      <path d="M5.5 3.4v9.2l7-4.6z" fill="currentColor" stroke="none" />
+    </Glyph>
+  )
+}
+
+/** Pause bars (halt the running timer). */
+function IconPause(): React.JSX.Element {
+  return (
+    <Glyph>
+      <rect x="5" y="3.5" width="2.2" height="9" rx="0.9" fill="currentColor" stroke="none" />
+      <rect x="8.8" y="3.5" width="2.2" height="9" rx="0.9" fill="currentColor" stroke="none" />
+    </Glyph>
+  )
+}
+
+/** Counter-clockwise arrow (reset the current interval). */
+function IconReset(): React.JSX.Element {
+  return (
+    <Glyph>
+      <path d="M3.2 8a4.8 4.8 0 1 0 1.5-3.48" />
+      <path d="M2.6 3.2v3.1h3.1" />
+    </Glyph>
+  )
+}
+
+/** Skip-forward: triangle plus end bar (jump to the next phase). */
+function IconSkip(): React.JSX.Element {
+  return (
+    <Glyph>
+      <path d="M4 3.8v8.4l6-4.2z" fill="currentColor" stroke="none" />
+      <line x1="11.6" y1="3.8" x2="11.6" y2="12.2" />
+    </Glyph>
+  )
+}
+
 /** One stats-strip card: colored while live, and flashes when its number moves. */
 function StatCard({
   value,
@@ -4895,7 +4947,7 @@ function PomodoroBar({
           aria-label={state.running ? `Pause ${label} timer` : `Start ${label} timer`}
           title={state.running ? 'Pause' : 'Start'}
         >
-          {state.running ? '❙❙' : '▶'}
+          {state.running ? <IconPause /> : <IconPlay />}
         </button>
         <button
           className="dshmc-pomo-btn"
@@ -4903,7 +4955,7 @@ function PomodoroBar({
           aria-label="Reset current interval"
           title="Reset"
         >
-          ↺
+          <IconReset />
         </button>
         <button
           className="dshmc-pomo-btn"
@@ -4911,7 +4963,7 @@ function PomodoroBar({
           aria-label={`Skip to ${phaseLabel(nextPhase(state.phase, state.phase === 'work' ? state.completed + 1 : state.completed))}`}
           title="Skip"
         >
-          ⏭
+          <IconSkip />
         </button>
         <button
           className={`dshmc-pomo-btn${settingsOpen ? ' on' : ''}`}
@@ -4920,7 +4972,7 @@ function PomodoroBar({
           aria-expanded={settingsOpen}
           title="Durations"
         >
-          ⚙
+          <IconSettings />
         </button>
       </div>
     </div>
@@ -5145,9 +5197,7 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
     [settings.workMinutes, settings.breakMinutes, settings.longBreakMinutes],
   )
 
-  const burn = useFleetBurn(list)
   const pulse = useFleetPulse(counts.active > 0, list)
-  const tokensBumped = useBump(burn.tokens.in + burn.tokens.out, 450)
   useWaitNotifications(pendingWaits)
 
   // Fleet activity feed — diffs the session list as it changes and keeps a
@@ -5185,6 +5235,58 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
   const close = () => setOpen(false)
   const reopen = () => setOpen(true)
 
+  /** The docked rail element — the measurement source for the frame reservation. */
+  const panelRef = React.useRef<HTMLDivElement | null>(null)
+
+  // Reserve the rail's width in the shell frame so the conversation and its
+  // composer RESIZE instead of running underneath the panel.
+  //
+  // There is no additive seat for this: `shell.overlay` is defined as a
+  // "frame-wide floating layer, above every column", the `sidebar`/`details`
+  // grid columns are single-occupant and already taken by shipped UI, and
+  // ctx.layout exposes only toggleSidebar/openDetails/closeDetails — nothing
+  // that reserves width for a plugin. So the frame is padded directly.
+  //
+  // The frame is found structurally, via the overlay layer this plugin is
+  // rendered into: its CSS-module class is a build-time hash (`pI_x6G_frame`)
+  // that any upgrade may change, so matching on it would silently rot. The
+  // element is padded rather than having its inline `grid-template-columns`
+  // rewritten, because AppFrame owns that property and recomputes it on every
+  // resize and drag — an edit there would be clobbered, and would fight the
+  // shell's own concession solver. Padding is a property nothing else writes,
+  // and the frame already transitions its columns, so the reflow animates with
+  // the shell instead of snapping.
+  //
+  // Stage mode is full-screen and must NOT reserve anything.
+  const reserveWidth = open && !stageOpen
+  React.useEffect(() => {
+    // Cheap check first: when nothing is reserved there is no reason to walk
+    // the DOM. panelRef is intentionally not a dependency — the panel is
+    // hidden rather than unmounted, so the node identity is stable for the
+    // lifetime of this component.
+    if (!reserveWidth) return
+    const panel = panelRef.current
+    if (!panel) return
+    const frame = panel.closest<HTMLElement>('[data-shell-overlay]')?.parentElement
+    if (!frame) return
+    const prev = frame.style.paddingRight
+    frame.setAttribute('data-dshmc-reserved', '')
+    const apply = (): void => {
+      // Measure the rendered rail: the width is media-query dependent, so a
+      // hardcoded 400 would be wrong on a narrow viewport.
+      const w = panel.getBoundingClientRect().width
+      frame.style.paddingRight = w > 0 ? `${Math.round(w)}px` : ''
+    }
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(panel)
+    return () => {
+      ro.disconnect()
+      frame.style.paddingRight = prev
+      frame.removeAttribute('data-dshmc-reserved')
+    }
+  }, [reserveWidth])
+
   const modelDirs = (() => {
     try {
       return (ctx as unknown as { modelDirectories?: ModelDirsLike }).modelDirectories
@@ -5213,51 +5315,32 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
 
   return (
     <div>
-      <div className="dshmc" hidden={!open} data-burn-known={burn.known}>
+      <div className="dshmc" hidden={!open} ref={panelRef}>
         <div className="dshmc-header">
-          <div>
-            <div className="dshmc-title">Mission Control</div>
-            <div className="dshmc-sub">
-              <b>{counts.running}</b> running · <b>{counts.subagents}</b> subagents · <b>{pendingWaits.length}</b> waiting
-            </div>
-            {burn.cost > 0 || burn.tokens.out > 0 ? (
-              <div
-                className={`dshmc-burn${counts.active > 0 ? ' is-burning' : ''}`}
-                title="Estimated from token counts × public list prices. Not billing."
-              >
-                <div className="dshmc-burn-row">
-                  <span className="dshmc-burn-cost">
-                    ${burn.cost < 0.01 && burn.cost > 0 ? '<0.01' : burn.cost.toFixed(2)}
-                    <span className="dshmc-burn-est">est</span>
-                  </span>
-                  <span className={`dshmc-burn-tokens${tokensBumped ? ' is-bumped' : ''}`}>{fmtTokens(burn.tokens.in + burn.tokens.out)} tokens</span>
-                  {pulse.history.length > 2 ? (
-                    <svg className="dshmc-spark" viewBox="0 0 64 14" width="64" height="14" aria-hidden="true">
-                      <polyline points={sparklinePoints(pulse.history, 64, 14)} fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round" />
-                    </svg>
-                  ) : null}
-                </div>
-                {burn.byModel.length > 0 ? (
-                  <div className="dshmc-burn-models">
-                    {burn.byModel.slice(0, 3).map((m) => (
-                      <span key={m.model} className="dshmc-burn-model">{m.model} · {Math.round(m.share * 100)}%</span>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
           <div className="dshmc-header-actions">
+            {/* data-dsh-no-drag: DSH Desktop's preload allowlists this
+                attribute out of the window-drag region that covers the top
+                36px on Windows. Without it a click here is consumed by the OS
+                as a window drag. */}
+            <button
+              className="dshmc-icon-btn"
+              data-dsh-no-drag=""
+              onClick={close}
+              aria-label="Collapse Mission Control"
+              title="Collapse"
+            >
+              <IconPanelRight />
+            </button>
             <button
               className={`dshmc-icon-btn${settingsOpen ? ' on' : ''}`}
+              data-dsh-no-drag=""
               onClick={() => setSettingsOpen((v) => !v)}
               aria-label="Mission Control settings"
               aria-expanded={settingsOpen}
               title="Settings"
             >
-              ⚙
+              <IconSettings />
             </button>
-            <button className="dshmc-close" onClick={close} aria-label="Close Mission Control">×</button>
           </div>
         </div>
         {settingsOpen ? (
