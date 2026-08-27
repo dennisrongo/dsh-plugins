@@ -80,7 +80,7 @@ dsh --profile headless-plus --continue "now add tests"
 dsh --profile headless-plus --resume session-6f2ca6dc-… "pick up where we left off"
 ```
 
-**How it works.** Two rows replace the two stock ones: a startup row that owns the flag family via `ctx.cmdlineArgs` (each app owns its own flags, so this doesn't collide with the launcher), and a runner row that receives the parsed task by injection. Resuming goes through the public `ctx.agents.resume()` with `ResumeAgentOptions`; `--resume latest` maps the workspace to its session directory using the same slug rule as `dsh-session-persistence-jsonl`. Model overrides go through `ctx.agentDefaultModel`. Note this package is **unscoped** — it installs to `node_modules/dsh-headless-plus`.
+**How it works.** Two rows replace the two stock ones: a startup row that owns the flag family via `ctx.cmdlineArgs` (each app owns its own flags, so this doesn't collide with the launcher), and a runner row that receives the parsed task by injection. Resuming goes through the public `ctx.agents.resume()` with `ResumeAgentOptions`; `--resume latest` maps the workspace to its session directory using the same slug rule as `dsh-session-persistence-jsonl`. Model overrides go through `ctx.agentDefaultModel`. Note the folder is `plugins/dsh-headless-plus` but the package is `@dennisrongo/dsh-headless-plus`, and a mount row takes the package name.
 
 ---
 
