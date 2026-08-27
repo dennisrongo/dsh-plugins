@@ -16,6 +16,12 @@ node_modules/
 # host loader's closure-factory convention.
 **/lib/client.body.cjs
 
+# Test-only bundle: dsh-git's build emits an ESM copy of the client so
+# test/smoke.mjs can import its pure functions. `pnpm run build` regenerates it,
+# and it is half a megabyte that consumers would otherwise receive via the lib/
+# entry in package.json "files".
+**/lib/*.test.mjs
+
 # NOTE: every package commits its built lib/ on purpose. These plugins are
 # installed straight from GitHub subdirectories
 # (pnpm add "github:owner/repo#path:/plugins/<name>"), and a git install runs no

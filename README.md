@@ -48,7 +48,7 @@ Source control for the workspace, without leaving the harness.
 
 **Endpoints.** `status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage` under `POST /api/dshGit/<method>`, each taking one parameter named `request`.
 
-**Requires.** `workspaceRegistry` and `llm` (both composed by `dsh-base`) and `agentDefaultModel` for message drafting. Its `lib/` is **not committed** — build before installing.
+**Requires.** `workspaceRegistry` and `llm` (both composed by `dsh-base`) and `agentDefaultModel` for message drafting.
 
 ---
 
@@ -127,21 +127,17 @@ dsh plugin --profile web add "github:dennisrongo/dsh-plugins#main&path:/plugins/
 
 Quote the argument — `#` and `&` are shell metacharacters. `git+https://github.com/dennisrongo/dsh-plugins.git#path:/plugins/dsh-todo` works identically if you prefer the explicit form.
 
-Two things to know:
+All five ship their built `lib/`, so a git install works even though it runs no build step.
 
-- **`dsh-git` will not work installed this way.** It doesn't commit its `lib/`, and a git
-  install runs no build, so you get a package with no output. Clone and build it instead
-  (below). `dsh-todo`, `dsh-weather`, `dsh-headless-plus` and `dsh-superpowers` all ship their
-  built `lib/` and install fine from GitHub.
-- Each plugin still needs its **mount row** in the profile's `cordis.patch.yml` — installing
-  it is not enough. Rows are in [step 4](#4-mount-them-in-cordispatchyml), and you'll see a
-  `declares no dsh.bundle` warning on install, which is expected.
+Each plugin still needs its **mount row** in the profile's `cordis.patch.yml` — installing it
+is not enough. Rows are in [step 4](#4-mount-them-in-cordispatchyml), and you'll see a
+`declares no dsh.bundle` warning on install, which is expected.
 
 Then restart the profile and [verify](#6-verify).
 
 ## Installing from a clone
 
-Clone if you want `dsh-git`, want to edit the plugins, or want to run the tests.
+Clone if you want to edit the plugins or run the tests.
 
 ### Prerequisites
 
@@ -172,7 +168,7 @@ plugins touch.
 git clone https://github.com/dennisrongo/dsh-plugins.git
 cd dsh-plugins
 pnpm install
-pnpm run build      # required: dsh-git does not commit its lib/
+pnpm run build      # rebuild lib/ from src/
 ```
 
 `pnpm run test` and `pnpm run typecheck` need step 5's anchoring first — `dsh-todo`'s smoke

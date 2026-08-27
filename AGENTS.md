@@ -35,8 +35,10 @@ pnpm run test                   # pnpm -r --if-present run test
 pnpm --filter @dennisrongo/dsh-todo run build     # one package
 ```
 
-`dsh-git` does not commit its `lib/`, and every package's tests assert against **built**
-output. Build before testing or installing, or you are testing a stale bundle.
+Every package commits its built `lib/` — that is what makes a GitHub subdirectory install
+work, since a git install runs no build step. Rebuild and commit `lib/` whenever you change
+`src/`. Tests also assert against **built** output, so build before testing or you are
+testing a stale bundle.
 
 ## Rules that are not obvious
 
