@@ -103,19 +103,22 @@ jobs:
           fi
           if ! whoami_out=$(npm whoami 2>&1); then
             echo "::error::npm rejected the token: ${whoami_out}"
-            echo "It may be expired, revoked, or a read-only token. Publishing needs an"
-            echo "automation token with write access to the @dennisrongo scope."
+            echo "It may be expired, revoked, or read-only. Publishing needs a granular"
+            echo "access token with write access to the @dennisrongo scope AND its"
+            echo "\"Bypass 2FA\" option enabled — see the EOTP note below."
             exit 1
           fi
           echo "authenticated to npm as ${whoami_out}"
 
-          # Authenticating is not the same as being allowed to write. If the
-          # account requires 2FA for writes, only an AUTOMATION token (or a
-          # granular token with write access) bypasses the OTP prompt; a classic
-          # "Publish" token still fails at publish time with EOTP. Report the
-          # mode so that failure is diagnosable from the log. Only the tfa field
-          # is printed — `npm profile get` also prints the account email, and
-          # this log is public.
+          # Authenticating is not the same as being allowed to write. Legacy
+          # classic tokens were removed in November 2025, so this is a granular
+          # access token — and a granular token only skips the OTP prompt when
+          # its "Bypass 2FA" option was enabled AT CREATION. Without it, publish
+          # fails with EOTP even though `npm whoami` succeeds, which is exactly
+          # what happened here. The option cannot be added later; regenerate the
+          # token. Report the 2FA mode so the next failure is diagnosable. Only
+          # the tfa field is printed — `npm profile get` also emits the account
+          # email, and this log is public.
           if profile_json=$(npm profile get --json 2>/dev/null); then
             node -e '
               const p = JSON.parse(process.argv[1]);
@@ -125,8 +128,8 @@ jobs:
                 : (tfa.mode ?? JSON.stringify(tfa));
               console.log(`npm account 2FA mode: ${mode}`);
               if (String(mode).includes("auth-and-writes")) {
-                console.log("  writes require 2FA — the token must be an Automation token");
-                console.log("  (or a granular token with write access) to publish from CI.");
+                console.log("  writes require 2FA — the granular token must have");
+                console.log("  \"Bypass 2FA\" enabled, which is set only at creation time.");
               }
             ' "$profile_json"
           else
