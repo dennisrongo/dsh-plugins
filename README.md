@@ -6,7 +6,13 @@ Everything here is built on the harness's public seams: service keys, the Typert
 
 **Both surfaces are supported.** Every plugin runs unchanged under the `dsh` CLI *and* the **DSH Desktop** app. The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness`) with its own profiles, so a plugin is installed once per profile on whichever surface you use — see [Install on a new machine](#install-on-a-new-machine).
 
-> **Status:** developed against dsh `0.1.1-rc.2` on Windows. dsh is a fast-moving `0.1.x` dev preview that promises breaking changes — re-verify against your installed version. The dev-loop script uses Windows junctions.
+> **Status:** developed against dsh `0.1.1-rc.2`. dsh is a fast-moving `0.1.x` dev preview that promises breaking changes — re-verify against your installed version.
+>
+> **Platforms:** the plugins are plain Node and platform-agnostic. Of the tooling,
+> `scripts/link-superpowers-skills.mjs` is cross-platform (junctions on Windows, symlinks
+> elsewhere); `scripts/dev-link.ps1` is **Windows-only** — it creates junctions and knows
+> Windows profile locations. Everything here has been exercised on Windows; macOS and Linux
+> are untested.
 
 ## Plugins
 
@@ -47,7 +53,17 @@ dsh --profile headless-plus --model anthropic/claude-sonnet-4-6 "refactor the au
 dsh --profile headless-plus --continue "now add tests"
 ```
 
-Each package carries an `AGENTS.md` with its endpoints, mount row, dev loop and a verification recipe.
+### `dsh-superpowers`
+
+Registers the [Superpowers](https://github.com/obra/superpowers) methodology bootstrap as a persistent system-prompt section — compaction-safe, replacing the upstream SessionStart hook that dsh has no shell for. Nothing is vendored: it reads `skills/using-superpowers/SKILL.md` from your own clone, located via `superpowersRoot`, then `SUPERPOWERS_ROOT`, then a probe of common clone paths under `$HOME`.
+
+To have the clone's skills catalog update on a plain `git pull` rather than drifting as copies:
+
+```bash
+node scripts/link-superpowers-skills.mjs     # --dry-run to preview, --restore to undo
+```
+
+Each of `dsh-todo`, `dsh-git` and `dsh-weather` carries an `AGENTS.md` with its endpoints, mount row, dev loop and a verification recipe.
 
 ## Install on a new machine
 
@@ -144,7 +160,8 @@ One trap worth knowing: DSH Desktop runs a **profile-repair install** on startup
 ```
 plugins/     one self-contained package each (pnpm workspace members)
 fixtures/    seed content for tests; not workspace packages
-scripts/     dev-link.ps1 — junction the plugins into your profiles
+scripts/     dev-link.ps1                  — link the plugins into your profiles (Windows)
+             link-superpowers-skills.mjs   — link an upstream superpowers clone's skills
 ```
 
 `dsh-todo`, `dsh-git` and `dsh-weather` were consolidated here from standalone repos via subtree merge, so their original commits remain ancestors of `main`.

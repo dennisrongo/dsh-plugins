@@ -256,12 +256,15 @@ if (-not $IdentityOnly) {
         continue
       }
 
-      $scopeDir = Join-Path $prof 'node_modules\@dennisrongo'
-      if (-not (Test-Path $scopeDir)) {
-        Write-Host "SKIP    $plugin in $prof (no $scopeDir - pnpm add the package there first)"
+      # Install location follows the PACKAGE NAME, not the folder name: scoped
+      # packages land in node_modules\@scope\name, unscoped ones directly in
+      # node_modules\name. Both shapes exist in this repo.
+      $dst = Join-Path $prof (Join-Path 'node_modules' ($pkgName -replace '/', '\'))
+      $parent = Split-Path $dst -Parent
+      if (-not (Test-Path $parent)) {
+        Write-Host "SKIP    $plugin in $prof (no $parent - pnpm add the package there first)"
         $skipped++; continue
       }
-      $dst = Join-Path $scopeDir $plugin
       if ((Set-Junction $dst $src) -eq 'linked') {
         Write-Host "LINKED  $dst"; $linked++
       } else { Write-Host "ALREADY $dst"; $already++ }

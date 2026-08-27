@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import z from "@deepseek-ai/schemastery";
@@ -15,9 +15,11 @@ import z from "@deepseek-ai/schemastery";
  * stronger than the hook: there is no gap between session start and the first
  * compaction where the bootstrap can fall out.
  *
- * The section body is read lazily from the cloned superpowers repo at
- * startup (not bundled), so `git pull` upstream + restart is the whole
- * update path.
+ * Nothing from upstream is vendored here. The section body is read from your
+ * clone at startup, so `git pull` + restart the profile is the whole update
+ * path. The clone's skills/ folder is separate: link it into the agents skills
+ * directory with scripts/link-superpowers-skills.mjs so a pull updates those
+ * too.
  *
  * @module dsh-superpowers
  */
@@ -27,11 +29,57 @@ const name = "superpowers";
 
 const inject = ["systemPrompt"];
 
+/** Path, relative to the repo root, that identifies a real superpowers clone. */
+const MARKER = join("skills", "using-superpowers", "SKILL.md");
+
+/**
+ * Directories to probe for a superpowers clone, in order, when the profile
+ * does not set `superpowersRoot`.
+ *
+ * All are derived from `homedir()`, so this works on Windows, macOS and Linux
+ * alike — but they are still guesses about where you keep clones. Set
+ * `superpowersRoot` in the profile (or the SUPERPOWERS_ROOT environment
+ * variable) and none of this runs.
+ * @returns candidate absolute paths.
+ */
+function candidateRoots() {
+  const home = homedir();
+  return [
+    join(home, "superpowers"),
+    join(home, "src", "superpowers"),
+    join(home, "code", "superpowers"),
+    join(home, "dev", "superpowers"),
+    join(home, "git", "superpowers"),
+    join(home, "repos", "superpowers"),
+    join(home, "Projects", "superpowers"),
+    join(home, "Documents", "superpowers"),
+    join(home, "Documents", "GitHub", "superpowers"),
+    join(home, "Documents", "Experimental Projects", "superpowers"),
+  ];
+}
+
+/**
+ * Resolve the clone location: explicit config, then environment, then probe.
+ * @param configured - `superpowersRoot` from the profile, if set.
+ * @returns the resolved root, or null when nothing looks like a clone.
+ */
+function resolveRoot(configured) {
+  if (typeof configured === "string" && configured.length > 0) return configured;
+  const fromEnv = process.env.SUPERPOWERS_ROOT;
+  if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
+  for (const candidate of candidateRoots()) {
+    if (existsSync(join(candidate, MARKER))) return candidate;
+  }
+  return null;
+}
+
 const Config = z.object({
-  /** Directory containing skills/using-superpowers/SKILL.md (the repo root). */
-  superpowersRoot: z.string().default(
-    join(homedir(), "Documents", "Experimental Projects", "superpowers")
-  ),
+  /**
+   * Directory containing skills/using-superpowers/SKILL.md (the clone root).
+   * Empty means "resolve it": SUPERPOWERS_ROOT, then a probe of common clone
+   * locations under the home directory.
+   */
+  superpowersRoot: z.string().default(""),
   /** Section order; persona is 0, harness identity is -100. We sit just before persona. */
   order: z.number().default(-50),
   /** Master switch, e.g. for a scratch profile that wants a clean baseline. */
@@ -39,7 +87,7 @@ const Config = z.object({
 });
 
 function readBootstrap(superpowersRoot) {
-  const path = join(superpowersRoot, "skills", "using-superpowers", "SKILL.md");
+  const path = join(superpowersRoot, MARKER);
   try {
     const raw = readFileSync(path, "utf8");
     // Strip YAML frontmatter: the model doesn't need the trigger metadata,
@@ -57,7 +105,20 @@ function readBootstrap(superpowersRoot) {
 
 function apply(ctx, config) {
   if (config.enabled === false) return;
-  const text = readBootstrap(config.superpowersRoot);
+
+  const root = resolveRoot(config.superpowersRoot);
+  if (root === null) {
+    // Name both knobs: an unset root is a configuration gap, not a bug, and
+    // the probe list is deliberately a guess about where clones live.
+    console.warn(
+      "[dsh-superpowers] no superpowers clone found. Set `superpowersRoot` in " +
+        "this profile's cordis.patch.yml, or the SUPERPOWERS_ROOT environment " +
+        "variable, to the repo root containing " + MARKER
+    );
+    return;
+  }
+
+  const text = readBootstrap(root);
   if (text === null) return;
   ctx.effect(() => ctx.systemPrompt.section({
     name: "superpowers:using-superpowers",
