@@ -313,12 +313,16 @@ packages work), and prints what it skipped.
 ### 6. Verify
 
 ```bash
-dsh --profile web --port 38111 --no-open        # capture output; ERR_MODULE_NOT_FOUND here is a broken junction
-curl -s -X POST http://127.0.0.1:38111/api/dshTodo/list -H 'content-type: application/json' \
-  -d '{"type":"client-request","rpcId":"t1","method":"dshTodo/list","payload":{"args":{"request":{"workspaceId":"<id>"}}}}'
+node scripts/verify.mjs                     # static checks, no server needed
+dsh --profile web --port 38111 --no-open    # then, in another shell:
+node scripts/verify.mjs --port=38111        # adds the live /api probes
 ```
 
-`200` with `"ok":true` means mounted. `404` means the package's `./typert` export wasn't registered — see the plugin's `AGENTS.md`. Workspace ids live in `~/.dsh/storages/workspace.json` under `tables.workspaces`. Then open the UI and confirm the tabs render.
+Cross-platform, exits non-zero on failure. It reports the dsh version on each surface, then for every package resolves each `@deepseek-ai` specifier its **built** output imports and asserts it lands in the dsh CLI's own copy (never a `.pnpm` store path), checks the other runtime dependencies resolve, imports each host entry point, and confirms each client bundle still carries its `window.__ModuleLoader__.load` wrapper. With `--port` it POSTs each host endpoint and requires `200` with `"ok":true`.
+
+`404` on a probe means the package's `./typert` export wasn't registered — see the plugin's `AGENTS.md`. Then open the UI and confirm the tabs render; `Promise.allSettled` in the client swallows failures, so a tab can render while every call fails.
+
+**Run this after upgrading dsh.** A harness upgrade doesn't break `pnpm test` — that only proves this repo is self-consistent. What it breaks is resolution and the wire contract, which is what this checks.
 
 ## Development
 
@@ -339,7 +343,8 @@ One trap worth knowing: DSH Desktop runs a **profile-repair install** on startup
 ```
 plugins/     one self-contained package each (pnpm workspace members)
 fixtures/    seed content for tests; not workspace packages
-scripts/     dev-link.ps1                  — link the plugins into your profiles (Windows)
+scripts/     verify.mjs                    — check the plugins against your installed dsh
+             dev-link.ps1                  — link the plugins into your profiles (Windows)
              link-superpowers-skills.mjs   — link an upstream superpowers clone's skills
 ```
 

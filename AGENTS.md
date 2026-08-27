@@ -20,7 +20,8 @@ plugins/dsh-weather      client only   — shell.overlay weather bar
 plugins/dsh-headless-plus CLI app      — --model/--resume/--continue
 plugins/dsh-superpowers  host          — system-prompt section
 fixtures/                seed content for tests; NOT workspace packages
-scripts/                 dev-link.ps1 (Windows), link-superpowers-skills.mjs (portable)
+scripts/                 verify.mjs (portable), dev-link.ps1 (Windows),
+                         link-superpowers-skills.mjs (portable)
 ```
 
 Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package and
@@ -92,7 +93,17 @@ with `Cannot find package 'zod'`. Recovery is `pnpm install` at the root, then t
 ## Verifying a change
 
 Do not trust a green `pnpm test` as evidence the harness works — it only proves this repo's
-`lib/` is self-consistent. For anything touching a host half:
+`lib/` is self-consistent. `scripts/verify.mjs` automates the ladder below and is the first
+thing to run after a dsh upgrade:
+
+```bash
+node scripts/verify.mjs                  # static: versions, resolution, deps, entry points
+node scripts/verify.mjs --port=38111     # adds live /api probes against a running profile
+```
+
+It exits non-zero on failure, and it deliberately does NOT import a client half — those are
+browser bundles wrapped in `window.__ModuleLoader__.load`, so importing one under Node fails
+by design; it validates the wrapper and the loader id instead. Done by hand, the ladder is:
 
 1. **Resolution** — from the package folder, confirm `@deepseek-ai/*` resolves to the dsh
    CLI install and never a `.pnpm` store path:
