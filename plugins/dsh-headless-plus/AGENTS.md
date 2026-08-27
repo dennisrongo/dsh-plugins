@@ -31,9 +31,9 @@ directory with `workspaceSlug()`, which **mirrors `dsh-session-persistence-jsonl
 
 ## Mounting
 
-Needs a profile on `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless`. It **replaces** the
-two stock rows, so they must be disabled explicitly. Both `id:` and `name:` are required on
-insert rows — a bare `id:` is an id-targeted override and silently no-ops:
+Needs a profile on `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless`. **Self-mounting**: the
+package's own `cordis.patch.yml` (referenced by `dsh.bundle.patch`) both disables the two stock
+rows and inserts the pair, so `dsh plugin add` is the whole install:
 
 ```yaml
 - id: headless-startup
@@ -49,6 +49,10 @@ insert rows — a bare `id:` is an id-targeted override and silently no-ops:
       config:
         task: !!js ctx.headlessPlusStartup.task
 ```
+
+That lives in the **package**, not your profile. Repeating any of it in the profile's
+`cordis.patch.yml` is fatal (`duplicate loader entry id: headless-plus-startup`). Note the
+bundle disabling another bundle's rows is deliberate — this app is a replacement, not an addition.
 
 Install with `dsh plugin --profile <name> add "file:<repo>/plugins/dsh-headless-plus"` using
 a native forward-slash absolute Windows path; the MSYS `/c/...` form fails

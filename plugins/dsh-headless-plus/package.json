@@ -10,7 +10,11 @@
     "./startup": "./lib/startup.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "README.md"],
+  "files": [
+    "lib",
+    "README.md",
+    "cordis.patch.yml"
+  ],
   "scripts": {
     "test": "node test/smoke.mjs"
   },
@@ -29,5 +33,10 @@
   },
   "dependencies": {
     "commander": "^14.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }

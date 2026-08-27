@@ -42,14 +42,19 @@ missing. Failure is always non-fatal by design; check profile stderr for
 
 ## Mounting
 
-Both `id:` and `name:` are required — a bare `id:` is an id-targeted override and no-ops:
+**Self-mounting** via `dsh.bundle.patch` → this package's own `cordis.patch.yml`, which inserts
+`id: superpowers`. `dsh plugin add` registers it as a profile layer; nothing to add by hand.
+Adding an `insert:` row for it in the profile too is fatal (`duplicate loader entry id:
+superpowers`).
+
+The bundle patch carries **no config on purpose** — the plugin resolves the clone itself. Pin it
+with an id-targeted override in the *profile's* `cordis.patch.yml`, which is exactly what a bare
+`id:` is for:
 
 ```yaml
-- insert:
-    - id: superpowers
-      name: '@dennisrongo/dsh-superpowers'
-      config:
-        superpowersRoot: /absolute/path/to/superpowers
+- id: superpowers
+  config:
+    superpowersRoot: /absolute/path/to/superpowers
 ```
 
 Any profile with a system prompt works. Install with

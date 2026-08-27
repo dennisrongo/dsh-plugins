@@ -1,0 +1,10 @@
+# dsh bundle patch. Deliberately carries no config: the plugin resolves the
+# superpowers clone itself (superpowersRoot, then SUPERPOWERS_ROOT, then a probe).
+# To pin it, add an id-targeted override in the PROFILE's cordis.patch.yml:
+#
+#   - id: superpowers
+#     config:
+#       superpowersRoot: /absolute/path/to/superpowers
+- insert:
+    - id: superpowers
+      name: '@dennisrongo/dsh-superpowers'

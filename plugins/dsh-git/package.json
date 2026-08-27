@@ -20,7 +20,8 @@
   },
   "files": [
     "lib",
-    "README.md"
+    "README.md",
+    "cordis.patch.yml"
   ],
   "scripts": {
     "build": "node build/build.mjs",
@@ -31,6 +32,9 @@
     "test:commit": "node test/verify-commit.mjs"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [

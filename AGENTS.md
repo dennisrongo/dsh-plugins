@@ -64,8 +64,14 @@ testing a stale bundle.
 - **`tsconfig.json` `paths` point at `./node_modules/@deepseek-ai/...`**, not at an absolute
   path. Those entries only exist after `dev-link.ps1` runs; typecheck failing with
   `TS2307: Cannot find module '@deepseek-ai/...'` means run the script, not add a stub.
+- **Every package is a BUNDLE and self-mounts.** `dsh.bundle.patch` points at the package's own
+  `cordis.patch.yml`, and `dsh plugin add` appends the package to the profile's
+  `dsh.profile.bundles`. Never also put an `insert:` row in a profile for one of these — a second
+  row with the same id is fatal: `duplicate loader entry id: <id>`. Ship `cordis.patch.yml` in
+  `files` or the bundle resolves to nothing.
 - **Insert rows need both `id:` and `name:`.** A bare `id:` is an id-targeted override of an
-  existing row and silently no-ops — the plugin appears installed and never loads.
+  existing row — which is how you *configure* a bundle's row from a profile, and also why a
+  typo'd `name:` silently no-ops instead of failing.
 - **A host service publishes its endpoints through a `./typert` subpath export.** Without it
   the loader skips the package *silently*: the service constructs, the tab renders, and
   every `/api` call 404s. The loader caches its verdict per process, so adding one requires a

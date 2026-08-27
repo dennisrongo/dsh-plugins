@@ -1,0 +1,5 @@
+# dsh bundle patch — see dsh-todo's for the id:/name: rule.
+# One row mounts both halves: the host service (dshGit) and the Changes tab.
+- insert:
+    - id: dsh-git
+      name: '@dennisrongo/dsh-git'

@@ -20,13 +20,19 @@ Source-control ("Changes") tab for DeepSeek Harness. Two halves in one package:
 
 ## Mounting
 
-In each profile's `cordis.patch.yml`. **Both `id:` and `name:` are required** — a bare `id:` is an id-targeted override and silently no-ops:
+**Self-mounting.** `package.json` declares `dsh.bundle.patch` pointing at this package's own
+`cordis.patch.yml`, which carries the insert row:
 
 ```yaml
 - insert:
     - id: dsh-git
       name: '@dennisrongo/dsh-git'
 ```
+
+`dsh plugin add` appends the package to the profile's `dsh.profile.bundles` and that row composes
+automatically. **Do not also add an `insert:` row to the profile's `cordis.patch.yml`** — a second
+row with the same id is fatal: `duplicate loader entry id: dsh-git`. A bare `id:` entry there is
+still the right way to *configure* the row.
 
 Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (`%APPDATA%\dsh-desktop\harness\profiles\<name>` — the desktop keeps its own DSH_HOME). Install per profile with `pnpm add "file:<repo>/plugins/dsh-git"`, using a native forward-slash absolute Windows path; the MSYS `/c/...` form fails `LINKED_PKG_DIR_NOT_FOUND`.
 

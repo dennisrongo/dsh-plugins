@@ -127,13 +127,13 @@ dsh plugin --profile web add "github:dennisrongo/dsh-plugins#main&path:/plugins/
 
 Quote the argument — `#` and `&` are shell metacharacters. `git+https://github.com/dennisrongo/dsh-plugins.git#path:/plugins/dsh-todo` works identically if you prefer the explicit form.
 
-All five ship their built `lib/`, so a git install works even though it runs no build step.
+All five ship their built `lib/`, so a git install works even though it runs no build step,
+and each declares `dsh.bundle` — so the install also **mounts** it. Restart the profile and
+it's live; nothing to edit by hand.
 
-Each plugin still needs its **mount row** in the profile's `cordis.patch.yml` — installing it
-is not enough. Rows are in [step 4](#4-mount-them-in-cordispatchyml), and you'll see a
-`declares no dsh.bundle` warning on install, which is expected.
-
-Then restart the profile and [verify](#6-verify).
+If you previously installed these plugins and hand-wrote `insert:` rows for them, delete those
+rows first — see [step 4](#4-nothing-to-mount--but-read-this-if-youre-upgrading). Then
+[verify](#6-verify).
 
 ## Installing from a clone
 
@@ -224,62 +224,48 @@ dsh plugin --profile web add \
 
 On Windows use a **native absolute path with forward slashes** — the MSYS `/c/...` form fails with `LINKED_PKG_DIR_NOT_FOUND`.
 
-You'll see one warning per plugin:
-
-```
-dsh: warning: @dennisrongo/dsh-todo declares no dsh.bundle — installed as a
-plain dependency, not a profile layer
-```
-
-That's expected. These are mounted by the rows in step 4, not as bundle layers.
+Each package declares `dsh.bundle`, so `dsh plugin` registers it as a profile layer and prints
+the package it added. (If you see `declares no dsh.bundle — installed as a plain dependency`,
+you're on an older version of that plugin and will need a manual row.)
 
 > **DSH Desktop:** same command with the desktop's profile. If that profile's `node_modules` was created by a different pnpm major you'll get `ERR_PNPM_UNEXPECTED_STORE`; edit the profile's `package.json` by hand instead and let step 5 supply the live module.
 
-### 4. Mount them in `cordis.patch.yml`
+### 4. Nothing to mount — but read this if you're upgrading
 
-**Every insert row needs both `id:` and `name:`.** A bare `id:` is an id-targeted override of an existing row and silently does nothing.
+Each package declares `dsh.bundle`, so `dsh plugin add` appends it to the profile's
+`dsh.profile.bundles` and it **self-mounts**. One entry brings up both halves of a plugin: the
+host service and the browser tab. Restart the profile and it's live.
+
+> **Breaking change from earlier versions of these plugins.** They used to require a hand-written
+> `insert:` row in your profile's `cordis.patch.yml`. That row is now a **duplicate** of the one
+> the bundle provides, and the harness treats that as fatal:
+>
+> ```
+> Error: dsh: plugin tree failed to load: failed to apply loader entry include
+> (cordis:include): duplicate loader entry id: dsh-weather
+> ```
+>
+> If you have rows for `dsh-weather`, `dsh-todo`, `dsh-git`, `superpowers`,
+> `headless-plus-startup` or `headless-plus-runner` — or the `headless-startup` /
+> `headless-runner` disables, which `dsh-headless-plus` now carries itself — **delete them**.
+> Check with `dsh --profile <name> --dump-config`, which labels each row with the layer it came
+> from; you want exactly one per plugin.
+
+You still edit `cordis.patch.yml` to **configure** a row, which is what a bare `id:` is for:
 
 ```yaml
-# web/headless UI plugins — one row mounts both halves of a plugin
-- insert:
-    - id: dsh-weather
-      name: '@dennisrongo/dsh-weather'
-    - id: dsh-todo
-      name: '@dennisrongo/dsh-todo'
-    - id: dsh-git
-      name: '@dennisrongo/dsh-git'
+# pin the superpowers clone instead of letting the plugin probe for it
+- id: superpowers
+  config:
+    superpowersRoot: /absolute/path/to/superpowers
 ```
 
-```yaml
-# dsh-superpowers — any profile with a system prompt
-- insert:
-    - id: superpowers
-      name: '@dennisrongo/dsh-superpowers'
-      config:
-        superpowersRoot: /absolute/path/to/superpowers   # optional; see the plugin README
-```
-
-This one needs a clone of [obra/superpowers](https://github.com/obra/superpowers) on disk. To
-have its skills catalog stay current on a `git pull` rather than drifting as copies, also run
+`dsh-superpowers` needs a clone of [obra/superpowers](https://github.com/obra/superpowers) on
+disk. To keep its skills catalog current on a `git pull` rather than drifting as copies, also run
 `node scripts/link-superpowers-skills.mjs` (cross-platform).
 
-```yaml
-# dsh-headless-plus — replaces the two stock headless rows
-- id: headless-startup
-  disabled: true
-- id: headless-runner
-  disabled: true
-- insert:
-    - id: headless-plus-startup
-      name: '@dennisrongo/dsh-headless-plus/startup'
-    - id: headless-plus-runner
-      name: '@dennisrongo/dsh-headless-plus'
-      inject: [headlessPlusStartup]
-      config:
-        task: !!js ctx.headlessPlusStartup.task
-```
-
-Then restart the profile.
+`dsh-headless-plus` replaces the stock headless app, so its bundle disables the two stock rows
+for you — it needs a profile built on `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless`.
 
 ### 5. Optional: link for live editing (Windows)
 

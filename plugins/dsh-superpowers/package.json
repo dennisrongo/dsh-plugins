@@ -9,7 +9,11 @@
     ".": "./lib/index.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "README.md"],
+  "files": [
+    "lib",
+    "README.md",
+    "cordis.patch.yml"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dennisrongo/dsh-plugins.git",
@@ -18,5 +22,10 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }

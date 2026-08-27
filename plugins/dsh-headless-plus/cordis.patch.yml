@@ -1,0 +1,15 @@
+# dsh bundle patch. This app REPLACES the stock headless one, so installing it
+# disables the two stock rows and inserts our startup/runner pair. Requires a
+# profile built on @deepseek-ai/dsh-base + @deepseek-ai/dsh-headless.
+- id: headless-startup
+  disabled: true
+- id: headless-runner
+  disabled: true
+- insert:
+    - id: headless-plus-startup
+      name: '@dennisrongo/dsh-headless-plus/startup'
+    - id: headless-plus-runner
+      name: '@dennisrongo/dsh-headless-plus'
+      inject: [headlessPlusStartup]
+      config:
+        task: !!js ctx.headlessPlusStartup.task
