@@ -109,6 +109,30 @@ jobs:
           fi
           echo "authenticated to npm as ${whoami_out}"
 
+          # Authenticating is not the same as being allowed to write. If the
+          # account requires 2FA for writes, only an AUTOMATION token (or a
+          # granular token with write access) bypasses the OTP prompt; a classic
+          # "Publish" token still fails at publish time with EOTP. Report the
+          # mode so that failure is diagnosable from the log. Only the tfa field
+          # is printed — `npm profile get` also prints the account email, and
+          # this log is public.
+          if profile_json=$(npm profile get --json 2>/dev/null); then
+            node -e '
+              const p = JSON.parse(process.argv[1]);
+              const tfa = p.tfa;
+              const mode = tfa === null || tfa === undefined ? "disabled"
+                : typeof tfa === "string" ? tfa
+                : (tfa.mode ?? JSON.stringify(tfa));
+              console.log(`npm account 2FA mode: ${mode}`);
+              if (String(mode).includes("auth-and-writes")) {
+                console.log("  writes require 2FA — the token must be an Automation token");
+                console.log("  (or a granular token with write access) to publish from CI.");
+              }
+            ' "$profile_json"
+          else
+            echo "could not read the npm profile (granular tokens may not permit it) — continuing"
+          fi
+
       - name: Publish each package not already on npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
