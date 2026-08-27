@@ -4,6 +4,10 @@ Five plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under 
 is self-contained: its own `package.json`, exports map, build and tests. Per-package
 `AGENTS.md` files cover endpoints and verification; this file covers the repo.
 
+Two supported surfaces, and a change to dependency resolution must be checked on both: the
+`dsh` CLI, and [DSH Desktop](https://dshdesktop.com/) — a community desktop wrapper (Windows
+and macOS) that bundles its own harness copy and keeps its own `DSH_HOME`.
+
 Read `README.md` for what each plugin does and how to install it. Read the package's own
 `AGENTS.md` before changing that package.
 

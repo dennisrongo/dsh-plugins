@@ -4,11 +4,13 @@ Dennis Rongo's plugin collection for [DeepSeek Harness (dsh)](https://github.com
 
 Everything here is built on the harness's public seams: cordis service keys, the Typert host/client bridge, `shell.*` slots, the system-prompt section registry, and `ctx.cmdlineArgs`. No forks, no patched launcher, no vendored harness code.
 
-**Both surfaces are supported.** Every plugin runs unchanged under the `dsh` CLI *and* the **DSH Desktop** app. The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness`) with its own profiles, so you install a plugin once per profile on whichever surface you use.
+**Both surfaces are supported.** Every plugin runs unchanged under the `dsh` CLI *and* under **[DSH Desktop](https://dshdesktop.com/)** — a community desktop wrapper that ships the harness pre-packaged with multi-provider model support ("Any model, zero setup"), for Windows and macOS. It is an independent project, not affiliated with DeepSeek.
+
+The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows) with its own profiles, so you install a plugin once per profile on whichever surface you use. Nothing here is CLI-specific: the same package, the same `cordis.patch.yml` row, and the same `/api` endpoints serve both.
 
 > **Status:** developed against dsh `0.1.1-rc.2`. dsh is a fast-moving `0.1.x` dev preview that promises breaking changes — re-verify against your installed version.
 >
-> **Platforms:** the plugins are plain Node and platform-agnostic. Of the tooling, `scripts/link-superpowers-skills.mjs` is cross-platform (junctions on Windows, symlinks elsewhere); `scripts/dev-link.ps1` is **Windows-only**. Everything has been exercised on Windows; macOS and Linux are untested.
+> **Platforms:** the plugins are plain Node and platform-agnostic, and DSH Desktop ships for Windows and macOS, so they should run on either. Of the tooling, `scripts/link-superpowers-skills.mjs` is cross-platform (junctions on Windows, symlinks elsewhere); `scripts/dev-link.ps1` is **Windows-only**. Everything here has been exercised on Windows against both the CLI and DSH Desktop; macOS and Linux are untested.
 
 ## Plugins
 
@@ -111,6 +113,14 @@ dsh --version
 
 These plugins declare their `@deepseek-ai/*` packages as **peers** and deliberately don't install their own copies — they resolve to the ones inside your global `dsh` install. Step 5 is what wires that up.
 
+> **Using DSH Desktop only?** You don't need the CLI to install or run the plugins — steps 3, 4 and 6 work against the desktop's own profiles. You only need a copy of the harness packages for this repo's tooling (tests, typecheck, live editing), and you can point at the ones the desktop already bundles instead of installing the CLI:
+>
+> ```powershell
+> $env:DSH_HOST_DEPS = "$env:LOCALAPPDATA\Programs\DSH Desktop\resources\app\node_modules\@deepseek-ai"
+> ```
+>
+> Verified working: anchoring resolves to the desktop bundle rather than the npm host. Keep it consistent — don't anchor against the bundle while a CLI profile serves the same plugin, or the two surfaces load different physical copies of the harness packages.
+
 You also need the harness itself configured with a model provider before any of this is
 useful — that's dsh's own setup (`~/.dsh/settings.yaml` and credentials), not something these
 plugins touch.
@@ -136,7 +146,7 @@ pnpm run test
 
 ### 2. Pick or create a profile
 
-A profile is a directory under `$DSH_HOME/profiles/<name>` (`~/.dsh/profiles` for the CLI; `%APPDATA%\dsh-desktop\harness\profiles` for DSH Desktop) holding a `package.json` and a `cordis.patch.yml`.
+A profile is a directory under `$DSH_HOME/profiles/<name>` holding a `package.json` and a `cordis.patch.yml`. The CLI uses `~/.dsh`; DSH Desktop keeps its own `DSH_HOME` — on Windows that's `%APPDATA%\dsh-desktop\harness`, and the desktop logs the path it booted with at startup if you need to confirm it.
 
 `web` and `headless` have built-in templates, so installing into them creates the directory, its manifest, an empty `cordis.patch.yml`, and the pnpm settings below. **Any other name you must scaffold yourself** — two files:
 
