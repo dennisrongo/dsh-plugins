@@ -17,9 +17,12 @@
  *   3. Asserts every non-@deepseek-ai runtime dependency resolves too, which is
  *      what an undeclared import or a pruned node_modules breaks.
  *   4. Imports each entry point, which is the failure a consumer actually hits.
+ *   5. Reports which profile installs actually track this repo. A profile holding
+ *      a frozen copy silently serves stale bytes after every rebuild — no error,
+ *      which is why it needs reporting rather than discovering.
  *
  * Live checks (with --port):
- *   5. POSTs each host plugin's endpoint and requires a 200 with ok:true.
+ *   6. POSTs each host plugin's endpoint and requires a 200 with ok:true.
  *      A 404 means the ./typert export was not registered.
  *
  * Usage:
@@ -30,7 +33,7 @@
  * Exits non-zero on the first category that fails, so it works in CI.
  */
 import { createRequire } from 'node:module'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -140,7 +143,53 @@ for (const name of packages) {
   }
 }
 
-// --- 5. live wire probes ----------------------------------------------------
+// --- 5. do edits here actually reach the profiles? --------------------------
+//
+// A profile serves whatever its node_modules entry points at. Junctioned at this
+// repo, a rebuild self-deploys and a browser refresh picks it up. Materialised as
+// a real directory, the profile is FROZEN at install time and silently keeps
+// serving stale bytes — no error anywhere, which is the whole problem. DSH
+// Desktop's profile-repair install turns junctions back into copies, so this
+// drifts on its own.
+//
+// Reported, never fatal: a profile that installed from npm is *meant* to hold a
+// copy. It is only a defect if you expect your edits to show up there.
+console.log('\n=== profile deployment ===')
+const profileRoots = [
+  join(homedir(), '.dsh', 'profiles'),
+  join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'dsh-desktop', 'harness', 'profiles'),
+]
+const repoPackages = new Map()
+for (const name of packages) {
+  try {
+    const m = JSON.parse(readFileSync(join(pluginRoot, name, 'package.json'), 'utf8'))
+    repoPackages.set(m.name, join(pluginRoot, name))
+  } catch { /* skip */ }
+}
+
+let live = 0, frozen = 0, foreign = 0
+for (const root of profileRoots) {
+  if (!existsSync(root)) continue
+  for (const profile of readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory())) {
+    const scope = join(root, profile.name, 'node_modules', '@dennisrongo')
+    if (!existsSync(scope)) continue
+    for (const entry of readdirSync(scope)) {
+      const installed = join(scope, entry)
+      let real
+      try { real = realpathSync(installed) } catch { continue }
+      const pkgName = `@dennisrongo/${entry}`
+      const expected = repoPackages.get(pkgName)
+      if (!expected) { foreign++; continue }   // not one of ours; leave it alone
+      if (norm(real) === norm(expected)) { live++; continue }
+      frozen++
+      console.log(`  note  ${profile.name}/${entry} is a frozen copy — edits here will NOT reach it`)
+      console.log(`        run scripts/dev-link.ps1 to junction it at this repo`)
+    }
+  }
+}
+console.log(`  ${live} profile install(s) track this repo, ${frozen} frozen${foreign ? `, ${foreign} not from this repo` : ''}`)
+
+// --- 6. live wire probes ----------------------------------------------------
 const PROBES = [
   { pkg: '@dennisrongo/dsh-todo', method: 'dshTodo/list' },
   { pkg: '@dennisrongo/dsh-git', method: 'dshGit/status' },
