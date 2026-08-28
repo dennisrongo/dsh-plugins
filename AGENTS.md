@@ -21,7 +21,7 @@ plugins/dsh-todo         host + client — Todo tab, service key dshTodo
 plugins/dsh-git          host + client — Changes tab, service key dshGit
                          live-updating: fs.watch + a changeToken poll
 plugins/dsh-weather      client only   — shell.overlay weather bar
-plugins/dsh-mission-control client only — shell.overlay fleet dashboard
+plugins/dsh-mission-control host + client — fleet dashboard overlay, service key dshMissionControl
 plugins/dsh-headless-plus CLI app      — --model/--resume/--continue
 plugins/dsh-superpowers  host          — system-prompt section
 plugins/dsh-skills       host          — skill provider over @dennisrongo/skills
@@ -152,5 +152,5 @@ Both surfaces need checking when resolution changes: the CLI, and DSH Desktop wi
 
 Commits use `feat:` / `fix:` / `docs:` / `chore:` prefixes. JSDoc on exported functions,
 explaining *why* where the reason is not obvious from the signature. Client CSS classes are
-namespaced per plugin (`dshtd-`, `dshgit-`, `dshwx-`). Clickable controls are real
+namespaced per plugin (`dshtd-`, `dshgit-`, `dshwx-`, `dshmc-`). Clickable controls are real
 `<button>`s. Keep accessibility affordances that are already there — they are deliberate.

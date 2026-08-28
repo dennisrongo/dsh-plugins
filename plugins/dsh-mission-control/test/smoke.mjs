@@ -18,9 +18,20 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 const importLocal = (p) => import(pathToFileURL(join(root, p)).href)
 
-// --- 1) host half
+// --- 1) host half: the persisted state cell service
 const host = await importLocal("lib/index.js")
-assert.equal(typeof host.apply, 'function', 'host half exports apply()')
+assert.equal(typeof host.default, 'function', 'host half default-exports MissionControlService')
+assert.equal(host.default.name, 'MissionControlService', 'the service class keeps its name')
+assert.equal(typeof host.MAX_STATE_BYTES, 'number', 'exports the state size cap')
+const hostSrc = readFileSync(join(root, 'lib/index.js'), 'utf8')
+assert.ok(hostSrc.includes('dshMissionControl'), 'host registers the dshMissionControl service key')
+assert.ok(hostSrc.includes('dsh-mission-control.json'), 'host persists to the storages cell')
+// The Typert manifest is what publishes the endpoints; without it the loader
+// silently skips the package and every call 404s.
+const typert = await importLocal("lib/typert.host.js")
+assert.equal(typert.TYPERT.package, '@dennisrongo/dsh-mission-control', 'typert manifest names the package')
+assert.equal(typert.TYPERT.face, 'host', 'typert manifest is the host face')
+assert.equal(typert.TYPERT.invocations.length, 2, 'load + save descriptors are published')
 
 // --- 2/3) pure logic from the built client bundle (CJS body under the loader convention)
 const registered = []
@@ -46,6 +57,10 @@ assert.equal(typeof exports.buildFleet, 'function', 'exports buildFleet')
 assert.equal(typeof exports.totalBurn, 'function', 'exports totalBurn')
 assert.equal(typeof exports.apply, 'function', 'exports apply')
 assert.equal(typeof exports.fmtTokens, 'function', 'exports fmtTokens')
+assert.equal(typeof exports.packPomodoroEnvelope, 'function', 'exports packPomodoroEnvelope')
+assert.equal(typeof exports.parsePomodoroEnvelope, 'function', 'exports parsePomodoroEnvelope')
+const clientSrc = readFileSync(join(root, 'lib/client.js'), 'utf8')
+assert.ok(clientSrc.includes('dshMissionControl'), 'client mounts the host state remote')
 
 // buildFleet: subagents come from the durable per-parent catalogs, NOT from
 // ids/byId. The host list carries root sessions only; byId gains a subagent row
@@ -1130,6 +1145,12 @@ const stubCtx = {
     fn()
     return () => {}
   },
+  // The host state bridge: $mount resolves, but the namespace never becomes
+  // injectable — the panel must stay on localStorage without hanging.
+  remote: { $mount: async () => async () => {} },
+  inject(services, callback) {
+    return { dispose() {} }
+  },
   slots: {
     inject(key, callback) {
       // test double: declaration exists immediately, so run the effect now
@@ -1363,7 +1384,8 @@ assert.equal(element.type.name, 'MissionControl', 'renders MissionControl')
   const {
     normalizeMinutes, phaseDurationMs, nextPhase, initialPomodoro, remainingOf,
     advancePomodoro, startPomodoro, pausePomodoro, resetPomodoro, skipPomodoro, displayNow,
-    fmtClock, phaseLabel, phaseProgress, parseSettings,
+    fmtClock, phaseLabel, phaseProgress, parseSettings, idleSyncKey, serializePomodoroState, parsePomodoroState,
+    packPomodoroEnvelope, parsePomodoroEnvelope,
     DEFAULT_WORK_MINUTES, DEFAULT_BREAK_MINUTES, DEFAULT_LONG_BREAK_MINUTES,
     POMODORO_LONG_EVERY, POMODORO_MIN_MINUTES, POMODORO_MAX_MINUTES,
   } = exports
@@ -1510,6 +1532,69 @@ assert.equal(element.type.name, 'MissionControl', 'renders MissionControl')
   assert.equal(phaseProgress(started, started.endsAt, config), 1, 'a finished phase is full')
   assert.equal(phaseProgress(started, 1_000 + 12.5 * 60_000, config), 0.5, 'halfway is 0.5')
   assert.ok(phaseProgress(started, started.endsAt + 9e6, config) <= 1, 'progress never exceeds 1')
+
+  // REGRESSION: pausing flipped `running`, which used to re-key the idle
+  // duration sync — the effect then "resynced" a freshly parked timer to the
+  // full phase duration and the pause looked like a restart. The key must
+  // only move when the phase or a configured duration does.
+  {
+    const runningKey = idleSyncKey(started, config)
+    const pausedKey = idleSyncKey(pausePomodoro(started, 1_000 + 60_000), config)
+    assert.equal(pausedKey, runningKey, 'pausing must not re-key the idle sync')
+    const edited = { ...config, workMinutes: 50 }
+    assert.notEqual(idleSyncKey(paused, edited), pausedKey, 'a duration edit re-keys the sync')
+    assert.notEqual(
+      idleSyncKey({ ...paused, phase: 'break' }, config),
+      pausedKey,
+      'a phase change re-keys the sync',
+    )
+  }
+
+  // persistence: the timer survives a UI restart, garbage never does damage
+  {
+    const roundTrip = (s) => parsePomodoroState(serializePomodoroState(s), config)
+    assert.deepEqual(roundTrip(fresh), fresh, 'a fresh timer round-trips')
+    assert.deepEqual(roundTrip(started), started, 'a running timer round-trips with its absolute endsAt')
+    assert.deepEqual(roundTrip(paused), paused, 'a paused timer keeps its banked remainder')
+    assert.deepEqual(parsePomodoroState(null, config), fresh, 'absent storage yields a fresh timer')
+    assert.deepEqual(parsePomodoroState('not json', config), fresh, 'corrupt JSON falls back')
+    assert.deepEqual(parsePomodoroState('42', config), fresh, 'a non-object falls back')
+    assert.deepEqual(parsePomodoroState('{"phase":"lunch"}', config), fresh, 'an unknown phase falls back')
+    const clamped = parsePomodoroState('{"phase":"work","remainingMs":999e9,"completed":2.7}', config)
+    assert.equal(clamped.remainingMs, 25 * 60_000, 'a stale remainder clamps to the configured duration')
+    assert.equal(clamped.completed, 2, 'completed floors to a whole count')
+    assert.equal(clamped.running, false, 'a payload without running stays parked')
+    const corrupt = parsePomodoroState('{"phase":"work","running":true,"endsAt":0}', config)
+    assert.equal(corrupt.running, false, 'running without a deadline is parked, not trusted')
+    const legacy = parsePomodoroState(
+      serializePomodoroState({ phase: 'break', running: false, endsAt: 0, remainingMs: 3 * 60_000, completed: 3 }),
+      config,
+    )
+    assert.equal(legacy.phase, 'break', 'a mid-cycle phase survives a restart')
+    assert.equal(legacy.completed, 3, 'the cycle count survives a restart')
+  }
+
+  // the timestamped envelope: reconciles a localStorage seed against the
+  // host cell — the NEWER write wins, so a timer that crossed an origin
+  // change (Desktop's per-launch port) is adopted, not clobbered.
+  {
+    const env = parsePomodoroEnvelope(packPomodoroEnvelope(paused, 1234), config)
+    assert.equal(env.updatedAt, 1234, 'the envelope keeps its timestamp')
+    assert.deepEqual(env.state, paused, 'the envelope round-trips the state')
+    // legacy bare state (written before the envelope existed) still loads,
+    // reading as updatedAt 0 so any real write outranks it
+    const legacy = parsePomodoroEnvelope(serializePomodoroState(paused), config)
+    assert.equal(legacy.updatedAt, 0, 'a bare state reads as timestamp 0')
+    assert.deepEqual(legacy.state, paused, 'a bare state still parses')
+    assert.equal(parsePomodoroEnvelope(null, config), null, 'absent payload yields null, not a reset')
+    assert.equal(parsePomodoroEnvelope('not json', config), null, 'corrupt JSON yields null')
+    assert.equal(parsePomodoroEnvelope('{"updatedAt":5}', config), null, 'an envelope without state yields null')
+    assert.equal(parsePomodoroEnvelope('{"updatedAt":5,"state":{"phase":"lunch"}}', config), null, 'a bogus phase yields null')
+    // reconciliation rule: newer host write beats an untouched older seed
+    const older = parsePomodoroEnvelope(packPomodoroEnvelope(paused, 100), config)
+    const newer = parsePomodoroEnvelope(packPomodoroEnvelope(started, 200), config)
+    assert.ok(newer.updatedAt > older.updatedAt, 'timestamps order the two copies')
+  }
 
   // settings persist the durations and degrade safely
   assert.deepEqual(

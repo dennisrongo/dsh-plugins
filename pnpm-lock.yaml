@@ -40,7 +40,14 @@ importers:
         version: 14.0.3
 
   plugins/dsh-mission-control:
+    dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
+      '@types/node':
+        specifier: 22.20.1
+        version: 22.20.1
       '@types/react':
         specifier: ^18.3.0
         version: 18.3.31

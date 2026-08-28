@@ -25,9 +25,11 @@ Docked as a right rail that the shell's layout reflows around:
 
 Built on public faces only: `ctx.sessions.list` and `ctx.workspaces.list`
 (ObservableSnapshot → React), `sessionStats` projections (turns / steps / llmMs
-/ decodeTokens), and `PendingInteraction` off the session summaries. No
-services, no tools, no presets — a pure consumer, same posture as the shipped
-`ui-trajectory` plugin.
+/ decodeTokens), and `PendingInteraction` off the session summaries. No tools,
+no presets. One minimal host service persists the panel's timer state to a JSON
+cell under the harness home — browser storage is origin-scoped and DSH Desktop
+serves the UI from an ephemeral port per launch, so without it a restart reset
+the pomodoro. Without the host half the panel degrades to localStorage.
 
 ## Stage
 
@@ -56,8 +58,9 @@ derive from one place instead of drifting apart.
 ## Settings
 
 A drawer in the panel header, persisted to `localStorage` under
-`dsh-mission-control:settings`. Parsing is defensive — any bad shape falls back
-to defaults, and a storage failure (private mode, quota) degrades to an
+`dsh-mission-control:settings` (origin-local; only the pomodoro is mirrored
+to the host cell). Parsing is defensive — any bad shape falls back to
+defaults, and a storage failure (private mode, quota) degrades to an
 in-memory value rather than throwing into the shell.
 
 | Setting | Does |
@@ -68,7 +71,10 @@ in-memory value rather than throwing into the shell.
 | Work / break / long break | Pomodoro phase lengths, in minutes. |
 
 The **pomodoro timer** runs in the footer and fires a desktop notification on
-each phase change. The drawer is a two-column grid — one column for every label,
+each phase change. Its state survives restarts: it is mirrored to the host's
+state cell (`<DSH_HOME>/storages/dsh-mission-control.json`) with a timestamped
+envelope, and the newer copy wins on load — so a running timer picked up after a
+Desktop restart simply re-derives its remainder from the wall clock. The drawer is a two-column grid — one column for every label,
 one for every control — so labels and controls line up across all rows; per-row
 `space-between` cannot do that, because it aligns each control to its own label.
 
@@ -76,32 +82,30 @@ one for every control — so labels and controls line up across all rows; per-ro
 
 ```bash
 pnpm install
-pnpm run build          # emits lib/index.js + lib/client.js
+pnpm run build          # emits lib/index.js + lib/client.js + lib/typert.host.js
 pnpm test               # offline smoke test
 ```
 
-Mount into a profile (dev checkout):
-
-```yaml
-# ~/.dsh/profiles/<name>/cordis.patch.yml
-- insert:
-    - id: dsh-mission-control
-      name: '@dennisrongo/dsh-mission-control'
-```
-
-with the package linked into the profile workspace:
+The package declares `dsh.bundle`, so one command installs **and** mounts both
+halves — do **not** also add an `insert:` row to the profile's
+`cordis.patch.yml`; a second row with the same id is fatal
+(`duplicate loader entry id: dsh-mission-control`):
 
 ```bash
-cd ~/.dsh/profiles/<name>
-dsh plugin --profile <name> add @dennisrongo/dsh-mission-control
+dsh plugin --profile web add @dennisrongo/dsh-mission-control
+# or, from a clone:
+dsh plugin --profile web add "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-mission-control"
 ```
 
-Then `dsh web` and the panel rides in the overlay seat.
+Restart the profile. The overlay rides in the `shell.overlay` seat; the host
+cell is at `<DSH_HOME>/storages/dsh-mission-control.json`.
 
 ## Status
 
 Verified against dsh `0.1.1-rc.2` seams: `window.__ModuleLoader__.load`
-closure-factory convention, `ctx.slots.register` additive list entry, and
-`useSyncExternalStore` binding over `ctx.sessions.list`.
+closure-factory convention, `ctx.slots.register` additive list entry,
+`useSyncExternalStore` binding over `ctx.sessions.list`, and the
+`./typert` host-face export that publishes `dshMissionControl/load` and
+`save`.
 
 dsh is a fast-moving 0.1.x dev preview — re-verify seams on upgrade.

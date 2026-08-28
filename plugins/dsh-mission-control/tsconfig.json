@@ -10,8 +10,15 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+    "allowImportingTsExtensions": true,
+    // The Typert @Remote decorator is a TC39 STANDARD decorator, not a legacy
+    // TypeScript one. This must stay false or the marker never registers.
+    "experimentalDecorators": false,
+    "types": ["react", "node"],
     "baseUrl": ".",
     "paths": {
+      // Typecheck against the RUNNING dsh install (anchored by
+      // scripts/anchor.mjs), which is what the peers resolve to at runtime.
       "@deepseek-ai/dsh-client-runtime": [
         "./node_modules/@deepseek-ai/dsh-client-runtime/lib/types/client/index.d.ts"
       ],
@@ -20,6 +27,9 @@
       ],
       "@deepseek-ai/cordis": [
         "./node_modules/@deepseek-ai/cordis/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-typert-protocol": [
+        "./node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/index.d.ts"
       ]
     }
   },

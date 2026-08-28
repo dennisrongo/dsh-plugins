@@ -3,17 +3,52 @@
 Fleet dashboard for DeepSeek Harness: live sessions, subagent swarm tree, token burn and a
 permission inbox, floating over the stock web UI.
 
-**Client-only plugin — no host service, no `/api/` endpoints.** It registers into dsh's
-additive `shell.overlay` slot and is a **pure consumer**: no services, no tools, no presets,
-same posture as the shipped `ui-trajectory` plugin. Keep that — a host half here would be a
-design change, not an addition.
+The panel registers into dsh's additive `shell.overlay` slot and reads public faces
+only: `ctx.sessions.list` (an ObservableSnapshot bridged into React), `sessionStats`
+projections (turns / steps / llmMs / decodeTokens), and `PendingInteraction` off the session
+summaries. The fleet rendering stays a **pure consumer** — no tools, no presets.
 
-It reads public faces only: `ctx.sessions.list` (an ObservableSnapshot bridged into React),
-`sessionStats` projections (turns / steps / llmMs / decodeTokens), and `PendingInteraction`
-off the session summaries.
+**It gained a minimal host half (v0.4.0) for exactly one reason: persistence that survives
+DSH Desktop restarts.** Desktop serves the UI from an ephemeral port per launch, and
+localStorage is origin-scoped, so every restart was a fresh origin and the pomodoro timer
+vanished. The host owns one opaque JSON cell per harness home at
+`<DSH_HOME>/storages/dsh-mission-control.json` (atomic tmp+rename writes, 64KB cap, never
+parsed by the host — the client owns the envelope shape via `packPomodoroEnvelope` /
+`parsePomodoroEnvelope`). The wire payload is a deliberately opaque string so the contract
+never changes when the panel's state grows a field. **Degradation is the contract:** with no
+host half reachable (older install), the panel runs on localStorage exactly as before; the
+client seeds synchronously from localStorage and adopts the host cell only when its
+`updatedAt` is newer and this mount is still untouched.
 
-Because there is no host half, the identity check and wire probe the sibling packages
-document don't apply. Verify through the served bundle and the rendered DOM instead.
+Host-half changes need a **profile restart**, not a browser refresh (the `./typert` export is
+read at boot), and the wire probe the sibling packages document now applies:
+`POST /api/dshMissionControl/load` → `{"type":"server-response","result":{"ok":true,"value":{"state":...}}}`;
+a 404 means the `./typert` export is not registered.
+
+Two halves in one package:
+
+- **Host** (`src/index.ts` → `lib/index.js`) — `MissionControlService extends TypertRemoteService`,
+  cordis service key `dshMissionControl`. Owns one opaque JSON cell at
+  `<DSH_HOME>/storages/dsh-mission-control.json`. Never parses the payload.
+- **Client** (`src/client.tsx` → `lib/client.js`) — the overlay, CSS prefix `dshmc-`, calling
+  the host as `ctx.remote.dshMissionControl.load(...)` / `.save(...)`. Fleet rendering stays a
+  pure consumer.
+
+## Endpoints
+
+`POST /api/dshMissionControl/<method>`, each taking one parameter named `request`:
+
+- `load` — `{}` → `{ state: string | null }`; an absent or unreadable cell reads as `null`
+- `save` — `{ state: string }` → `{ ok: true }`; refuses a non-string or a payload over 64KB;
+  writes are atomic (tmp + rename)
+
+`wire: 'request'` in `src/remote.ts` must match the host parameter name — the gateway
+resolves endpoints by reading parameter names off the function source.
+
+`lib/typert.host.js`, exported as the `./typert` subpath, is what publishes these to the API
+gateway. **Without it the package is skipped silently**: the service constructs, the overlay
+renders, every call 404s. The loader caches its per-package verdict for the process lifetime,
+so registration needs a full profile restart.
 
 ## Surfaces
 
@@ -57,10 +92,12 @@ toggles land under the minimize/maximize/close buttons and simply do not click.
 
 ## Settings
 
-Persisted to `localStorage` under `dsh-mission-control:settings` via `parseSettings`, which
-is **defensive by contract**: any bad shape falls back to defaults, and a write failure
-(private mode, quota) keeps the in-memory value rather than throwing into the shell.
-`parseSettings` is exported so it can be driven directly from a test.
+The drawer itself is still `localStorage` under `dsh-mission-control:settings` via
+`parseSettings`, which is **defensive by contract**: any bad shape falls back to defaults,
+and a write failure (private mode, quota) keeps the in-memory value rather than throwing
+into the shell. `parseSettings` is exported so it can be driven directly from a test.
+Only the pomodoro timer is mirrored to the host cell; the drawer keys stay origin-local
+until that envelope grows a field.
 
 Settings are: sessions listed per workspace group (`0` = All), fleet sort order, whether the
 pomodoro footer shows, and its work / break / long-break lengths. Sessions needing attention
@@ -93,21 +130,26 @@ Works on both surfaces: the dsh CLI and DSH Desktop, which keeps its own `DSH_HO
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (esbuild dual build →
-`lib/index.js` + `lib/client.js`, via the gitignored `client.body.cjs`) and `pnpm test`
-(`test/smoke.mjs`, offline, exercising the **built** bundle).
+`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`,
+`lib/client.js`, `lib/typert.host.js`, via the gitignored `client.body.cjs`). The three
+real artifacts are **committed** so a GitHub subdirectory install works — rebuild and
+commit them when you change `src/`. `pnpm test` runs build + `test/smoke.mjs`
+(offline, exercising the **built** bundle).
 
 **`pnpm test` rebuilds first** (`node build/build.mjs && node test/smoke.mjs`), matching
-`dsh-git`, `dsh-weather` and `dsh-todo`. The suite imports `lib/client.js` and calls its
-exports, so without that prefix it happily passes against a stale bundle — verified by
-changing `fmtTokens`' divisor in `src/` without rebuilding and watching the suite stay
-green. This is the same defect class that let this package's own `dshmc-burn-row` marker
-rot unnoticed. Running `test/smoke.mjs` directly still skips the build, so prefer
-`pnpm test`.
+`dsh-git`, `dsh-weather` and `dsh-todo`. The suite imports `lib/client.js` and
+`lib/typert.host.js` and calls their exports, so without that prefix it happily passes
+against a stale bundle — verified by changing `fmtTokens`' divisor in `src/` without
+rebuilding and watching the suite stay green. This is the same defect class that let this
+package's own `dshmc-burn-row` marker rot unnoticed. Running `test/smoke.mjs` directly
+still skips the build, so prefer `pnpm test`.
 
 `scripts/dev-link.ps1` junctions the package into a profile so a rebuild self-deploys;
-client-half edits then land on a **browser refresh** with no profile restart. Re-run it, or
-`node scripts/anchor.mjs`, after any `pnpm install`.
+client-half edits then land on a **browser refresh**, host-half edits need a **profile
+restart**. Re-run it, or `node scripts/anchor.mjs`, after any `pnpm install`. DSH
+Desktop's profile-repair install additionally empties this package's `node_modules`,
+taking `zod` with it, after which the harness refuses to boot with
+`Cannot find package 'zod'`. Fix: `pnpm install` at the monorepo root, then the script.
 
 `test/installed-copy.mjs` checks the copies a profile actually serves. It is deliberately
 **not** part of `pnpm test`: it reads machine state rather than something the repo owns, so
@@ -128,14 +170,29 @@ the source. That is how `dshmc-burn-row` rotted. Discovery is what closes it.
 pnpm run build && pnpm test          # marker assertions against the built bundle
 npx tsc --noEmit                     # needs the @deepseek-ai anchoring (anchor.mjs)
 
-# the bundle the browser receives — size should match the build's reported bytes
+# 1. identity — must print the %APPDATA%\npm host path, never a .pnpm store path
+# run from this package folder
+node -e "const{createRequire}=require('module'),{resolve}=require('path');console.log(createRequire(resolve('lib/index.js')).resolve('@deepseek-ai/cordis'))"
+
+# 2. wire probe — 200 = mounted; 404 = the ./typert export is not registered
+curl -s -X POST http://127.0.0.1:38111/api/dshMissionControl/load -H 'content-type: application/json' \
+  -d '{"type":"client-request","rpcId":"t1","method":"dshMissionControl/load","payload":{"args":{"request":{}}}}'
+
+# 3. the bundle the browser receives — size should match the build's reported bytes
 curl -s -o /dev/null -w '%{http_code} %{size_download}\n' \
   http://127.0.0.1:38111/plugins/@dennisrongo/dsh-mission-control/client.js
 ```
 
+A healthy load reply is `{"type":"server-response","result":{"ok":true,"value":{"state":...}}}`
+(`state` is `null` when nothing has been saved yet). Boot a scratch server with captured
+output (`dsh --profile web --port 38111 --no-open`) — an `ERR_MODULE_NOT_FOUND` there is a
+broken junction that a running server would swallow. Leave `DSH_HOME` alone: a scratch
+server on the Desktop's home corrupts the sessions the Desktop has open.
+
 Then open the UI and confirm the overlay renders: `dshmc-*` nodes present, the stats strip
 populated, sessions listed. Verify against the **server**, not the filesystem — dsh reads the
-plugin from disk per request, so a refreshed bundle needs only a browser refresh.
+plugin from disk per request, so a refreshed client bundle needs only a browser refresh;
+a new `./typert` export still needs a full profile restart.
 
 ## Gotchas
 
@@ -148,4 +205,10 @@ plugin from disk per request, so a refreshed bundle needs only a browser refresh
   anchoring. `TS2307: Cannot find module '@deepseek-ai/...'` means run `node
   scripts/anchor.mjs`, not add a stub.
 - The overlay must degrade rather than throw: a session list that fails to load should render
-  an empty or error state, never take down the shell it floats over.
+  an empty or error state, never take down the shell it floats over. The same rule covers
+  the host cell — a missing `./typert` export, a 404, or a rejected `save` leaves the
+  panel on localStorage. Do not make `inject(['remote.dshMissionControl'])` a hard
+  requirement of `apply()`; an older install never resolves that inject.
+- `build/build.mjs` keeps `minify: false` on the host and typert builds for the same
+  reason as dsh-todo: the gateway reads `@Remote` parameter names out of
+  `Function.prototype.toString()`.

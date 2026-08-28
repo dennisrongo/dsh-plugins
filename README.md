@@ -22,7 +22,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | [`dsh-headless-plus`](plugins/dsh-headless-plus) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
 | [`dsh-superpowers`](plugins/dsh-superpowers) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
 | [`dsh-skills`](plugins/dsh-skills) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-skills) | the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library as an installable skill catalog | host | — |
-| [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox | client only | — |
+| [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox, pomodoro timer | host + client | `dshMissionControl/load`, `save` |
 
 ---
 
@@ -161,9 +161,11 @@ One glass panel over the whole agent fleet, floating above the stock web UI.
 
 **Stage** is a full-screen takeover — press it and the rail swaps for a live grid of tiles, one per session that is running, waiting on you, or was touched inside the activity window (`30m` / `2h` toggle), busiest first. A tile carries the session's live conversation and answers a pending permission **in place**, so you never lose the tab you came from; Esc or × returns to the panel. Because Stage covers the whole viewport it also spans DSH Desktop's 36px window-drag strip, which swallows clicks before hit-testing — its bar clears that band and every control opts out with `data-dsh-no-drag`.
 
-A **settings drawer** persists to `localStorage` (bad shapes fall back to defaults, and a storage failure degrades to in-memory rather than throwing): sessions listed per workspace group, fleet sort order, and an optional **pomodoro timer** in the footer with configurable work / short-break / long-break lengths and a desktop notification on phase change.
+A **settings drawer** persists to `localStorage` (bad shapes fall back to defaults, and a storage failure degrades to in-memory rather than throwing): sessions listed per workspace group, fleet sort order, and an optional **pomodoro timer** in the footer with configurable work / short-break / long-break lengths and a desktop notification on phase change. The timer itself is also mirrored to the host cell so it survives a Desktop restart; the drawer keys stay origin-local.
 
-**How it works.** A pure consumer on public faces only — `ctx.sessions.list` and `ctx.workspaces.list` as ObservableSnapshots bridged into React, `sessionStats` projections (turns / steps / llmMs / decodeTokens), and `PendingInteraction` off the session summaries. No services, no tools, no presets and no host half; it floats over the stock UI without touching it. CSS is namespaced `dshmc-`, and control metrics are CSS custom properties so the 400px rail's compact sizing and Stage's full-screen sizing derive from one set of tokens rather than diverging.
+**How it works.** Fleet rendering is a pure consumer on public faces only — `ctx.sessions.list` and `ctx.workspaces.list` as ObservableSnapshots bridged into React, `sessionStats` projections (turns / steps / llmMs / decodeTokens), and `PendingInteraction` off the session summaries. No tools, no presets. One minimal host service, `dshMissionControl`, owns a single opaque JSON cell at `<DSH_HOME>/storages/dsh-mission-control.json` so the pomodoro survives a DSH Desktop restart: Desktop serves the UI from an ephemeral port per launch, and localStorage is origin-scoped, so without the host cell every restart was a fresh website. The client owns the envelope shape; the host never parses it. Without the host half (an older install) the panel degrades to localStorage. CSS is namespaced `dshmc-`, and control metrics are CSS custom properties so the 400px rail's compact sizing and Stage's full-screen sizing derive from one set of tokens rather than diverging.
+
+**Endpoints.** `POST /api/dshMissionControl/load` → `{ state }` (a string or `null`); `POST /api/dshMissionControl/save` → `{ ok: true }`. Both take one parameter named `request`.
 
 ---
 
@@ -358,7 +360,8 @@ Use `@deepseek-ai/dsh-headless` instead of `dsh-web-app` for a headless profile.
 dsh plugin --profile web add \
   "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-todo" \
   "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-git" \
-  "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-weather"
+  "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-weather" \
+  "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-mission-control"
 ```
 
 On Windows use a **native absolute path with forward slashes** — the MSYS `/c/...` form fails with `LINKED_PKG_DIR_NOT_FOUND`.
@@ -384,9 +387,10 @@ host service and the browser tab. Restart the profile and it's live.
 > (cordis:include): duplicate loader entry id: dsh-weather
 > ```
 >
-> If you have rows for `dsh-weather`, `dsh-todo`, `dsh-git`, `superpowers`,
-> `headless-plus-startup` or `headless-plus-runner` — or the `headless-startup` /
-> `headless-runner` disables, which `dsh-headless-plus` now carries itself — **delete them**.
+> If you have rows for `dsh-weather`, `dsh-todo`, `dsh-git`, `dsh-mission-control`,
+> `superpowers`, `headless-plus-startup` or `headless-plus-runner` — or the
+> `headless-startup` / `headless-runner` disables, which `dsh-headless-plus` now
+> carries itself — **delete them**.
 > Check with `dsh --profile <name> --dump-config`, which labels each row with the layer it came
 > from; you want exactly one per plugin.
 

@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-mission-control",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Mission Control dashboard for DeepSeek Harness (dsh) — live session fleet, swarm tree, token burn, and permission inbox as a shell.overlay plugin",
   "type": "module",
   "license": "MIT",
@@ -14,6 +14,9 @@
     },
     "./client": {
       "default": "./lib/client.js"
+    },
+    "./typert": {
+      "default": "./lib/typert.host.js"
     },
     "./package.json": "./package.json"
   },
@@ -41,7 +44,15 @@
       "immediately": true
     }
   },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.1-rc.2"
+  },
   "devDependencies": {
+    "@types/node": "22.20.1",
     "@types/react": "^18.3.0",
     "esbuild": "^0.24.0",
     "react": "^18.3.0",

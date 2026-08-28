@@ -9,6 +9,7 @@
 import React from 'react'
 import { useSyncExternalStore } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import { MC_REMOTE } from './remote.ts'
 
 /** Required services (cordis fiber inject — service access is granted per-fiber). */
 export const inject = ['slots', 'sessions', 'workspaces', 'modelDirectories']
@@ -3221,6 +3222,169 @@ export function phaseProgress(state: PomodoroState, now: number, config: Pomodor
   return done < 0 ? 0 : done > 1 ? 1 : done
 }
 
+/**
+ * Identity of the parked clock for the duration-edit sync. Deliberately
+ * EXCLUDES `running`: the sync exists so an idle timer tracks live edits to
+ * its configured length, and keying on the running flag made every pause look
+ * like a fresh idle state — the effect then "resynced" remainingMs to the
+ * full duration and wiped the banked pause.
+ */
+export function idleSyncKey(state: PomodoroState, config: PomodoroConfig): string {
+  return [
+    state.phase,
+    phaseDurationMs('work', config),
+    phaseDurationMs('break', config),
+    phaseDurationMs('long', config),
+  ].join(':')
+}
+
+/** localStorage key for the persisted timer — separate from panel settings so
+ *  a corrupt payload here can never take the settings down with it. */
+export const POMODORO_KEY = 'dsh-mission-control:pomodoro'
+
+/** Serialized form: the absolute `endsAt` makes a running timer survive a
+ *  restart correctly, since remaining time re-derives from the wall clock. */
+export function serializePomodoroState(state: PomodoroState): string {
+  return JSON.stringify({
+    phase: state.phase,
+    running: state.running,
+    endsAt: state.endsAt,
+    remainingMs: state.remainingMs,
+    completed: state.completed,
+  })
+}
+
+/**
+ * Restore a persisted timer, defensive by contract (same posture as
+ * parseSettings): any bad shape falls back to a fresh parked timer. Values are
+ * clamped into their valid ranges and a parked `remainingMs` can never exceed
+ * the phase's currently configured duration, so a duration edit made while the
+ * panel was closed cannot resurrect a longer stale remainder.
+ *
+ * @param raw - the localStorage payload, or null when absent.
+ * @param config - current configured phase lengths.
+ */
+export function parsePomodoroState(raw: string | null, config: PomodoroConfig): PomodoroState {
+  const fresh = initialPomodoro(config)
+  if (raw === null) return fresh
+  let data: unknown
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return fresh
+  }
+  if (typeof data !== 'object' || data === null) return fresh
+  const d = data as Record<string, unknown>
+  const phase = d.phase
+  if (phase !== 'work' && phase !== 'break' && phase !== 'long') return fresh
+  const running = d.running === true
+  const endsAt = typeof d.endsAt === 'number' && Number.isFinite(d.endsAt) && d.endsAt >= 0 ? d.endsAt : 0
+  const duration = phaseDurationMs(phase, config)
+  const remainingMs =
+    typeof d.remainingMs === 'number' && Number.isFinite(d.remainingMs) && d.remainingMs >= 0
+      ? Math.min(d.remainingMs, duration)
+      : duration
+  const completed =
+    typeof d.completed === 'number' && Number.isFinite(d.completed) && d.completed >= 0
+      ? Math.floor(d.completed)
+      : 0
+  // A state that claims to be running with no deadline is corrupt: park it
+  // with the banked remainder rather than trusting endsAt = 0.
+  return running && endsAt > 0
+    ? { phase, running, endsAt, remainingMs, completed }
+    : { phase, running: false, endsAt: 0, remainingMs, completed }
+}
+
+/**
+ * Timestamped wrapper around the persisted timer. The timestamp is what lets
+ * a freshly mounted panel reconcile its localStorage seed against the
+ * host-side cell (the origin-independent copy): the NEWER write wins, so a
+ * timer started on another origin — or before a Desktop restart moved the
+ * port — is adopted instead of clobbered by the mount.
+ */
+export interface PomodoroEnvelope {
+  updatedAt: number
+  state: PomodoroState
+}
+
+/** Wrap a timer for persistence at `updatedAt` (wall-clock ms). */
+export function packPomodoroEnvelope(state: PomodoroState, updatedAt: number): string {
+  return JSON.stringify({ updatedAt, state: JSON.parse(serializePomodoroState(state)) })
+}
+
+/**
+ * Parse a persisted payload, accepting BOTH the envelope and the legacy bare
+ * state written before the envelope existed (which reads as updatedAt 0, so
+ * any real write outranks it). Returns null when there is nothing usable —
+ * the caller then keeps whatever it already has rather than resetting.
+ *
+ * @param raw - the stored payload, or null.
+ * @param config - current configured phase lengths (for clamping).
+ */
+export function parsePomodoroEnvelope(raw: string | null, config: PomodoroConfig): PomodoroEnvelope | null {
+  if (raw === null) return null
+  let data: unknown
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof data !== 'object' || data === null) return null
+  const d = data as Record<string, unknown>
+  const isEnvelope = typeof d.state === 'object' && d.state !== null
+  const body = isEnvelope ? JSON.stringify(d.state) : raw
+  const updatedAt =
+    isEnvelope && typeof d.updatedAt === 'number' && Number.isFinite(d.updatedAt) && d.updatedAt >= 0
+      ? d.updatedAt
+      : 0
+  // parsePomodoroState never returns null; it falls back to a fresh timer,
+  // which would masquerade as real data here. Reject shape failures first by
+  // checking the phase, the one field every genuine state carries.
+  const phase = (isEnvelope ? (d.state as Record<string, unknown>) : d).phase
+  if (phase !== 'work' && phase !== 'break' && phase !== 'long') return null
+  return { updatedAt, state: parsePomodoroState(body, config) }
+}
+
+// ---------------------------------------------------------------------------
+// Host state bridge
+// ---------------------------------------------------------------------------
+
+/**
+ * The host's `dshMissionControl` cell, mounted from apply(). localStorage is
+ * origin-scoped and DSH Desktop serves the UI from an ephemeral port per
+ * launch, so browser storage alone cannot survive a restart — the host cell
+ * lives under DSH_HOME and is reached over the Typert bridge from any origin.
+ * Everything degrades: with no host half (an older install), the panel runs
+ * on localStorage exactly as before.
+ */
+interface HostStateRemote {
+  load(request: Record<string, never>): Promise<{ state: string | null }>
+  save(request: { state: string }): Promise<{ ok: true }>
+}
+
+let hostRemote: HostStateRemote | null = null
+let hostLoaded = false
+let hostPayload: string | null = null
+const hostListeners = new Set<(payload: string | null) => void>()
+
+/** Subscribe to the first host load; replays immediately once loaded. */
+function onHostState(cb: (payload: string | null) => void): () => void {
+  if (hostLoaded) {
+    cb(hostPayload)
+    return () => {}
+  }
+  hostListeners.add(cb)
+  return () => hostListeners.delete(cb)
+}
+
+/** Persist to the host cell; silently skipped when the host half is absent. */
+function saveHostState(payload: string): void {
+  if (!hostRemote || !hostLoaded) return
+  void hostRemote.save({ state: payload }).catch(() => {
+    /* host unreachable — localStorage still holds this origin's copy */
+  })
+}
+
 /** localStorage key for the panel's persisted preferences. */
 const SETTINGS_KEY = 'dsh-mission-control:settings'
 
@@ -5131,8 +5295,63 @@ function notifyPhaseEnd(elapsed: PomodoroPhase, upcoming: PomodoroPhase): void {
  * @param config - configured phase lengths from panel settings.
  */
 function PomodoroBar({ config }: { config: PomodoroConfig }): React.JSX.Element {
-  const [state, setState] = React.useState<PomodoroState>(() => initialPomodoro(config))
+  const [state, setState] = React.useState<PomodoroState>(() => {
+    // Seed synchronously from this origin's localStorage; storage failures
+    // (private mode, quota) degrade to a fresh parked timer.
+    try {
+      const env = parsePomodoroEnvelope(window.localStorage.getItem(POMODORO_KEY), config)
+      return env ? env.state : initialPomodoro(config)
+    } catch {
+      return initialPomodoro(config)
+    }
+  })
+  // Timestamp of the seed / last local change. The host cell is adopted only
+  // while this mount is untouched AND its write is newer — otherwise a stale
+  // host reply landing after the user pressed Start would rewind the timer.
+  const touchedRef = React.useRef(0)
+  const dirtyRef = React.useRef(false)
   const now = useTicker(state.running, 1000)
+
+  // Reconcile against the host cell once its first load resolves. The host
+  // copy survives origin changes (Desktop's per-launch port); localStorage
+  // does not, so a newer host write always wins over this origin's seed.
+  React.useEffect(() => {
+    return onHostState((payload) => {
+      const env = parsePomodoroEnvelope(payload, config)
+      if (!env || dirtyRef.current || env.updatedAt <= touchedRef.current) return
+      dirtyRef.current = true
+      touchedRef.current = env.updatedAt
+      setState(env.state)
+    })
+    // config identity changes with settings edits; re-running the adoption is
+    // safe because a dirty mount never adopts.
+  }, [config])
+
+  // Persist every transition, to BOTH stores: localStorage seeds the next
+  // mount synchronously, the host cell carries the state across origins and
+  // restarts. endsAt is absolute wall-clock, so a running timer reloaded
+  // after a restart simply re-derives its remainder.
+  //
+  // The MOUNT render is skipped: the seed was already persisted, and marking
+  // the mount dirty would make the host reconciliation above refuse every
+  // adoption — the persist effect runs before the host's load resolves.
+  const mountedRef = React.useRef(false)
+  React.useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true
+      return
+    }
+    const updatedAt = Date.now()
+    touchedRef.current = updatedAt
+    dirtyRef.current = true
+    const payload = packPomodoroEnvelope(state, updatedAt)
+    try {
+      window.localStorage.setItem(POMODORO_KEY, payload)
+    } catch {
+      /* storage unavailable — the timer keeps working in memory */
+    }
+    saveHostState(payload)
+  }, [state])
 
   // Roll the timer forward to the current clock. Pure reducer + effect keeps a
   // backgrounded tab honest: one boundary is crossed per pass, so a long sleep
@@ -5145,16 +5364,17 @@ function PomodoroBar({ config }: { config: PomodoroConfig }): React.JSX.Element 
     notifyPhaseEnd(elapsed, next.phase)
   }, [now, state, config])
 
-  // A paused phase must track live edits to its duration, otherwise the readout
-  // lies about the setting the user just changed.
-  const idleKey = state.running ? '' : `${state.phase}:${phaseDurationMs(state.phase, config)}`
+  // A parked phase must track live edits to its duration, otherwise the readout
+  // lies about the setting the user just changed. The key excludes `running`:
+  // keying on it made every pause look like a new idle state and the resync
+  // below wiped the banked remainder — pausing "restarted" the phase.
+  const idleKey = idleSyncKey(state, config)
   const lastIdleRef = React.useRef(idleKey)
   React.useEffect(() => {
-    if (state.running) { lastIdleRef.current = ''; return }
     if (lastIdleRef.current === idleKey) return
     lastIdleRef.current = idleKey
     setState((s) => (s.running ? s : { ...s, remainingMs: phaseDurationMs(s.phase, config) }))
-  }, [idleKey, state.running, config])
+  }, [idleKey, config])
 
   // Clamp to the phase start: the ticker's sample can predate the click that
   // started this phase, which would render a second more than exists.
@@ -5783,4 +6003,58 @@ export function apply(ctx: ClientContext): void {
       ),
     'dsh-mission-control: shell.overlay registration',
   )
+
+  // Mount the host state contract. `$mount` publishes the namespace
+  // ASYNCHRONOUSLY as `remote.dshMissionControl`, so the load below waits on
+  // ctx.inject for the service to exist rather than reading it directly
+  // (which would capture undefined). An older install without the host half
+  // simply never resolves the inject — the panel stays on localStorage.
+  const anyCtx = ctx as never as {
+    remote: { $mount: (c: unknown) => Promise<() => Promise<void>> }
+    inject: (
+      services: readonly string[],
+      callback: (scoped: unknown) => void,
+    ) => { dispose: () => void }
+  }
+  ctx.effect(() => {
+    let disposed = false
+    let unmount: (() => Promise<void>) | undefined
+    let fiber: { dispose: () => void } | undefined
+    // A runtime without the remote bridge (or an older install) leaves the
+    // panel on localStorage — degradation, never a thrown shell.
+    if (!anyCtx.remote || typeof anyCtx.remote.$mount !== 'function') return () => {}
+    void anyCtx.remote
+      .$mount(MC_REMOTE)
+      .then((dispose) => {
+        if (disposed) return void dispose()
+        unmount = dispose
+        fiber = anyCtx.inject(['remote.dshMissionControl'], (scoped) => {
+          hostRemote = (scoped as { remote: Record<string, HostStateRemote> }).remote.dshMissionControl
+          void hostRemote
+            .load({})
+            .then((res) => {
+              hostPayload = res?.state ?? null
+            })
+            .catch(() => {
+              hostPayload = null
+            })
+            .finally(() => {
+              hostLoaded = true
+              for (const cb of hostListeners) cb(hostPayload)
+              hostListeners.clear()
+            })
+        })
+      })
+      .catch((error: unknown) => {
+        console.error('dsh-mission-control: failed to mount host remote', error)
+      })
+    return () => {
+      disposed = true
+      fiber?.dispose()
+      void unmount?.()
+      hostRemote = null
+      hostLoaded = false
+      hostPayload = null
+    }
+  }, 'dsh-mission-control: mount host state remote')
 }
