@@ -1,5 +1,10 @@
 # @dennisrongo/dsh-todo
 
+[![npm](https://img.shields.io/npm/v/@dennisrongo/dsh-todo)](https://www.npmjs.com/package/@dennisrongo/dsh-todo)
+
+**npm:** [`@dennisrongo/dsh-todo`](https://www.npmjs.com/package/@dennisrongo/dsh-todo) ·
+**source:** [dennisrongo/dsh-plugins](https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-todo)
+
 A todo list for the [DeepSeek Harness](https://github.com/deepseek-ai) (dsh) web UI.
 
 Registers into the additive `conversation.view` slot — the conversation view

@@ -1,5 +1,10 @@
 # dsh-weather
 
+[![npm](https://img.shields.io/npm/v/@dennisrongo/dsh-weather)](https://www.npmjs.com/package/@dennisrongo/dsh-weather)
+
+**npm:** [`@dennisrongo/dsh-weather`](https://www.npmjs.com/package/@dennisrongo/dsh-weather) ·
+**source:** [dennisrongo/dsh-plugins](https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-weather)
+
 Weather bar for the [DeepSeek Harness](https://github.com/deepseek-ai/dsh) web UI — current conditions, a short hourly outlook, humidity and wind, pinned to the bottom-center of the page.
 
 - **Data:** [Open-Meteo](https://open-meteo.com) (free, no API key) via the browser.

@@ -1,5 +1,13 @@
 # dsh-superpowers
 
+[![npm](https://img.shields.io/npm/v/@dennisrongo/dsh-superpowers)](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers)
+
+**npm:** [`@dennisrongo/dsh-superpowers`](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) ·
+**source:** [dennisrongo/dsh-plugins](https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-superpowers)
+
+> Mind the scope. The **unscoped** `dsh-superpowers` on npm is an unrelated plugin by another
+> author, so `add dsh-superpowers` fetches theirs, not this one.
+
 Injects the [Superpowers](https://github.com/obra/superpowers) methodology bootstrap
 (`skills/using-superpowers/SKILL.md`) into every dsh agent's system prompt as an ordered,
 persistent section.
@@ -12,6 +20,19 @@ session start and the first compaction.
 
 **Nothing from upstream is vendored here.** This package is a thin adapter; the section body
 is read from your own clone at startup.
+
+## Updating the plugin
+
+```bash
+dsh plugin --profile <name> outdated
+dsh plugin --profile <name> update @dennisrongo/dsh-superpowers
+```
+
+`dsh plugin` forwards to pnpm. This plugin is host-only, so a **profile restart** is required
+— the section is read in `apply()`, and a browser refresh will not pick it up.
+
+That updates the *adapter*. The methodology itself lives in your Superpowers clone and
+updates separately:
 
 ## Updating from upstream
 
@@ -81,6 +102,18 @@ an unrelated plugin by another author, so `add dsh-superpowers` fetches theirs, 
 | `superpowersRoot` | `""` → resolved (see above) | repo root containing `skills/using-superpowers/SKILL.md` |
 | `order` | `-50` | prompt section order (persona is 0; we sit before it) |
 | `enabled` | `true` | set false for a clean-baseline profile |
+
+## Tests
+
+```bash
+pnpm test    # offline, no harness, no clone needed
+```
+
+Every failure mode in this plugin is **silent by design** — a missing clone, a bad root and
+`enabled: false` all register nothing and let dsh boot normally. So a regression breaks
+nothing visibly; the bootstrap just stops reaching the model. The suite pins section
+identity and order, frontmatter stripping, the resolution precedence (config > env >
+probe), the non-fatal warning path, and that registration goes through `ctx.effect`.
 
 ## Notes
 

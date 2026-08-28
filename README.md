@@ -14,14 +14,15 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 
 ## Plugins
 
-| Package | Adds | Halves | Endpoints |
-|---|---|---|---|
-| [`dsh-todo`](plugins/dsh-todo) | per-workspace sprint/roadmap task list, plus a `dsh-todo` CLI | host + client + CLI | `dshTodo/list`, `replace` |
-| [`dsh-git`](plugins/dsh-git) | source-control "Changes" tab | host + client | `dshGit/status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage` |
-| [`dsh-weather`](plugins/dsh-weather) | weather bar in the shell overlay | client only | — |
-| [`dsh-headless-plus`](plugins/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
-| [`dsh-superpowers`](plugins/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
-| [`dsh-mission-control`](plugins/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox | client only | — |
+| Package | npm | Adds | Halves | Endpoints |
+|---|---|---|---|---|
+| [`dsh-todo`](plugins/dsh-todo) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-todo) | per-workspace sprint/roadmap task list, plus a `dsh-todo` CLI | host + client + CLI | `dshTodo/list`, `replace` |
+| [`dsh-git`](plugins/dsh-git) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-git) | source-control "Changes" tab, live-updating | host + client | `dshGit/status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken` |
+| [`dsh-weather`](plugins/dsh-weather) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-weather) | weather bar in the shell overlay | client only | — |
+| [`dsh-headless-plus`](plugins/dsh-headless-plus) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
+| [`dsh-superpowers`](plugins/dsh-superpowers) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
+| [`dsh-skills`](plugins/dsh-skills) | *unpublished* | the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library as an installable skill catalog | host | — |
+| [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox | client only | — |
 
 ---
 
@@ -54,7 +55,11 @@ The task shape is `{ id, title, description?, status, priority, release?, sprint
 
 ### `dsh-git`
 
-Source control for the workspace, without leaving the harness.
+**npm:** [`@dennisrongo/dsh-git`](https://www.npmjs.com/package/@dennisrongo/dsh-git)
+
+Source control for the workspace, without leaving the harness. Read what changed,
+stage it, let the model write the commit message, and push — in the tab you are
+already looking at, against the same repository your agent is editing.
 
 **What you get.** A Changes tab showing branch, upstream ahead/behind, and a file list split into staged and unstaged, with per-row stage/unstage/discard and a diff pane. An **✦AI message** button drafts a commit message from the staged diff through the harness's own `llm` service, then `Commit all` commits. Recent history is listed underneath. A directory that isn't a repository reports `repo: false` and offers `Initialize repository` rather than erroring.
 
@@ -62,7 +67,25 @@ Source control for the workspace, without leaving the harness.
 
 **How it works.** `GitService extends TypertRemoteService` under the cordis key `dshGit`, shelling out to `git` in the workspace directory. Writes are **serialised per repository root** through an internal queue, so two tabs can't interleave a stage and a commit. Paths from the client go through `assertSafePath`, which refuses absolute paths and `..` escapes. Untracked files have no diff for git to produce, so their contents are synthesized into a `/dev/null` patch — otherwise clicking a new file would show a blank pane and look broken. `push` without a remote fails as data (`{ ok: false, output }`), not an exception.
 
-**Endpoints.** `status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage` under `POST /api/dshGit/<method>`, each taking one parameter named `request`.
+**The list updates itself, without polling git.** An edit from your agent, your editor,
+or a terminal `git checkout` appears in about a second with no refresh click. Doing that
+the obvious way — re-reading `status` on a timer — would spawn four git processes per
+second per open tab. Instead the host watches the repository with `fs.watch` and keeps a
+monotonic **change token**; the tab polls a `changeToken` endpoint that answers from that
+counter without running git, and re-reads the full status only when the token moves.
+Measured against a live harness: **52 ms per poll vs 141 ms for `status`**, with no git
+process spawned on the poll path. Hidden tabs don't poll at all, and a `focus` handler
+re-checks the instant you look, so the idle cost is zero.
+
+Three details are what make that safe rather than merely fast. The `.git` filter is an
+**allowlist**, because merely *reading* a repository touches `.git/objects` — with a
+denylist the tab's own status read bumps the token and the feature feeds itself forever
+on an idle repo. High-churn directories (`node_modules`, `dist`, `.next`, …) are ignored,
+so a dependency install doesn't spam the watcher. And the debounce has a **maximum wait**,
+because a pure trailing-edge debounce is a starvation bug: a watch-mode build re-arms it
+forever and the list would stay stale for exactly as long as work is happening.
+
+**Endpoints.** `status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken` under `POST /api/dshGit/<method>`, each taking one parameter named `request`.
 
 **Requires.** `workspaceRegistry` and `llm` (both composed by `dsh-base`) and `agentDefaultModel` for message drafting.
 
@@ -114,6 +137,22 @@ node scripts/link-superpowers-skills.mjs     # --dry-run to preview, --restore t
 
 ---
 
+### `dsh-skills`
+
+Turns the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library into an installable catalog, so a fresh machine gets every skill from one command:
+
+```bash
+dsh plugin --profile <name> add @dennisrongo/dsh-skills
+```
+
+**Why this is a plugin and not a link script.** Skills are normally dropped into `<agentsHome>/skills` and discovered from there — which is what `link-superpowers-skills.mjs` above does, and it is the right tool for keeping an *already installed* catalog fresh. But it is not an install path: it presumes `~/.agents/skills` exists, and **nothing in the harness creates it**. A missing root is discovered as an empty list rather than an error, so a fresh machine gets a silently empty catalog and no diagnostic. Making the library an npm dependency of a plugin hands that whole problem to pnpm, which already solves it — and `dsh plugin` is a thin pnpm forwarder, so `update`, `outdated` and `remove` all work.
+
+**How it works.** `ctx.skills.registerProvider` publishes a second, independent skill provider serving every `skills/<name>/SKILL.md` in the resolved library. Registration files into the profile's **global** layer, which every agent preset's scope chain includes, so one row reaches every agent without touching the presets' own `skill-filesystem` rows. A nearer layer still wins outright, so a project's `.dsh/skills` shadows a library skill of the same name — the library is a baseline, not an override.
+
+**Nothing is vendored.** Bodies are read when the catalog is collected, and resolution runs `skillsRoot` → `DSH_SKILLS_ROOT` → the packaged dependency → a probe of common clone paths under `$HOME`. Point `skillsRoot` at a working clone and edits land with no reinstall.
+
+---
+
 ### `dsh-mission-control`
 
 One glass panel over the whole agent fleet, floating above the stock web UI.
@@ -132,8 +171,16 @@ Every package carries an `AGENTS.md` with its endpoints, mount row, dev loop and
 
 ## Install a plugin
 
-All six are on npm, and each declares `dsh.bundle` — so one command installs **and** mounts
-it. `dsh plugin` forwards to pnpm inside the profile directory:
+Six of the seven are on npm (`dsh-skills` is clone-only for now), and each declares
+`dsh.bundle` — so one command installs **and** mounts it. `dsh plugin` forwards to pnpm
+inside the profile directory:
+
+> **Profile names carry templates.** `dsh plugin --profile <name> add ...` scaffolds a new
+> profile if `<name>` doesn't exist — but only `web` and `headless` get a full template.
+> Any other name is scaffolded with `@deepseek-ai/dsh-base` **alone**, which does not
+> provide `workspaceRegistry`, and a UI plugin that needs it then refuses to boot with
+> `1 entry did not activate — pending (waiting for service: workspaceRegistry)`. Use `web`
+> for UI profiles, or add `@deepseek-ai/dsh-web-app` to `dsh.profile.bundles` yourself.
 
 ```bash
 # web/desktop UI plugins
@@ -158,8 +205,60 @@ dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-t
 dsh plugin --profile web add "github:dennisrongo/dsh-plugins#main&path:/plugins/dsh-todo"   # pin a ref
 ```
 
-Quote the argument — `#` and `&` are shell metacharacters. All six ship their built `lib/`,
-so a git install works even though it runs no build step.
+Quote the argument — `#` and `&` are shell metacharacters. Every package ships its built
+`lib/`, so a git install works even though it runs no build step.
+
+## Update to the latest
+
+`dsh plugin` is a thin pnpm forwarder, so `update`, `outdated` and `remove` all work the
+way they do in any pnpm project.
+
+```bash
+# what is out of date in this profile?
+dsh plugin --profile web outdated
+
+# update one plugin, or several
+dsh plugin --profile web update @dennisrongo/dsh-git
+dsh plugin --profile web update @dennisrongo/dsh-todo @dennisrongo/dsh-mission-control
+```
+
+**Restart the profile afterwards.** A client-half change lands on a browser refresh, but a
+host-half change — a new `/api` endpoint, a changed service — does not: the Typert loader
+caches its per-package verdict for the life of the process, so a plugin that gained an
+endpoint will 404 on it until the profile restarts.
+
+Two behaviours worth knowing. A caret range only moves within its major, so a major bump
+needs the explicit tag: `dsh plugin --profile web add @dennisrongo/dsh-git@latest`. And
+bundles reconcile by **installed state**, not by dependency diff — a version that newly
+gains a `dsh.bundle` activates on its own, with no `cordis.patch.yml` edit.
+
+From a clone rather than npm, the equivalent is `git pull` then a root `pnpm install` and
+`pnpm run build`, followed by `scripts/dev-link.ps1` — pnpm replaces junctions with copies
+on every install, so skipping the relink leaves the profile on a frozen copy.
+
+### Updating the skills catalog
+
+The skills themselves live in [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills),
+a plain library that `dsh-skills` depends on — so refreshing the catalog is a dependency
+update, not a plugin reinstall:
+
+```bash
+# newest catalog for a profile that has dsh-skills installed
+dsh plugin --profile web update @dennisrongo/skills
+
+# check what is available first
+npm view @dennisrongo/skills version
+```
+
+Nothing is vendored — skill bodies are read at catalog-collection time — so pointing
+`skillsRoot` at a working clone picks up edits with **no reinstall and no restart**. That
+is the fast loop while authoring a skill; the npm update is for consuming a published one.
+
+Expect this on install, and ignore it — it is orientation, not a fault:
+
+> `warning: @dennisrongo/skills declares no dsh.bundle — installed as a plain dependency`
+
+The library is a plain library; only the plugin is a bundle.
 
 ### The `dsh-todo` command
 

@@ -2,7 +2,7 @@
 
 Source-control ("Changes") tab for DeepSeek Harness. Two halves in one package:
 
-- **Host** (`src/index.ts` → `lib/index.js`) — `GitService extends TypertRemoteService`, cordis service key `dshGit`. Runs git in the workspace directory resolved through `workspaceRegistry`, serialises writes per repo root, and drafts commit messages through `llm`. A directory that is not a repository reports `repo: false`, never an error.
+- **Host** (`src/index.ts` → `lib/index.js`) — `GitService extends TypertRemoteService`, cordis service key `dshGit`. Runs git in the workspace directory resolved through `workspaceRegistry`, serialises writes per repo root, and drafts commit messages through `llm`. A directory that is not a repository reports `repo: false`, never an error. `src/watch.ts` holds the `fs.watch` layer behind `changeToken`.
 - **Client** (`src/client.tsx` → `lib/client.js`) — the Changes tab, CSS prefix `dshgit-`, calling the host over the Typert bridge as `ctx.remote.dshGit.*`.
 
 ## Endpoints
@@ -13,6 +13,7 @@ Source-control ("Changes") tab for DeepSeek Harness. Two halves in one package:
 - `diff` — `{ workspaceId, path?, staged? }` → `{ patch, binary }`; untracked files are synthesized into a `/dev/null` patch so a new file never renders a blank pane
 - `stage` — `{ workspaceId, paths, ... }`, `commit` — `{ workspaceId, message, all? }`, `init` / `sync` — `{ workspaceId, ... }`, all → `{ ok, output }`
 - `suggestMessage` — AI-drafted commit message
+- `changeToken` — `{ workspaceId }` → `{ token }`; the POLLING endpoint. Answers from an `fs.watch` counter and **never spawns git** (measured 52 ms vs `status`'s 141 ms). `token: 0` means "not a repository", which is the client's signal to stop polling. A token is comparable only against an earlier token for the same workspace.
 
 `wire: 'request'` in `src/remote.ts` must match the host parameter name — the gateway resolves endpoints by reading parameter names off the function source.
 
@@ -34,15 +35,93 @@ automatically. **Do not also add an `insert:` row to the profile's `cordis.patch
 row with the same id is fatal: `duplicate loader entry id: dsh-git`. A bare `id:` entry there is
 still the right way to *configure* the row.
 
+**The profile must supply `workspaceRegistry`, which `dsh-base` does not.** It comes from
+`@deepseek-ai/dsh-web-app`. `dsh plugin --profile <name> add` scaffolds an unknown `<name>`
+with `dsh-base` only, so installing into a freshly-invented profile name boots straight into
+`1 entry did not activate — @dennisrongo/dsh-git: pending (waiting for service:
+workspaceRegistry)`. Verified on a clean `DSH_HOME`: profile `clean` fails, profile `web`
+(which gets the real template) works. That is a profile-composition error, not a plugin bug.
+
 Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (`%APPDATA%\dsh-desktop\harness\profiles\<name>` — the desktop keeps its own DSH_HOME). Install per profile with `pnpm add "file:<repo>/plugins/dsh-git"`, using a native forward-slash absolute Windows path; the MSYS `/c/...` form fails `LINKED_PKG_DIR_NOT_FOUND`.
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs`.
+`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `watch-probe.mjs`.
 
 Profiles materialise `file:` deps as copies **frozen at install time**, so a rebuild does not reach them. `scripts/dev-link.ps1` at the repo root replaces those copies with junctions: client-half edits then deploy on **browser refresh**, host-half edits need a **profile restart**.
 
 **Re-run `scripts/dev-link.ps1` after any `pnpm install`.** It restores both the profile junctions and this package's `node_modules\@deepseek-ai\*` junctions to the CLI host copies. DSH Desktop's profile-repair install additionally empties this package's `node_modules`, taking `zod` with it, after which the harness refuses to boot with `Cannot find package 'zod' imported from ...\lib\index.js`. Fix: `pnpm install` at the monorepo root, then the script.
+
+`pnpm run test:watch` drives the real `RepoWatcher` against a real repository in a temp
+dir — no mocks, because the whole question is whether the OS actually delivers the
+events. It asserts that an idle repo does NOT advance the token, that a new file, a
+modification, a stage, and a commit each DO, and that a 40-write burst collapses to
+fewer than 10 advances.
+
+**The `.git` filter is an ALLOWLIST, and that is load-bearing.** Merely *reading* a
+repository touches `.git/objects`, and the tab's own status read is such a read — so a
+denylist ("filter out `index.lock` and friends") lets `objects` through and the feature
+feeds itself: status → objects event → token bump → status, forever, on a repository
+nobody is touching. That was measured here (token advanced on an idle repo with only
+status reads running) before the allowlist replaced it. `isSignificantGitEntry` is
+exported and pinned directly by the probe, because the behavioural version of that test
+is timing-sensitive and silently stopped proving anything as the repo's state drifted.
+
+**Worktree events are filtered by first path SEGMENT, not by prefix.** `startsWith('.git')`
+also swallows `.gitignore`, `.gitattributes` and everything under `.github/` — precisely
+the files a source-control tab most needs to notice, since editing `.gitignore` changes
+the untracked list wholesale. `IGNORED_DIRS` additionally drops `node_modules`, `dist`,
+`.next` and similar: they are gitignored in practice, and an install writing thousands of
+files there costs a wakeup each and re-arms the debounce.
+
+**The debounce has a MAXIMUM wait.** A pure trailing-edge debounce is a starvation bug:
+anything emitting events faster than `DEBOUNCE_MS` re-arms it forever, so a watch-mode
+build or a long checkout keeps the token still for exactly as long as work is happening —
+the opposite of the goal. `MAX_DEBOUNCE_MS` caps the total deferral.
+
+**Tokens are seeded from a process-wide counter, never restarted at 1.** `close()` clears
+the map, so a reload would otherwise hand out `1` again — and a client still holding the
+very common baseline of `1` reads that as "no change" and goes blind until the counter
+climbs past it. The client compares with `!==`, so a reused value is not self-correcting.
+
+**The `.git` watch is the part that rots silently.** Two watches are needed: the
+recursive worktree watch sees file edits, and a second watch on `.git` sees staging,
+commits, and branch switches, because git's metadata writes never surface as worktree
+events. Delete the second and the tab still looks live — files appear and change — right
+up until you stage something, at which point it quietly stops updating. Every other test
+in this package still passes in that state. The probe was verified to fail on exactly
+that sabotage before being trusted.
+
+Two host-side traps sit behind this:
+
+- **Release watchers through `ctx.effect(() => () => ...)`.** cordis's `Service` declares
+  no stop symbol (only `Service.init`), and `dispose` is not a member of its `Events`
+  map — `ctx.on('dispose', ...)` is a typecheck error, and a `[Service.stop]` method
+  would simply never run. Either mistake leaks an OS watch handle per repository on
+  every plugin reload.
+- **`changeToken` must never spawn git.** It exists to be polled once a second per open
+  tab; the moment it shells out it costs the same as `status` (141 ms vs 52 ms measured)
+  and the whole design is pointless. Its only git call is the `repoRoot` probe that
+  decides whether there is anything to watch at all.
+
+On the client, the loop is gated on `visibilitychange` with a `focus` handler that
+re-checks immediately, so a hidden tab costs nothing and a re-shown one is correct
+before it is read. Two client-side subtleties are easy to reintroduce:
+
+- **`refresh()` samples the token BEFORE the status read and adopts it only after that
+  read succeeds** (`probeToken` returns the value rather than assigning it). They are two
+  independent round-trips, so a change landing between them must leave the host's token
+  ABOVE the sample — otherwise the tab baselines away a change its displayed status
+  predates and freezes on stale content until some unrelated event moves the token again.
+  Sampling after the read, or un-awaited alongside it, reintroduces that lost update.
+- **The disposer returned by `watch()` is guarded against a double call.** React may run a
+  cleanup more than once; an unguarded decrement drives the refcount negative, after which
+  a later mount sees `0`, never restarts the loop, and the tab silently stops updating.
+  The same double-call with two views open stops polling while one is still mounted.
+
+`tick()` skips while a command is in flight, which is safe only because the token is
+adopted together with a completed read — whatever moved is still pending at the next tick
+rather than being marked as seen.
 
 `pnpm run test:icons` asserts the icon geometry against the **built** bundle. The shell
 draws icons at 12/14/16/20 and **pairs every size with a matching viewBox** — a 14px icon
@@ -138,4 +217,26 @@ curl -s -X POST http://127.0.0.1:38111/api/dshGit/status -H 'content-type: appli
   -d '{"type":"client-request","rpcId":"t1","method":"dshGit/status","payload":{"args":{"request":{"workspaceId":"<real-id>"}}}}'
 ```
 
-Real workspace ids live in `~/.dsh/storages/workspace.json` under `tables.workspaces`. A healthy reply is `{"type":"server-response","result":{"ok":true,"value":{"status":{"repo":true,...}}}}`. Boot a scratch server with captured output (`dsh --profile web --port 38111 --no-open`) — an `ERR_MODULE_NOT_FOUND` there is a broken junction that a running server would swallow.
+### Fresh-install E2E (the check a running dev profile cannot give you)
+
+A dev profile has junctions, prior installs and cached loader verdicts, so it proves
+nothing about a new user. Point `DSH_HOME` at a scratch directory and build one from
+nothing — this is what caught the `workspaceRegistry` trap above:
+
+```powershell
+$env:DSH_HOME = "$env:TEMP\dsh-e2e-home"
+# name it `web`: only web/headless get a real template (see Mounting)
+dsh plugin --profile web add "file:C:/path/to/dsh-plugins/plugins/dsh-git"
+dsh --profile web --port 38222 --no-open
+```
+
+The fresh home starts with **no workspaces**, and the workspace service is not Typert-
+remote, so there is no endpoint to create one. Seed `storages/workspace.json` by hand —
+and note `createdAt`/`updatedAt` are **ISO strings**; a number fails schema validation and
+the profile dies inside `dsh-storage-domain` before dsh-git ever loads.
+
+Verified on a clean home: both endpoints mount, the client bundle serves, and the watcher
+passes 11/11 (idle stable, no self-trigger across 23 reads, then create / modify / stage /
+commit / `.gitignore` / branch-switch each detected, settling stable again).
+
+Real workspace ids live in `~/.dsh/storages/workspace.json` under `tables.workspaces` — **but check `$env:DSH_HOME` first**. When it is set (DSH Desktop sets it to `%APPDATA%\dsh-desktop\harness`), the server reads THAT home's `storages/workspace.json` and an id from `~/.dsh` comes back as `dsh-git: unknown workspace <id>`. That error means the endpoint is mounted and reached your code — a genuinely unregistered endpoint 404s instead, so do not read it as a wire failure. A healthy reply is `{"type":"server-response","result":{"ok":true,"value":{"status":{"repo":true,...}}}}`. Boot a scratch server with captured output (`dsh --profile web --port 38111 --no-open`) — an `ERR_MODULE_NOT_FOUND` there is a broken junction that a running server would swallow.

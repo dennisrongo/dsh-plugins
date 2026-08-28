@@ -1,6 +1,6 @@
 # AGENTS.md — dsh-plugins
 
-Six plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under `plugins/`
+Seven plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under `plugins/`
 is self-contained: its own `package.json`, exports map, build and tests. Per-package
 `AGENTS.md` files cover endpoints and verification; this file covers the repo.
 
@@ -19,17 +19,21 @@ revert — and they are silent, so recognising them matters more than debugging 
 plugins/dsh-todo         host + client — Todo tab, service key dshTodo
                          + CLI     — bin dsh-todo, same list from a terminal
 plugins/dsh-git          host + client — Changes tab, service key dshGit
+                         live-updating: fs.watch + a changeToken poll
 plugins/dsh-weather      client only   — shell.overlay weather bar
 plugins/dsh-mission-control client only — shell.overlay fleet dashboard
 plugins/dsh-headless-plus CLI app      — --model/--resume/--continue
 plugins/dsh-superpowers  host          — system-prompt section
+plugins/dsh-skills       host          — skill provider over @dennisrongo/skills
 scripts/                 verify.mjs, anchor.mjs, link-superpowers-skills.mjs (portable)
                          dev-link.ps1 (Windows: anchors + junctions into profiles)
 ```
 
 Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package.
 
-All six publish under `@dennisrongo/`, and the folder name is not the package name — a
+All seven are scoped `@dennisrongo/`, six of them published — `dsh-skills` is **not on npm
+yet** (it 404s), so document it as a clone or git install, never `add @dennisrongo/dsh-skills`.
+The folder name is not the package name: a
 `cordis.patch.yml` row takes the **package** name (`@dennisrongo/dsh-superpowers`), while the
 folder stays `plugins/dsh-superpowers`. Keep the scope: the bare `dsh-superpowers` on npm is
 an unrelated plugin by another author, and unscoped generic names in this space get taken.
@@ -79,6 +83,12 @@ testing a stale bundle.
   the loader skips the package *silently*: the service constructs, the tab renders, and
   every `/api` call 404s. The loader caches its verdict per process, so adding one requires a
   full profile restart.
+- **A polled endpoint must not trigger the work it is polling for.** `dsh-git`'s
+  `changeToken` lets the Changes tab stay live without re-running git every second; the
+  moment it shells out it costs what `status` costs (141 ms vs 52 ms measured) and the
+  design is pointless. The subtler trap is a filter that lets the *reader's own* side
+  effects through — merely reading a repo touches `.git/objects`, so a denylist made the
+  tab wake itself forever on an idle repository. Allowlist what matters instead.
 - **Line endings are pinned to LF** by the root `.gitattributes` (`.ps1` excepted).
   `lib/client.js` is served byte-for-byte to the browser and asserted on by the smoke tests,
   so letting git rewrite them per-platform would change what ships.

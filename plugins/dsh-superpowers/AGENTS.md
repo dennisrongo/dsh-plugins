@@ -82,6 +82,47 @@ Junctions on Windows, directory symlinks elsewhere. Real directories are moved t
 `<agentsHome>/skills-backup-superpowers` before being replaced. Idempotent — re-run it after
 a pull that adds a **new** upstream skill.
 
+## Tests
+
+`pnpm test` → `test/smoke.mjs`, offline, no harness. It builds throwaway clones in
+`tmpdir()` and drives `apply()` with a stub context.
+
+**Why this package needs tests more than its ~130 lines suggest: every failure mode here
+is SILENT.** A missing clone, a bad root and `enabled: false` all register nothing and let
+dsh boot normally — so a regression crashes nothing, the bootstrap just quietly stops
+reaching the model and the agent's behaviour drifts with no diagnostic. The suite covers
+section identity and order, frontmatter stripping, `enabled: false`, a bad root (must warn,
+never throw), a directory without the marker, the full resolution precedence
+(config > env > probe, with `''` falling through), and that registration goes through
+`ctx.effect` rather than calling `section()` directly — bypassing the effect leaks the
+section across a plugin reload.
+
+Every check was verified to FAIL against a matching sabotage before being trusted:
+removing the frontmatter strip, changing the default order, ignoring `enabled: false`,
+dropping config precedence, throwing instead of warning on a bad root, and bypassing
+`ctx.effect`. All six were caught.
+
+## Fresh-install E2E
+
+Unlike dsh-git, this plugin injects only `systemPrompt`, which **`dsh-base` provides** — so
+it activates in any profile, including an arbitrarily-named one that gets the bare
+`dsh-base` scaffold. Verified on an isolated `DSH_HOME`:
+
+```powershell
+$env:DSH_HOME = "$env:TEMP\dsh-sp-home"
+dsh plugin --profile web add "file:C:/path/to/dsh-plugins/plugins/dsh-superpowers"
+dsh --profile web --port 38333 --no-open
+```
+
+With **no clone anywhere** the profile boots to a serving web UI (HTTP 200) and prints the
+one-line warning naming both knobs — non-fatal, as designed. Setting `superpowersRoot`
+through a bare `id: superpowers` row in the profile's `cordis.patch.yml` silences it.
+
+To simulate a genuinely clone-free machine, override `USERPROFILE`/`HOME`: the probe list
+is `homedir()`-relative, and a developer box very likely has a clone in one of the ten
+candidate locations — testing without that override silently exercises the *found* path
+and proves nothing. That mistake happened during this verification.
+
 ## Editing notes
 
 - The frontmatter strip is a regex (`/^---\r?\n[\s\S]*?\r?\n---\r?\n/`). If upstream

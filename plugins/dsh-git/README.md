@@ -1,5 +1,10 @@
 # @dennisrongo/dsh-git
 
+[![npm](https://img.shields.io/npm/v/@dennisrongo/dsh-git)](https://www.npmjs.com/package/@dennisrongo/dsh-git)
+
+**npm:** [`@dennisrongo/dsh-git`](https://www.npmjs.com/package/@dennisrongo/dsh-git) ·
+**source:** [dennisrongo/dsh-plugins](https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-git)
+
 A per-workspace **source-control tab** for the DeepSeek Harness web UI. It adds
 a **Changes** tab beside Chat, Trajectory, and Todo that shows everything that
 differs in the workspace's repository, and lets you stage, commit (with an
@@ -19,6 +24,41 @@ AI-written message), initialize, and sync — without leaving the session.
   Initialize button with an editable initial branch name.
 - **Sync** — Fetch, Pull (fast-forward only), Push / Publish, and a combined
   pull-then-push, with ahead/behind counts on the buttons.
+- **Live updates** — the list follows the repository on its own. An edit from
+  an agent, your editor, or a terminal `git checkout` shows up within about a
+  second, with no refresh click.
+
+## Staying live without polling git
+
+Re-reading `status` on a timer would be the obvious way to keep the list fresh
+and the wrong one: a status read spawns four git processes, so a one-second
+poll would cost that *per second, per open tab*. Measured on a real repository,
+`status` averages **141 ms** per call.
+
+Instead the host watches the repository with `fs.watch` and keeps a monotonic
+**change token**. The tab polls `changeToken`, which answers from that counter
+and never runs git — **52 ms** per call, essentially all HTTP round-trip — and
+only re-reads the full status when the token actually moves. Idle repositories
+cost nothing beyond the probe, because a watcher that fires no events never
+advances the token.
+
+Three details make it behave:
+
+- **Two watches, not one.** The worktree watch is recursive and catches file
+  edits; a second watch on `.git` is what catches staging, commits, and branch
+  switches, because git's metadata writes never surface as worktree events.
+  Without it the tab looks live until you commit, and then silently stops.
+- **Events are debounced (120 ms).** One logical action fires many events — git
+  writes `index.lock`, then the index, then `ORIG_HEAD`; an editor save writes a
+  temp file and renames it. A burst of 40 writes collapses to a couple of
+  refreshes rather than 40.
+- **Hidden tabs don't poll.** The loop is gated on `visibilitychange`, and a
+  `focus` handler re-checks immediately, so the list is already correct the
+  moment you look at it and costs nothing while you're in Chat.
+
+Watchers are reference-counted per repository root, so ten tabs on one
+workspace share a single OS handle, and released through `ctx.effect()` when
+the fiber unloads.
 
 ## The layout
 
@@ -64,6 +104,7 @@ The plugin ships **two halves** that never share a process:
 | --- | --- | --- |
 | `src/index.ts` | host | The `dshGit` service. Resolves a workspace id to its directory via `workspaceRegistry`, runs git, and calls `llm` for messages. |
 | `src/git.ts` | host | The git engine: `execFile` wrapper and porcelain parsers. |
+| `src/watch.ts` | host | Filesystem watchers behind the change token, so the tab stays live without polling git. |
 | `src/remote.ts` | both | Strict zod Typert descriptors — the wire contract. |
 | `src/client.tsx` | browser | The Changes tab, registered into the `conversation.view` slot at `order: 30`. |
 | `src/types.ts` | both | Shared, dependency-free vocabulary. |
@@ -87,24 +128,52 @@ Several details are easy to "clean up" and thereby break:
   yields an empty stream that looks like "the model produced no message".
 - **Git status is parsed from `-z` output.** The default format quotes and
   escapes paths containing spaces or non-ASCII bytes; `-z` emits them raw.
+- **The `.git` watch is not optional.** Dropping it leaves a watcher that
+  reports file edits but never notices a stage, commit, or branch switch — and
+  every other test still passes. `pnpm run test:watch` is the guard.
+- **Watchers are released through `ctx.effect()`.** cordis's `Service` has no
+  stop symbol (only `Service.init`) and `dispose` is not in its `Events` map,
+  so the two obvious spellings leak an OS handle per repository on each reload.
 - **Git is invoked with an argument array, never a shell.** Paths, branch names,
   and commit messages are untrusted text.
 
 ## Install
 
-```jsonc
-// ~/.dsh/profiles/<profile>/package.json
-{ "dependencies": { "@dennisrongo/dsh-git": "file:/path/to/dsh-git" } }
+```bash
+dsh plugin --profile web add @dennisrongo/dsh-git
 ```
 
-```yaml
-# ~/.dsh/profiles/<profile>/cordis.patch.yml
-- insert:
-    - id: dsh-git
-      name: '@dennisrongo/dsh-git'
+That is the whole install. The package declares `dsh.bundle`, so it **mounts itself** —
+do **not** also add an `insert:` row to the profile's `cordis.patch.yml`. A second row
+with the same id is fatal (`duplicate loader entry id: dsh-git`). Restart the profile
+and the Changes tab is there.
+
+Works the same on the `dsh` CLI and on [DSH Desktop](https://dshdesktop.com/), which
+keeps its own `DSH_HOME`; pass that profile's name instead.
+
+To track `main` or pick up an unreleased change, install from git — quote it, since `#`
+and `&` are shell metacharacters:
+
+```bash
+dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-git"
 ```
 
-Then `pnpm install` in the profile and restart `dsh`.
+The built `lib/` is committed, so a git install works even though it runs no build step.
+
+## Update
+
+`dsh plugin` forwards to pnpm, so the usual verbs work:
+
+```bash
+dsh plugin --profile web outdated                        # what is behind
+dsh plugin --profile web update @dennisrongo/dsh-git     # within the caret range
+dsh plugin --profile web add @dennisrongo/dsh-git@latest # cross a major
+```
+
+**Restart the profile after updating.** The client half would reload on a browser
+refresh, but the host half will not: the Typert loader caches its per-package verdict
+for the life of the process, so a version that adds an endpoint (as `changeToken` did)
+returns 404 on it until the profile restarts.
 
 ## Develop
 

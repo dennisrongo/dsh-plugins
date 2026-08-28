@@ -7,6 +7,44 @@ and something is quietly missing. Each entry gives the symptom, the cause, and t
 Build- and mounting-level problems (`duplicate loader entry id`, a missing `./typert`
 export, the pruned `zod`) are in [AGENTS.md](AGENTS.md#rules-that-are-not-obvious).
 
+## `dsh plugin add` fails on a pnpm-major mismatch
+
+**Symptom.** Installing into an existing profile aborts without installing anything:
+
+```
+pnpm now wants to use the store at "…\pnpm\store\v10" to link dependencies.
+If you want to use the new store location, reinstall your dependencies with "pnpm install".
+dsh: pnpm failed in profile directory …\profiles\web
+```
+
+**Cause.** That profile's `node_modules` was created by a **different pnpm major** than the
+one `dsh plugin` shells out to. Check the mismatch directly:
+
+```powershell
+pnpm --version                                              # what dsh will use
+Select-String -Path <profile>\node_modules\.modules.yaml -Pattern 'packageManager|storeDir'
+```
+
+**Fix — do NOT just run `pnpm install`.** The suggested reinstall works, but it rebuilds the
+whole tree with the new major and **replaces every `dev-link.ps1` junction with a frozen
+copy**, silently detaching the profile from this repo. Instead install with the major the
+profile already uses:
+
+```powershell
+cd <profile>
+corepack pnpm@11.24.0 add "file:<repo>/plugins/dsh-superpowers"   # match .modules.yaml
+```
+
+Two things that bypasses, which you must then do by hand:
+
+- **`pnpm add` does not write the bundle row.** `dsh plugin` reconciles
+  `dsh.profile.bundles` after pnpm returns; calling pnpm directly skips that, so the
+  package installs and simply never mounts. Add the package name to that array yourself.
+- **The new package lands as a copy, not a junction.** Re-run
+  `scripts/dev-link.ps1 -Profiles web -DesktopProfiles web` to relink it *and* anchor its
+  `@deepseek-ai/*` peers — a junctioned plugin resolves through its real path, so without
+  the anchors it dies at boot with `ERR_MODULE_NOT_FOUND`.
+
 ## Two `DSH_HOME`s
 
 The surfaces do not share state. The CLI uses `$DSH_HOME`, defaulting to `~/.dsh`. DSH
