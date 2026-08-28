@@ -34,6 +34,15 @@ and **overridden on `.dshmc-stage`**. Hardcoding a px size in a rule both surfac
 bug this prevents: the rail's 11.5px/28px controls read as undersized on a full-screen grid
 of 420px tiles.
 
+**A to-do list is not a chat node.** `extractTail` walks `snap.chat`, and todos are not
+there — the host emits them as a per-session `todos` **projection** (on `todo/write` and
+`turn/start`) and renders them in a dock beside the composer, not inline in the transcript.
+So a tile reading only the chat store shows a `todo_write` tool row and nothing about the
+plan it wrote. `sessionTodos` reads `projectionValues.todos` off the session row — the same
+face `sessionOutTokens` uses — which is why the strip works without opening the conversation.
+The host rewrites the **whole list** each time and writes `null` to clear, so the reader
+guards for a non-array and drops entries with no text rather than trusting the shape.
+
 Assistant text renders through the host's own `MarkdownText`, which ships its own font
 sizing and can outrank a bare `.dshmc-md`. So `.dshmc-md, .dshmc-md *` force
 `font-size: inherit`, and the exceptions (headings, code, tables) re-derive from

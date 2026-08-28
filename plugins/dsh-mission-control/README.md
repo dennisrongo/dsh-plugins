@@ -1,5 +1,10 @@
 # dsh-mission-control
 
+[![npm](https://img.shields.io/npm/v/@dennisrongo/dsh-mission-control)](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control)
+
+**npm:** [`@dennisrongo/dsh-mission-control`](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) ·
+**source:** [dennisrongo/dsh-plugins](https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-mission-control)
+
 **Mission Control** — a fleet dashboard plugin for [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness).
 
 One glass panel over your entire agent fleet: live sessions, subagent swarm tree,

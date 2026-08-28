@@ -1527,4 +1527,70 @@ assert.equal(element.type.name, 'MissionControl', 'renders MissionControl')
   assert.equal(parseSettings('{"sessionsPerWorkspace":10}').sessionsPerWorkspace, 10, 'legacy prefs keep their value')
 }
 
-console.log('SMOKE_OK — all 10 checks passed')
+// --- 11) the todos projection reaches fleet rows
+// A todo list is not a chat node, so extractTail cannot carry it: the host
+// emits it as the per-session 'todos' projection. If this read breaks, a stage
+// tile silently shows a todo_write tool row and nothing about the plan.
+{
+  const withTodos = {
+    ids: ['t'],
+    byId: {
+      t: {
+        id: 't',
+        displayTitle: 'Planner',
+        running: true,
+        projectionValues: {
+          todos: [
+            { content: 'first', status: 'completed' },
+            { content: 'second', status: 'in_progress' },
+            { content: 'third', status: 'pending' },
+          ],
+        },
+      },
+    },
+  }
+  const row = exports.buildFleet(withTodos)[0]
+  assert.equal(row.todos?.length, 3, 'row carries the whole todo projection')
+  assert.deepEqual(
+    row.todos.map((t) => t.status),
+    ['completed', 'in_progress', 'pending'],
+    'every status survives the read',
+  )
+  assert.equal(row.todos[1].content, 'second', 'todo text survives the read')
+
+  // The host writes null to clear the list, and rewrites the whole array each
+  // time — both must degrade to "no strip" rather than throwing into the tile.
+  const noneCases = [
+    { label: 'null clears the list', values: { todos: null } },
+    { label: 'a missing projection is fine', values: {} },
+    { label: 'an empty list renders nothing', values: { todos: [] } },
+    { label: 'a forged non-array is ignored', values: { todos: 'nope' } },
+  ]
+  for (const { label, values } of noneCases) {
+    const r = exports.buildFleet({
+      ids: ['x'],
+      byId: { x: { id: 'x', displayTitle: 'X', running: true, projectionValues: values } },
+    })[0]
+    assert.equal(r.todos, undefined, label)
+  }
+
+  // A forged entry must not crash the strip: unknown status degrades to
+  // pending, and an entry with no usable text is dropped.
+  const forged = exports.buildFleet({
+    ids: ['f'],
+    byId: {
+      f: {
+        id: 'f',
+        displayTitle: 'F',
+        running: true,
+        projectionValues: {
+          todos: [{ content: 'ok', status: 'bogus' }, { status: 'completed' }, { content: '' }],
+        },
+      },
+    },
+  })[0]
+  assert.equal(forged.todos?.length, 1, 'entries without text are dropped')
+  assert.equal(forged.todos[0].status, 'pending', 'an unknown status degrades to pending')
+}
+
+console.log('SMOKE_OK — all 11 checks passed')

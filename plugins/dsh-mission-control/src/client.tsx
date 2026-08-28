@@ -334,6 +334,12 @@ export interface FleetRow {
   /** Cumulative output tokens (row-retained projection) — drives live tok/s. */
   outTokens?: number
   /**
+   * The session's current to-do list (row-retained `todos` projection). The
+   * host rewrites the whole list on every `todo_write`, so this is the plan as
+   * it stands now, not a diff — undefined when the session never wrote one.
+   */
+  todos?: readonly TodoItem[]
+  /**
    * Workspace this session was grouped under (buildGroups only — buildFleet has
    * no workspace list to consult). Lets detached views like Stage name the
    * origin of a tile without re-deriving the grouping.
@@ -346,6 +352,41 @@ export interface FleetRow {
 function sessionOutTokens(s: SessionLike): number | undefined {
   return (s as { projectionValues?: { tokenUsage?: { outputTokens?: number } } } | undefined)
     ?.projectionValues?.tokenUsage?.outputTokens
+}
+
+/**
+ * One entry of the host's `todos` projection. Structural mirror of the shape
+ * the stock TodoPanel renders — only the two fields this strip shows are
+ * declared, so an added host field cannot break the read.
+ */
+export interface TodoItem {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
+/**
+ * The to-do list retained on a session row (projection mirror).
+ *
+ * A todo list is NOT a chat node, so `extractTail` cannot see it: the host
+ * emits it as a per-session `todos` projection (on `todo/write`) and renders it
+ * in a dock beside the composer rather than inline in the transcript. Reading
+ * the row projection is what lets a stage tile show the plan without opening
+ * the conversation. The host writes `null` to clear, hence the array guard.
+ */
+function sessionTodos(s: SessionLike | undefined): readonly TodoItem[] | undefined {
+  const raw = (s as { projectionValues?: { todos?: unknown } } | undefined)?.projectionValues?.todos
+  if (!Array.isArray(raw)) return undefined
+  const out: TodoItem[] = []
+  for (const item of raw) {
+    const content = (item as { content?: unknown })?.content
+    const status = (item as { status?: unknown })?.status
+    if (typeof content !== 'string' || content === '') continue
+    out.push({
+      content,
+      status: status === 'completed' || status === 'in_progress' ? status : 'pending',
+    })
+  }
+  return out.length > 0 ? out : undefined
 }
 
 /**
@@ -383,6 +424,7 @@ function catalogRow(
     cwd: live?.cwd,
     updatedAt: live?.updatedAt,
     outTokens: live ? sessionOutTokens(live) : undefined,
+    todos: live ? sessionTodos(live) : undefined,
     // Always recurse: `hasChildren` is a durable-persistence hint, so it can be
     // false for a child that has just spawned live grandchildren into `byId`.
     // catalogChildren is cheap when both sources are empty.
@@ -443,6 +485,7 @@ function catalogChildren(
       cwd: s.cwd,
       updatedAt: s.updatedAt,
       outTokens: sessionOutTokens(s),
+      todos: sessionTodos(s),
       children: catalogChildren(list, s.id, seen),
     })
   }
@@ -473,6 +516,7 @@ export function buildFleet(list: SessionListStateLike): FleetRow[] {
     cwd: s.cwd,
     updatedAt: s.updatedAt,
     outTokens: sessionOutTokens(s),
+    todos: sessionTodos(s),
     children: catalogChildren(list, s.id, seen),
   })
   return roots.map(toRow)
@@ -625,6 +669,7 @@ export function buildGroups(
     cwd: s.cwd,
     updatedAt: s.updatedAt,
     outTokens: sessionOutTokens(s),
+    todos: sessionTodos(s),
     children: catalogChildren(list, s.id, walked),
   })
   const visibleRoots = list.ids
@@ -2428,6 +2473,52 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   color: var(--mc-text-4);
   font-size: calc(var(--mc-ctl-font) - 2px);
 }
+/* To-do strip: docked directly above the composer, mirroring where the stock
+   chat renders its to-do panel. Border is on TOP because it now separates the
+   strip from the transcript above it, not from content below. */
+.dshmc-todos {
+  flex: none;
+  border-top: 1px solid var(--mc-border-subtle);
+  background: color-mix(in srgb, var(--mc-accent) 5%, transparent);
+}
+/* Whatever follows the strip (composer, or a wait prompt when the session is
+   parked) already has its own top border — collapse the double line. */
+.dshmc-todos + .dshmc-stage-tile-input,
+.dshmc-todos + .dshmc-stage-tile-wait { border-top: 0; }
+.dshmc-todos-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
+  border: 0; background: none; color: var(--mc-text-2);
+  font: inherit; font-size: calc(var(--mc-msg-size) - 1px); text-align: left;
+  padding: 5px 12px; cursor: pointer;
+}
+.dshmc-todos-head:hover { background: var(--mc-surface-hover); }
+.dshmc-todos-head:focus-visible { outline: 1px solid var(--mc-accent); outline-offset: -1px; }
+.dshmc-todos-caret { flex: none; width: 1em; color: var(--mc-text-4); }
+.dshmc-todos-count { flex: none; color: var(--mc-accent); font-variant-numeric: tabular-nums; }
+.dshmc-todos-active {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--mc-text-3);
+}
+.dshmc-todos-list {
+  list-style: none; margin: 0;
+  padding: 0 12px 7px 12px;
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: 30vh; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--mc-scrollbar) transparent;
+}
+.dshmc-todo-item {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: calc(var(--mc-msg-size) - 1px); line-height: var(--mc-msg-line);
+  color: var(--mc-text-3);
+}
+.dshmc-todo-glyph { flex: none; width: 1em; text-align: center; }
+.dshmc-todo-text { min-width: 0; word-break: break-word; }
+.dshmc-todo-item[data-status="completed"] { color: var(--mc-text-4); }
+.dshmc-todo-item[data-status="completed"] .dshmc-todo-glyph { color: var(--mc-green); }
+.dshmc-todo-item[data-status="completed"] .dshmc-todo-text { text-decoration: line-through; }
+.dshmc-todo-item[data-status="in_progress"] { color: var(--mc-text-2); font-weight: 500; }
+.dshmc-todo-item[data-status="in_progress"] .dshmc-todo-glyph { color: var(--mc-amber-label); }
 .dshmc-stage-tile-body {
   flex: 1;
   min-height: 0;
@@ -4385,6 +4476,52 @@ function StageTileWait({ wait, onJump }: {
  * place of the composer: answering it *is* the next action, and a free-text
  * steer would not satisfy the wait.
  */
+/**
+ * The session's live to-do strip, collapsed to a progress line with the active
+ * item beside it and expandable to the whole plan.
+ *
+ * Todos never appear in `extractTail`: the host carries them as a per-session
+ * projection rather than a chat node, so without this the tile shows a
+ * `todo_write` tool row and nothing about the plan it wrote. Collapsed by
+ * default because a long plan would otherwise crowd out the transcript the
+ * tile exists to show.
+ */
+function TileTodos({ todos }: { todos: readonly TodoItem[] }): React.JSX.Element | null {
+  const [open, setOpen] = React.useState(false)
+  if (todos.length === 0) return null
+  const done = todos.filter((t) => t.status === 'completed').length
+  const active = todos.find((t) => t.status === 'in_progress')
+  // The in-progress item is the useful one-line summary; once every item is
+  // done there is none, so fall back to naming completion.
+  const summary = active ? active.content : done === todos.length ? 'all done' : 'no active task'
+  return (
+    <div className="dshmc-todos">
+      <button
+        className="dshmc-todos-head"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title={open ? 'Hide to-dos' : 'Show to-dos'}
+      >
+        <span className="dshmc-todos-caret" aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <span className="dshmc-todos-count">{done}/{todos.length}</span>
+        <span className="dshmc-todos-active">{summary}</span>
+      </button>
+      {open ? (
+        <ul className="dshmc-todos-list">
+          {todos.map((t, i) => (
+            <li key={`${i}:${t.content}`} className="dshmc-todo-item" data-status={t.status}>
+              <span className="dshmc-todo-glyph" aria-hidden="true">
+                {t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '◐' : '○'}
+              </span>
+              <span className="dshmc-todo-text">{t.content}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
 function StageTile({
   ctx,
   row,
@@ -4521,6 +4658,7 @@ function StageTile({
         {lastErr ? <div className="dshmc-tile-msg err">{String(lastErr).slice(0, 160)}</div> : null}
       </div>
       <LlmStatus activity={activity} rate={rate} />
+      {row.todos && row.todos.length > 0 ? <TileTodos todos={row.todos} /> : null}
       {waits.length > 0 ? (
         waits.map((w) => <StageTileWait key={w.key} wait={w} onJump={onJump} />)
       ) : (
