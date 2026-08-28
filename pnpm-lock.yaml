@@ -60,8 +60,8 @@ importers:
   plugins/dsh-skills:
     dependencies:
       '@dennisrongo/skills':
-        specifier: ^0.16.0
-        version: 0.16.0(@types/node@22.20.1)
+        specifier: ^0.16.1
+        version: 0.16.1(@types/node@22.20.1)
       yaml:
         specifier: ^2.8.1
         version: 2.9.0
@@ -116,8 +116,8 @@ importers:
 
 packages:
 
-  '@dennisrongo/skills@0.16.0':
-    resolution: {integrity: sha512-MeZhh4hmqN3vJlasW+txoQKh7GrjnXnMYWjMcUWG6+ZyTbmV+uluUGd7TN+VUK10D8O2lH+hjs5Sq9Ove+Ti0A==}
+  '@dennisrongo/skills@0.16.1':
+    resolution: {integrity: sha512-e1su7FbLTW2X3xsg3e28LvGPtJQ+7ruTF1Wi1aZ5oZHucGNDHn93ey6/ewjBRhjGCNkkfqB/LRz4g5NG3R/ZmQ==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -532,7 +532,7 @@ packages:
 
 snapshots:
 
-  '@dennisrongo/skills@0.16.0(@types/node@22.20.1)':
+  '@dennisrongo/skills@0.16.1(@types/node@22.20.1)':
     dependencies:
       '@inquirer/prompts': 7.10.1(@types/node@22.20.1)
       kleur: 4.1.5

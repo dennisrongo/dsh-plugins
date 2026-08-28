@@ -21,7 +21,7 @@
     "directory": "plugins/dsh-skills"
   },
   "dependencies": {
-    "@dennisrongo/skills": "^0.16.0",
+    "@dennisrongo/skills": "^0.16.1",
     "yaml": "^2.8.1"
   },
   "peerDependencies": {
