@@ -13,6 +13,8 @@ import { build } from 'esbuild'
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
+import { execFileSync } from 'node:child_process'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outdir = join(root, 'lib')
@@ -72,6 +74,20 @@ await build({
   outfile: join(outdir, 'typert.host.js'),
   logLevel: 'info',
 })
+
+// 1c) host type declarations — package.json's `.` export advertises
+// lib/types/index.d.ts. esbuild does not emit declarations, so this ran for a
+// while with the exports map pointing at a file that was never produced: every
+// TypeScript consumer of the host half resolved types to nothing. tsc is
+// invoked through its resolved bin rather than npx so CI does not re-resolve
+// the package on every build.
+{
+  const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc')
+  execFileSync(process.execPath, [tsc, '-p', join(root, 'tsconfig.types.json')], {
+    stdio: 'inherit',
+  })
+  console.log('  lib/types/index.d.ts (host declarations)')
+}
 
 // 2) client half — CJS body wrapped in the __ModuleLoader__ load call
 await build({
