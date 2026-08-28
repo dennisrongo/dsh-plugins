@@ -262,7 +262,7 @@ const BAR_STYLES = `
   border: 1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.12));
   background: var(--dsw-specific-sidebar-fill, #1b1b1c);
   color: var(--dsw-alias-label-secondary, #cfd3d6);
-  font: 400 12px/1.4 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
+  font: 400 13px/1.4 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
   font-variant-numeric: tabular-nums;
   box-shadow: var(--dsw-shadow-lv3, 0 0 1px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.12));
   cursor: default;
@@ -288,10 +288,10 @@ body.dsh-desktop-windows-titlebar-layout .dshwx {
 }
 body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 24px rgba(0,0,0,0.5); }
 .dshwx[hidden] { display: none; }
-.dshwx-icon { font-size: 15px; }
+.dshwx-icon { font-size: 16px; }
 .dshwx-temp {
   color: var(--dsw-alias-label-primary, #f9fafb);
-  font-weight: 600; font-size: 13px;
+  font-weight: 600; font-size: 14px;
   font-family: inherit; font-variant-numeric: tabular-nums;
   border: 0; background: transparent; padding: 1px 4px; margin: 0 -2px;
   border-radius: 6px; cursor: pointer; line-height: inherit;
@@ -304,20 +304,20 @@ body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 2
   max-width: 160px; overflow: hidden; text-overflow: ellipsis;
 }
 .dshwx-sep { width: 1px; height: 14px; background: var(--dsw-alias-border-l2, rgba(255,255,255,0.12)); flex: none; }
-.dshwx-meta { color: var(--dsw-alias-label-caption, #81858c); font-size: 11px; }
+.dshwx-meta { color: var(--dsw-alias-label-caption, #81858c); font-size: 12px; }
 .dshwx-hours { display: flex; gap: 8px; align-items: center; }
-.dshwx-hour { display: flex; align-items: center; gap: 3px; color: var(--dsw-alias-label-caption, #81858c); font-size: 11px; }
+.dshwx-hour { display: flex; align-items: center; gap: 3px; color: var(--dsw-alias-label-caption, #81858c); font-size: 12px; }
 .dshwx-hour b { color: var(--dsw-alias-label-secondary, #cfd3d6); font-weight: 500; }
 .dshwx-refresh {
   border: 0; background: transparent; cursor: pointer;
   color: var(--dsw-alias-label-caption, #81858c);
-  font-size: 12px; padding: 2px; border-radius: 50%;
+  font-size: 14px; padding: 2px; border-radius: 50%;
   display: grid; place-items: center;
 }
 .dshwx-refresh:hover { color: var(--dsw-alias-label-primary, #f9fafb); background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,0.08)); }
 .dshwx-refresh.busy { animation: dshwx-spin 0.9s linear infinite; }
 @keyframes dshwx-spin { to { transform: rotate(360deg); } }
-.dshwx-error { color: var(--dsw-alias-state-error-primary, #ef4444); font-size: 11.5px; }
+.dshwx-error { color: var(--dsw-alias-state-error-primary, #ef4444); font-size: 12px; }
 /* --- Responsive tiers ---------------------------------------------------
    The bar is a single nowrap pill, so narrow screens shed detail rather than
    wrap. Each tier also drops the separator that preceded the hidden group,
@@ -336,11 +336,11 @@ body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 2
     gap: 7px;
     padding: 4px 10px;
     max-width: calc(100vw - 16px);
-    font-size: 11.5px;
+    font-size: 12px;
   }
   .dshwx-where { max-width: 92px; }
   .dshwx-icon { font-size: 14px; }
-  .dshwx-temp { font-size: 12.5px; padding: 5px 7px; margin: -4px -3px; }
+  .dshwx-temp { font-size: 13px; padding: 5px 7px; margin: -4px -3px; }
   .dshwx-refresh { padding: 7px; margin: -5px; }
 }
 
