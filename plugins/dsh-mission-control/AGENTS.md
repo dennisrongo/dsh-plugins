@@ -95,18 +95,32 @@ Works on both surfaces: the dsh CLI and DSH Desktop, which keeps its own `DSH_HO
 
 `pnpm install` at the monorepo root, then `pnpm run build` here (esbuild dual build →
 `lib/index.js` + `lib/client.js`, via the gitignored `client.body.cjs`) and `pnpm test`
-(`test/smoke.mjs`, offline, asserts marker strings against the **built** bundle — build
-first or it passes against a stale one).
+(`test/smoke.mjs`, offline, exercising the **built** bundle).
+
+**`pnpm test` rebuilds first** (`node build/build.mjs && node test/smoke.mjs`), matching
+`dsh-git`, `dsh-weather` and `dsh-todo`. The suite imports `lib/client.js` and calls its
+exports, so without that prefix it happily passes against a stale bundle — verified by
+changing `fmtTokens`' divisor in `src/` without rebuilding and watching the suite stay
+green. This is the same defect class that let this package's own `dshmc-burn-row` marker
+rot unnoticed. Running `test/smoke.mjs` directly still skips the build, so prefer
+`pnpm test`.
 
 `scripts/dev-link.ps1` junctions the package into a profile so a rebuild self-deploys;
 client-half edits then land on a **browser refresh** with no profile restart. Re-run it, or
 `node scripts/anchor.mjs`, after any `pnpm install`.
 
-`test/installed-copy.mjs` checks the copy a profile actually serves, which is machine state
-rather than something the repo owns. It derives the path from `$DSH_HOME/profiles/<profile>`
-and **exits 0 with a note** when that profile does not exist, so a contributor without it
-does not see a red test. Override with `DSH_PROFILE_COPY`, or `DSH_PROFILE` to name a
-different profile.
+`test/installed-copy.mjs` checks the copies a profile actually serves. It is deliberately
+**not** part of `pnpm test`: it reads machine state rather than something the repo owns, so
+wiring it in would make the suite depend on profile layout. It **discovers** every install of this package
+across both surfaces (the dsh CLI's `~/.dsh/profiles` and DSH Desktop's own `DSH_HOME`) and
+checks each one, labelling them `dsh:<profile>` / `desktop:<profile>`. It **exits 0 with a
+note** only when no install exists anywhere, so a contributor without one does not see a red
+test. Override with `DSH_PROFILE_COPY` (an exact path) or `DSH_PROFILE` (a profile name) —
+and a target named that way is then **fatal if missing**, rather than skipped.
+
+It previously defaulted to a hardcoded `mission-control` profile that did not exist on the
+dev machine, so it skipped — reporting success — while the markers it asserts drifted from
+the source. That is how `dshmc-burn-row` rotted. Discovery is what closes it.
 
 ## Verification
 
@@ -125,9 +139,11 @@ plugin from disk per request, so a refreshed bundle needs only a browser refresh
 
 ## Gotchas
 
-- CSS classes are namespaced `dshmc-`. `test/smoke.mjs` asserts on specific marker strings
-  (`dshmc-burn-row`, `dshmc-tool-head`, `--mc-msg-size`, …), so renaming a class breaks tests
-  by design — update both together.
+- CSS classes are namespaced `dshmc-`. `test/installed-copy.mjs` asserts on specific marker
+  strings (`dshmc-stats`, `dshmc-tool-head`, `--mc-msg-size`, …), so renaming a class breaks
+  tests by design — update both together. Removing a feature means removing its markers too:
+  `dshmc-burn-row`/`dshmc-burn-model` outlived the burn block they described and sat green
+  for months, which is why a negative assertion now pins their absence.
 - `tsconfig.json` `paths` point at `./node_modules/@deepseek-ai/...`, which only exist after
   anchoring. `TS2307: Cannot find module '@deepseek-ai/...'` means run `node
   scripts/anchor.mjs`, not add a stub.
