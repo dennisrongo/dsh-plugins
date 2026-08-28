@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-todo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Todo list for DeepSeek Harness (dsh) — a per-workspace task list persisted on disk by the host",
   "type": "module",
   "license": "MIT",

@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-mission-control",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mission Control dashboard for DeepSeek Harness (dsh) — live session fleet, swarm tree, token burn, and permission inbox as a shell.overlay plugin",
   "type": "module",
   "license": "MIT",
