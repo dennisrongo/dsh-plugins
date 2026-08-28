@@ -14678,7 +14678,7 @@ var MC_REMOTE = {
 
 // src/client.tsx
 var import_jsx_runtime = require("react/jsx-runtime");
-var inject = ["slots", "sessions", "workspaces", "modelDirectories"];
+var inject = ["slots", "remote", "sessions", "workspaces", "modelDirectories"];
 var asSessionId = (id) => id;
 var MarkdownText = (() => {
   try {

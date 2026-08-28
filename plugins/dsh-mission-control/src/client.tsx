@@ -12,7 +12,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { MC_REMOTE } from './remote.ts'
 
 /** Required services (cordis fiber inject — service access is granted per-fiber). */
-export const inject = ['slots', 'sessions', 'workspaces', 'modelDirectories']
+export const inject = ['slots', 'remote', 'sessions', 'workspaces', 'modelDirectories']
 
 // The loader injects `require` into the factory; not declared in the DOM lib.
 declare const require: unknown
