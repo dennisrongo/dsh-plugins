@@ -108,6 +108,9 @@ const syncRequestSchema = z.object({
   action: z.enum(['pull', 'push', 'fetch', 'sync', 'publish']),
 })
 
+const changeTokenRequestSchema = z.object({ workspaceId: z.string() })
+const changeTokenResultSchema = z.object({ token: z.number() })
+
 const initRequestSchema = z.object({
   workspaceId: z.string(),
   branch: z.string().optional(),
@@ -163,6 +166,7 @@ export const GIT_REMOTE = {
     descriptor('init', initRequestSchema, commandResultSchema),
     descriptor('sync', syncRequestSchema, commandResultSchema),
     descriptor('suggestMessage', suggestRequestSchema, suggestResultSchema),
+    descriptor('changeToken', changeTokenRequestSchema, changeTokenResultSchema),
   ],
 }
 

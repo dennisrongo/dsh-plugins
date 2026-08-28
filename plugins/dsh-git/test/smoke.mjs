@@ -37,7 +37,7 @@ function test(name, fn) {
 
 test('every remote codec is strict', () => {
   assert.equal(GIT_REMOTE.package, '@dennisrongo/dsh-git')
-  assert.equal(GIT_REMOTE.descriptors.length, 7)
+  assert.equal(GIT_REMOTE.descriptors.length, 8)
   for (const d of GIT_REMOTE.descriptors) {
     assert.equal(d.namespace, 'dshGit', `${d.method} namespace`)
     assert.equal(d.result.mode, 'strict', `${d.method} result codec`)
@@ -53,7 +53,7 @@ test('every remote codec is strict', () => {
 test('remote covers every host method', () => {
   const methods = GIT_REMOTE.descriptors.map((d) => d.method).sort()
   assert.deepEqual(methods, [
-    'commit', 'diff', 'init', 'stage', 'status', 'suggestMessage', 'sync',
+    'changeToken', 'commit', 'diff', 'init', 'stage', 'status', 'suggestMessage', 'sync',
   ])
 })
 

@@ -74,6 +74,8 @@ var syncRequestSchema = z.object({
   workspaceId: z.string(),
   action: z.enum(["pull", "push", "fetch", "sync", "publish"])
 });
+var changeTokenRequestSchema = z.object({ workspaceId: z.string() });
+var changeTokenResultSchema = z.object({ token: z.number() });
 var initRequestSchema = z.object({
   workspaceId: z.string(),
   branch: z.string().optional()
@@ -118,7 +120,8 @@ var GIT_REMOTE = {
     descriptor("commit", commitRequestSchema, commandResultSchema),
     descriptor("init", initRequestSchema, commandResultSchema),
     descriptor("sync", syncRequestSchema, commandResultSchema),
-    descriptor("suggestMessage", suggestRequestSchema, suggestResultSchema)
+    descriptor("suggestMessage", suggestRequestSchema, suggestResultSchema),
+    descriptor("changeToken", changeTokenRequestSchema, changeTokenResultSchema)
   ]
 };
 

@@ -28,14 +28,15 @@
   "scripts": {
     "build": "node build/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node build/build.mjs && node --experimental-strip-types test/smoke.mjs && node --experimental-strip-types test/host-ops.mjs",
+    "test": "node build/build.mjs && node --experimental-strip-types test/smoke.mjs && node --experimental-strip-types test/host-ops.mjs && node --experimental-strip-types test/watch-probe.mjs",
     "test:ui": "node test/verify-ui.mjs",
     "test:ai": "node test/verify-ai.mjs",
     "test:commit": "node test/verify-commit.mjs",
     "test:layout": "node test/layout-probe.mjs",
     "test:stability": "node test/list-stability-probe.mjs",
     "test:skeleton": "node test/skeleton-probe.mjs",
-    "test:icons": "node test/icon-probe.mjs"
+    "test:icons": "node test/icon-probe.mjs",
+    "test:watch": "node --experimental-strip-types test/watch-probe.mjs"
   },
   "dsh": {
     "bundle": {

@@ -24,6 +24,8 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import {
   MAX_AI_DIFF_BYTES,
   MAX_DIFF_BYTES,
+  type ChangeTokenRequest,
+  type ChangeTokenResult,
   type CommandResult,
   type CommitRequest,
   type DiffRequest,
@@ -37,6 +39,7 @@ import {
   type SyncRequest,
 } from './types.ts'
 import { assertSafePath, combined, readStatus, repoRoot, runGit } from './git.ts'
+import { RepoWatcher } from './watch.ts'
 
 export type * from './types.ts'
 
@@ -62,6 +65,14 @@ export class GitService extends TypertRemoteService {
 
   /** Per-repository write chain, keyed by working-tree root. */
   private readonly tails = new Map()
+
+  /**
+   * Filesystem watchers backing {@link changeToken}.
+   *
+   * Owned by the service rather than created per request so that N tabs on one
+   * repository share a single OS handle.
+   */
+  private readonly watcher = new RepoWatcher()
 
   /**
    * @param ctx - host context carrying the workspace registry and LLM runtime.
@@ -99,6 +110,27 @@ export class GitService extends TypertRemoteService {
   async status(request: StatusRequest): Promise<StatusResult> {
     const dir = this.workspaceDir(request?.workspaceId)
     return { status: await readStatus(dir) }
+  }
+
+  /**
+   * Report whether this repository has changed, without running git.
+   *
+   * This is the endpoint the tab polls, so its cost is the whole point: it
+   * reads a counter maintained by a filesystem watcher and returns an integer.
+   * Polling `status` instead would spawn four git processes per tick per
+   * open tab, which is exactly the penalty this avoids.
+   *
+   * A directory that is not a repository reports `0` so the client can stop
+   * polling rather than watch nothing forever.
+   * @param request - the workspace to observe.
+   * @returns the current monotonic change token.
+   */
+  @Remote
+  async changeToken(request: ChangeTokenRequest): Promise<ChangeTokenResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const root = await repoRoot(dir)
+    if (root === undefined) return { token: 0 }
+    return { token: this.watcher.token(root) }
   }
 
   /**
@@ -448,8 +480,20 @@ export class GitService extends TypertRemoteService {
     }
   }
 
-  /** Nothing to open; the repository on disk is the state. */
-  protected async [Service.init](): Promise<void> {}
+  /**
+   * Nothing to open; the repository on disk is the state.
+   *
+   * The watchers are released through `ctx.effect()`, whose teardown runs when
+   * the owning fiber unloads. Neither of the obvious alternatives works here:
+   * cordis's Service declares no stop symbol (only {@link Service.init}), and
+   * `dispose` is not a member of its Events map. Getting this wrong leaks an OS
+   * watch handle per repository on every plugin reload.
+   */
+  protected async [Service.init](): Promise<void> {
+    this.ctx.effect(() => () => {
+      this.watcher.close()
+    })
+  }
 }
 
 /**

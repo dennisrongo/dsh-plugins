@@ -205,6 +205,16 @@ export function workspaceIdForSession(
 
 type Listener = () => void
 
+/**
+ * How often to ask the host whether anything changed.
+ *
+ * This is a token probe, not a status read: the host answers from a filesystem
+ * watcher without spawning git, so a tick is one small request. One second is
+ * below the threshold where a file list feels stale, while still collapsing a
+ * noisy build's worth of writes into a handful of refreshes.
+ */
+const POLL_MS = 1000
+
 /** What the view renders: the snapshot plus its load/run status. */
 export interface GitState {
   status: GitStatus | null
@@ -237,6 +247,13 @@ export class GitStore {
   private state: GitState = INITIAL
   private tail: Promise<unknown> = Promise.resolve()
   private loaded = false
+  /** Last observed change token; null until the first successful probe. */
+  private token: number | null = null
+  /** Number of mounted views watching, so one loop serves them all. */
+  private watchers = 0
+  private timer: number | null = null
+  private polling = false
+  private onVisible: (() => void) | undefined
 
   /**
    * @param remote - the host's dshGit remote namespace.
@@ -263,14 +280,139 @@ export class GitStore {
     await this.refresh()
   }
 
-  /** Re-read the authoritative snapshot from the host. */
+  /**
+   * Begin following the repository, so external edits appear without a click.
+   *
+   * The loop polls {@link GitRemote.changeToken}, NOT `status`. That endpoint
+   * answers from a host-side filesystem watcher without spawning git, so a tick
+   * costs a single small request; the expensive status read happens only when
+   * the token actually moves. Polling `status` directly at this interval
+   * would spawn four git processes per second per open tab.
+   *
+   * Reference-counted: several mounted views share one loop, and the last one
+   * to leave stops it.
+   * @returns a function that releases this watcher's claim.
+   */
+  watch(): () => void {
+    this.watchers += 1
+    if (this.watchers === 1) this.startPolling()
+    // The disposer is guarded because it must be safe to call twice. React may
+    // invoke a cleanup more than once, and an unguarded decrement drives the
+    // count negative — after which a later mount sees `watchers === 0`, never
+    // restarts the loop, and the tab silently stops updating with no error. The
+    // same double-call with two views open stops polling while one is still
+    // mounted. Both failures are invisible, so guard rather than trust callers.
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.watchers -= 1
+      if (this.watchers <= 0) {
+        this.watchers = 0
+        this.stopPolling()
+      }
+    }
+  }
+
+  /**
+   * Drive one poll tick, refreshing only when the repository actually moved.
+   *
+   * Exported behaviour worth stating: a token of `0` means the directory is not
+   * a repository, and a first observation only records the baseline. Neither
+   * triggers a status read, so watching a plain folder costs one tiny request
+   * per tick and nothing more.
+   */
+  private async tick(): Promise<void> {
+    // A refresh already in flight owns the next paint; stacking another would
+    // just queue duplicate git reads behind it. A running command is skipped for
+    // the same reason — and safely, because the token is only ever adopted
+    // together with a completed read, so whatever moved is still pending at the
+    // next tick rather than being marked as seen here.
+    if (this.polling || this.state.busy !== null) return
+    this.polling = true
+    try {
+      const reply = await this.remote.changeToken({ workspaceId: this.workspaceId })
+      if (!reply.ok) return
+      const token = reply.value.token
+      if (token === 0) return
+      if (this.token === null) {
+        this.token = token
+        return
+      }
+      if (token === this.token) return
+      this.token = token
+      await this.refresh()
+    } catch {
+      // A dropped poll is not worth surfacing: the next tick retries, and an
+      // error banner for a background probe would fight the user's actual work.
+    } finally {
+      this.polling = false
+    }
+  }
+
+  /** Start the interval and re-check as soon as the tab becomes visible. */
+  private startPolling(): void {
+    if (this.timer !== null) return
+    // Hidden tabs are not merely throttled by the browser, they are pointless:
+    // nobody is looking. Gating on visibility takes the idle cost to zero and
+    // the focus handler makes the list correct the instant it is looked at.
+    this.onVisible = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      void this.tick()
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisible)
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', this.onVisible)
+    }
+    this.timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      void this.tick()
+    }, POLL_MS) as unknown as number
+  }
+
+  /** Stop the interval and detach the visibility listeners. */
+  private stopPolling(): void {
+    if (this.timer !== null) {
+      clearInterval(this.timer as unknown as ReturnType<typeof setInterval>)
+      this.timer = null
+    }
+    if (this.onVisible) {
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', this.onVisible)
+      }
+      if (typeof window !== 'undefined') window.removeEventListener('focus', this.onVisible)
+      this.onVisible = undefined
+    }
+  }
+
+  /**
+   * Re-read the authoritative snapshot from the host.
+   *
+   * The change token is re-baselined BEFORE the read, never after. Our own
+   * writes move the watcher too, so re-baselining suppresses a redundant second
+   * status read on the next tick — but the ordering is what makes it safe:
+   * sampling the token first means any change that lands DURING the read leaves
+   * a higher token behind and is still picked up. Sampling afterwards (or
+   * un-awaited, racing the read) would adopt that newer value as the baseline
+   * and silently swallow the change forever.
+   */
   async refresh(): Promise<void> {
+    // Sample BEFORE the read, and adopt it only after the read succeeds. Any
+    // change that lands between these two calls leaves the host's token above
+    // this sample, so the next tick still sees a mismatch and re-reads. Adopting
+    // a token sampled after (or concurrently with) the status read would baseline
+    // away a change the displayed status predates, freezing the tab on stale
+    // content until some unrelated event happened to move the token again.
+    const sampled = await this.probeToken()
     try {
       const reply = await this.remote.status({ workspaceId: this.workspaceId })
       if (!reply.ok) {
         this.publish({ ...this.state, phase: 'error', error: reply.error.message })
         return
       }
+      if (sampled !== null) this.token = sampled
       this.publish({
         ...this.state,
         status: reply.value.status,
@@ -394,6 +536,26 @@ export class GitStore {
     }
   }
 
+  /**
+   * Read the current change token without acting on it.
+   *
+   * Deliberately RETURNS the value instead of assigning `this.token`: writing a
+   * baseline from a probe unsynchronised with the status read is what loses
+   * updates, so the decision to adopt belongs to the caller that knows the
+   * ordering. Returns null when unavailable or not a repository.
+   * @returns the token, or null to leave the baseline unchanged.
+   */
+  private async probeToken(): Promise<number | null> {
+    try {
+      const reply = await this.remote.changeToken({ workspaceId: this.workspaceId })
+      return reply.ok && reply.value.token !== 0 ? reply.value.token : null
+    } catch {
+      // Returning null leaves the baseline untouched, which costs at most one
+      // extra refresh next tick — always the safe direction to fail.
+      return null
+    }
+  }
+
   private publish(next: GitState): void {
     this.state = next
     for (const fn of this.listeners) {
@@ -433,6 +595,7 @@ export interface GitRemote {
     workspaceId: string
     staged?: boolean
   }) => Promise<RemoteReply<{ message: string }>>
+  changeToken: (request: { workspaceId: string }) => Promise<RemoteReply<{ token: number }>>
 }
 
 type RemoteReply<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
@@ -1039,6 +1202,14 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
 
   React.useEffect(() => {
     if (store) void store.ensure()
+  }, [store])
+
+  // Follow the repository for as long as this view is mounted, so changes made
+  // outside the tab (an agent's edit, a terminal checkout, a build) appear on
+  // their own. The cleanup is what keeps a closed tab from polling forever.
+  React.useEffect(() => {
+    if (!store) return
+    return store.watch()
   }, [store])
 
   const state = React.useSyncExternalStore(

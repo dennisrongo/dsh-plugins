@@ -256,9 +256,146 @@ function assertSafePath(path) {
 }
 __name(assertSafePath, "assertSafePath");
 
+// src/watch.ts
+import { watch } from "node:fs";
+import { join } from "node:path";
+var DEBOUNCE_MS = 120;
+var MAX_DEBOUNCE_MS = 1e3;
+var tokenSeed = 0;
+var GIT_SIGNIFICANT = /* @__PURE__ */ new Set([
+  "index",
+  "HEAD",
+  "refs",
+  "packed-refs",
+  "MERGE_HEAD",
+  "REBASE_HEAD",
+  "CHERRY_PICK_HEAD",
+  "REVERT_HEAD",
+  "BISECT_LOG",
+  "MERGE_MSG"
+]);
+function isSignificantGitEntry(entry) {
+  if (entry.length === 0) return false;
+  if (entry.endsWith(".lock")) return false;
+  return GIT_SIGNIFICANT.has(entry);
+}
+__name(isSignificantGitEntry, "isSignificantGitEntry");
+var IGNORED_DIRS = /* @__PURE__ */ new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "out",
+  "target",
+  "coverage",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".pytest_cache",
+  ".gradle",
+  ".idea",
+  ".vscode"
+]);
+var _RepoWatcher = class _RepoWatcher {
+  constructor() {
+    __publicField(this, "repos", /* @__PURE__ */ new Map());
+  }
+  /**
+   * Current change token for a root, starting a watcher on first use.
+   *
+   * Reading the token is what registers interest, so a client that stops asking
+   * lets the watch expire on its own; nothing has to remember to unsubscribe.
+   * @param root - repository working-tree root.
+   * @returns the monotonic token for this root.
+   */
+  token(root) {
+    const existing = this.repos.get(root);
+    if (existing !== void 0) return existing.token;
+    const created = this.start(root);
+    return created.token;
+  }
+  /**
+   * Begin watching one root.
+   *
+   * Two watches are needed, not one. The worktree watch is `recursive` and sees
+   * edits to files; the `.git` watch is what sees staging, commits, and branch
+   * switches, because git's own metadata writes do not surface as worktree
+   * events. Missing the second is why a watcher can look like it works while
+   * never noticing a commit.
+   * @param root - repository working-tree root.
+   * @returns the newly registered watch record.
+   */
+  start(root) {
+    tokenSeed += 1;
+    const record = { watchers: [], token: tokenSeed, timer: void 0, burstStart: 0 };
+    this.repos.set(root, record);
+    const advance = /* @__PURE__ */ __name(() => {
+      record.timer = void 0;
+      record.burstStart = 0;
+      record.token += 1;
+    }, "advance");
+    const bump = /* @__PURE__ */ __name(() => {
+      const now = Date.now();
+      if (record.burstStart === 0) record.burstStart = now;
+      if (now - record.burstStart >= MAX_DEBOUNCE_MS) {
+        if (record.timer !== void 0) clearTimeout(record.timer);
+        advance();
+        return;
+      }
+      if (record.timer !== void 0) clearTimeout(record.timer);
+      record.timer = setTimeout(advance, DEBOUNCE_MS);
+      record.timer.unref?.();
+    }, "bump");
+    try {
+      const tree = watch(root, { recursive: true }, (_event, name) => {
+        if (typeof name !== "string" || name.length === 0) return;
+        const head = name.replace(/\\/g, "/").split("/")[0] ?? "";
+        if (IGNORED_DIRS.has(head)) return;
+        bump();
+      });
+      tree.on("error", () => {
+      });
+      record.watchers.push(tree);
+    } catch {
+    }
+    try {
+      const meta = watch(join(root, ".git"), (_event, name) => {
+        if (typeof name !== "string" || name.length === 0) return;
+        const head = name.replace(/\\/g, "/").split("/")[0] ?? "";
+        if (!isSignificantGitEntry(head)) return;
+        bump();
+      });
+      meta.on("error", () => {
+      });
+      record.watchers.push(meta);
+    } catch {
+    }
+    return record;
+  }
+  /** Release every watcher; called when the service disposes. */
+  close() {
+    for (const record of this.repos.values()) {
+      if (record.timer !== void 0) clearTimeout(record.timer);
+      for (const w of record.watchers) {
+        try {
+          w.close();
+        } catch {
+        }
+      }
+    }
+    this.repos.clear();
+  }
+};
+__name(_RepoWatcher, "RepoWatcher");
+var RepoWatcher = _RepoWatcher;
+
 // src/index.ts
 var NETWORK_TIMEOUT_MS = 12e4;
-var _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _diff_dec, _status_dec, _init, _a;
+var _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
 var _GitService = class _GitService extends (_a = TypertRemoteService) {
   /**
    * @param ctx - host context carrying the workspace registry and LLM runtime.
@@ -268,6 +405,13 @@ var _GitService = class _GitService extends (_a = TypertRemoteService) {
     __runInitializers(_init, 5, this);
     /** Per-repository write chain, keyed by working-tree root. */
     __publicField(this, "tails", /* @__PURE__ */ new Map());
+    /**
+     * Filesystem watchers backing {@link changeToken}.
+     *
+     * Owned by the service rather than created per request so that N tabs on one
+     * repository share a single OS handle.
+     */
+    __publicField(this, "watcher", new RepoWatcher());
   }
   /**
    * Resolve a workspace id to its canonical directory.
@@ -290,6 +434,12 @@ var _GitService = class _GitService extends (_a = TypertRemoteService) {
   async status(request) {
     const dir = this.workspaceDir(request?.workspaceId);
     return { status: await readStatus(dir) };
+  }
+  async changeToken(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const root = await repoRoot(dir);
+    if (root === void 0) return { token: 0 };
+    return { token: this.watcher.token(root) };
   }
   async diff(request) {
     const dir = this.workspaceDir(request?.workspaceId);
@@ -512,12 +662,24 @@ ${body}` }],
       if (this.tails.get(key) === tail) this.tails.delete(key);
     }
   }
-  /** Nothing to open; the repository on disk is the state. */
-  async [(_status_dec = [Remote], _diff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], Service.init)]() {
+  /**
+   * Nothing to open; the repository on disk is the state.
+   *
+   * The watchers are released through `ctx.effect()`, whose teardown runs when
+   * the owning fiber unloads. Neither of the obvious alternatives works here:
+   * cordis's Service declares no stop symbol (only {@link Service.init}), and
+   * `dispose` is not a member of its Events map. Getting this wrong leaks an OS
+   * watch handle per repository on every plugin reload.
+   */
+  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], Service.init)]() {
+    this.ctx.effect(() => () => {
+      this.watcher.close();
+    });
   }
 };
 _init = __decoratorStart(_a);
 __decorateElement(_init, 1, "status", _status_dec, _GitService);
+__decorateElement(_init, 1, "changeToken", _changeToken_dec, _GitService);
 __decorateElement(_init, 1, "diff", _diff_dec, _GitService);
 __decorateElement(_init, 1, "stage", _stage_dec, _GitService);
 __decorateElement(_init, 1, "commit", _commit_dec, _GitService);

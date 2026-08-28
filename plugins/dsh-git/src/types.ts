@@ -98,6 +98,28 @@ export interface StatusResult {
   status: GitStatus
 }
 
+/**
+ * `changeToken` request: cheaply ask whether a repository has changed.
+ *
+ * This is the polling endpoint, so it must stay far cheaper than `status`: it
+ * answers from a filesystem watcher and never spawns git.
+ */
+export interface ChangeTokenRequest {
+  workspaceId: string
+}
+
+/** `changeToken` reply. */
+export interface ChangeTokenResult {
+  /**
+   * Monotonic counter that advances when the repository changes.
+   *
+   * Comparable only against an earlier token for the same workspace; it counts
+   * change bursts and carries no wall-clock meaning. `0` means "not a
+   * repository", which lets the client stop polling a plain directory.
+   */
+  token: number
+}
+
 /** `diff` request: the patch text for one path, or the whole tree. */
 export interface DiffRequest {
   workspaceId: string
