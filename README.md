@@ -479,6 +479,8 @@ Workspace configuration lives in `pnpm-workspace.yaml`: pnpm 11 ignores `pnpm` b
 
 One trap worth knowing: DSH Desktop runs a **profile-repair install** on startup that prunes this repo's per-package `node_modules` — which takes `zod` with it and makes the harness refuse to boot (`Cannot find package 'zod'`). Recovery is `pnpm install` at the root, then `scripts\dev-link.ps1`.
 
+The other trap has no recovery that cheap: **never point `DSH_HOME` at a home another harness is already using.** Testing against DSH Desktop's home while the app is open corrupts the sessions the app has open — silently, across workspaces, and you only find out at a later restart when the history refuses to load. A different `--profile` does not help: `sessions/` is a sibling of `profiles/`, so every profile shares one session store. Use a throwaway `DSH_HOME`, or query the running app's own `/api` endpoint instead of starting a second harness. Repair is possible but manual — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#never-run-two-harnesses-against-one-home).
+
 ## Repository layout
 
 ```

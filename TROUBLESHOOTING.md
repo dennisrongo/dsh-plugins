@@ -59,7 +59,10 @@ data on a fixed port:
 DSH_HOME='<desktop-harness-home>' dsh web --no-open --port 3080
 ```
 
-Read the warning below first — do not run this while the Desktop app is open.
+**Only with the Desktop quit.** Read the next section before running that — doing it while
+the app is open silently corrupts whatever sessions the app has open, and you will not find
+out until a later restart. To read from the Desktop's home while it runs, query the app's own
+endpoint instead of starting a second harness.
 
 ## Never run two harnesses against one home
 
@@ -70,31 +73,66 @@ Failed to load history: history unavailable for session "session-<uuid>":
 Error: corrupt session log: seq gap in committed region at line <n> (expected 7433, got 7429)
 ```
 
-**Cause.** Every event in a session log carries a monotonic `seq`. Two harness processes
-attached to the same home both allocate from that counter, so an interrupted turn in one
-process and the real completion in the other are written with the *same* numbers. The reader
-sees the sequence go backwards and refuses the file.
+**Cause.** Every event carries a `seq`, and the reader requires the *decoded* event stream to
+be dense — `event.seq !== this.events.length` is the whole check in
+`dsh-session-persistence-jsonl` (0.1.1-rc.2) — so one duplicated number invalidates
+everything after it. A second harness on the same home adopts sessions merely by loading it,
+and writes lifecycle records into them: a `session/end-seed`, plus a synthetic `interrupted`
+branch when a tool call is in flight. The process that actually owns the session keeps
+appending from a counter that never saw those writes, and the numbers collide.
 
-This is not limited to editing a session by hand. Booting a second harness "just to check
-something" is enough, and the damage lands in whatever session was active at the time.
+Three things make this worse than it sounds:
+
+- **It is a race, not a rule.** One home took six second-harness launches over two days; five
+  were harmless and the sixth corrupted two sessions. "It worked last time" is not evidence.
+- **It surfaces late.** The bad bytes are written silently and the owning writer carries on —
+  those two sessions absorbed another 1118 and 1362 records after the collision. The reader
+  only validates on load, so the failure appears at the *next* restart, long after the cause.
+- **The blast radius is every session the other process has open**, across workspaces. A
+  single event sealed four sessions in two different workspaces within 225 ms.
+
+**Profiles do not isolate this.** `sessions/` is a sibling of `profiles/` in a home, not a
+child, so every profile shares one session store. Only a separate `DSH_HOME` separates them.
+
+**Nothing upstream prevents it.** As of `@deepseek-ai/dsh` 0.1.1-rc.2 there is no lock on a
+home or a session — no `lockfile`, `acquireLock` or single-instance guard in any of the 197
+`@deepseek-ai` packages — and this package's invariant companion registers nothing at
+runtime, by design.
 
 **Avoid it.** One harness per home. Quit DSH Desktop before pointing a CLI server at its
 home, and quit any CLI server before reopening the app.
+
+If you only need to *read* — probe an endpoint, check a workspace — ask the running harness
+instead of booting a second one. It already serves the same RPCs, and its port is in the
+Desktop's `logs/harness.log` as `[desktop] endpoint http://127.0.0.1:<port>`:
+
+```bash
+curl -s -X POST "http://127.0.0.1:<port>/api/dshGit/status" -H 'content-type: application/json' \
+  -d '{"type":"client-request","rpcId":"t1","method":"dshGit/status","payload":{"args":{"request":{"workspaceId":"<id>"}}}}'
+```
+
+If you need a harness of your own, give it a throwaway `DSH_HOME` and `dsh plugin add` the
+packages into it — never the Desktop's home.
 
 **Diagnose it.** The log is `$DSH_HOME/sessions/<slug>/session-<uuid>/session.jsonl.zstd`,
 stored as *concatenated zstd frames* — one per append. `zstdDecompressSync` returns only the
 first frame (typically just the header line), so split on the zstd magic `28 b5 2f fd` and
 decode frame by frame. Then walk the records tracking the expected next `seq`, noting that a
-`text-chunks` record carries `seq0` and covers a span rather than one event. A forward jump
-is normal; only a **backwards** jump is corruption.
+`text-chunks` record carries `seq0` and covers a span rather than one event. That span is why
+a forward jump between *records* is normal even though the reader's decoded stream is dense —
+only a **backwards** jump is corruption.
 
-**Repair it.** The file is not garbled bytes — it is a clean prefix followed by two competing
-continuations. Identify the spurious branch (the one ending in an `interrupted`
-`tool/result`, a `turn/end` with `reason.kind: interrupted`, and a `session/end-seed`) and
-drop those records; keep the branch that continues. When the spurious records occupy whole
-frames, delete those frames from the byte stream — every surviving frame stays identical and
-nothing is recompressed. Back up the original first, and verify the result has zero backwards
-jumps before installing it.
+**Repair it.** The file is not garbled bytes — it is a clean prefix plus the other process's
+writes, and dropping exactly those restores it. The spurious records are a lone
+`session/end-seed`, or an `interrupted` `tool/result` and a `turn/end` with
+`reason.kind: interrupted` followed by one; keep the branch that continues. Each append is
+its own frame, so those records usually occupy whole frames — delete the frames from the byte
+stream and every surviving frame stays byte-identical with nothing recompressed. Back up
+first, and verify zero backwards jumps before installing. Two real repairs came to five
+records across three frames and recovered ~2,480 stranded ones.
+
+The app appends a fresh `session/end-seed` at `lastSeq + 1` when it next opens a session, so
+that record showing up after a restart is the cheapest confirmation the log reads clean.
 
 ## A workspace with a missing directory shows no sessions
 

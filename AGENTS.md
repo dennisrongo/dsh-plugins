@@ -54,6 +54,14 @@ testing a stale bundle.
 
 ## Rules that are not obvious
 
+- **Never point `DSH_HOME` at a home another harness is already using.** Sessions live at
+  `$DSH_HOME/sessions/`, a sibling of `profiles/`, so a different `--profile` isolates
+  nothing. Two harnesses on one home allocate session `seq` numbers independently and corrupt
+  whatever sessions the other has open — silently, across workspaces, surfacing only at a
+  later restart. It is a race, so getting away with it once proves nothing. To read from a
+  running harness, POST its own `/api/<method>`; to run your own, use a throwaway `DSH_HOME`.
+  Nothing upstream prevents this. See
+  [TROUBLESHOOTING.md](TROUBLESHOOTING.md#never-run-two-harnesses-against-one-home).
 - **Build permissions live in `pnpm-workspace.yaml` under `allowBuilds` (a map).** pnpm 11
   ignores `pnpm` blocks in `package.json`, and the older `onlyBuiltDependencies` list is no
   longer read. Without `allowBuilds: {esbuild: true}` the install fails
@@ -131,7 +139,8 @@ by design; it validates the wrapper and the loader id instead. Done by hand, the
    ```
 2. **Boot** — run a scratch server with captured output:
    `dsh --profile web --port 38111 --no-open`. An `ERR_MODULE_NOT_FOUND` here is a broken
-   junction that a *running* server would swallow.
+   junction that a *running* server would swallow. Leave `DSH_HOME` alone: a scratch server
+   on the Desktop's home corrupts the sessions the Desktop has open.
 3. **Wire** — POST the plugin's endpoint (shape in its `AGENTS.md`). `200` = mounted;
    `404` = the `./typert` export is not registered.
 4. **UI** — open the web UI and confirm the tab renders and its `/api` calls return `200`.
