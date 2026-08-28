@@ -1,0 +1,68 @@
+#!/bin/sh
+#
+# Pre-commit gate: typecheck, full test suite, and a stale-bundle check.
+#
+# Enabled by `git config core.hooksPath .githooks`, which the root package.json
+# `prepare` script runs on install. Living in the repo (rather than .git/hooks)
+# is what makes it survive a fresh clone.
+#
+# SCOPE, stated plainly: this validates the WORKING TREE, not the exact staged
+# snapshot. Stashing unstaged changes to test the index in isolation is the
+# textbook approach and is also how pre-commit hooks eat people's work when
+# they fail halfway. CI (.github/workflows/ci.yml) runs the same commands
+# against the real commit, so that is the authoritative gate; this one is fast
+# local feedback.
+#
+# Bypass with `git commit --no-verify`. CI will still catch it.
+
+set -eu
+
+echo "pre-commit: verifying the workspace..."
+
+# --- Peers must be anchored or every suite dies with ERR_MODULE_NOT_FOUND.
+# The plugins declare the harness packages as peers and ship no copies, so they
+# resolve through links into a real dsh install (see scripts/anchor.mjs).
+missing=''
+for manifest in plugins/*/package.json; do
+  plugin=$(dirname "$manifest")
+  if grep -q '"@deepseek-ai/' "$manifest" && [ ! -d "$plugin/node_modules/@deepseek-ai" ]; then
+    missing="$missing $plugin"
+  fi
+done
+if [ -n "$missing" ]; then
+  echo "pre-commit: harness peers are not anchored for:$missing" >&2
+  echo "            run: npm i -g @deepseek-ai/dsh && node scripts/anchor.mjs" >&2
+  exit 1
+fi
+
+# --- Record which tracked files are already dirty, so the bundle check below
+# can tell "the build changed this" from "the author changed this".
+before=$(mktemp)
+after=$(mktemp)
+# shellcheck disable=SC2064
+trap "rm -f '$before' '$after'" EXIT
+git diff --name-only | sort > "$before"
+
+pnpm -r --if-present run typecheck
+# Each plugin's `test` script builds first, so this also regenerates lib/.
+pnpm -r --if-present run test
+
+# --- Stale committed bundle check.
+#
+# The harness loads lib/, not src/. Those bundles are tracked, so a commit that
+# edits src/ without rebuilding ships a package whose published code is not the
+# code that was reviewed — the fix looks committed and simply does not run.
+# The build above is deterministic, so anything it newly dirtied is stale.
+git diff --name-only | sort > "$after"
+drift=$(comm -13 "$before" "$after" || true)
+if [ -n "$drift" ]; then
+  echo "" >&2
+  echo "pre-commit: the build regenerated tracked files that are not staged:" >&2
+  echo "$drift" | sed 's/^/            /' >&2
+  echo "" >&2
+  echo "            The committed bundle would be stale — the harness runs lib/, not src/." >&2
+  echo "            Stage them and commit again:  git add $(echo "$drift" | tr '\n' ' ')" >&2
+  exit 1
+fi
+
+echo "pre-commit: OK"
