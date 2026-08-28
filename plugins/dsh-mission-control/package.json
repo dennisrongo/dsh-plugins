@@ -27,7 +27,7 @@
   "scripts": {
     "build": "node build/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.mjs"
+    "test": "node build/build.mjs && node test/smoke.mjs"
   },
   "dsh": {
     "bundle": {

@@ -166,7 +166,11 @@ Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`) and `pnpm test` (offline; asserts against the **built** `lib/`, so build first).
+`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, `lib/cli.js`, `lib/bin.js`) and `pnpm test` (offline).
+
+**`pnpm test` rebuilds first** (`node build/build.mjs && …`), matching `dsh-git` and `dsh-weather`. Both suites read the **built** `lib/` — `smoke.mjs` asserts marker strings against `lib/client.js`, and `cli.test.mjs` imports `lib/cli.js` — so without that prefix they pass against a stale bundle. Verified on both halves: renaming `dshtd-confirm-subject` in `src/client.tsx`, and `no task matching` in `src/cli.ts`, each left the un-prefixed suite green and each is now caught. That is the defect class that rotted `dsh-mission-control`'s markers unnoticed. Running a test file directly still skips the build, so prefer `pnpm test`.
+
+Note `test` invokes `build.mjs` directly rather than `pnpm run build`, so any `postbuild` hook stays out of the test path — testing must not mutate a profile.
 
 Profiles materialise `file:` deps as copies **frozen at install time**, so a rebuild does not reach them. `scripts/dev-link.ps1` at the repo root replaces those copies with junctions: client-half edits then deploy on **browser refresh**, host-half edits need a **profile restart**.
 

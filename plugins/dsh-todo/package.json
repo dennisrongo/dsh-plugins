@@ -34,7 +34,7 @@
   "scripts": {
     "build": "node build/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.mjs && node test/cli.test.mjs",
+    "test": "node build/build.mjs && node test/smoke.mjs && node test/cli.test.mjs",
     "test:icons": "node test/icon-probe.mjs",
     "test:modal": "node test/modal-probe.mjs",
     "test:cli": "node test/cli.test.mjs"
