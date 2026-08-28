@@ -5,12 +5,15 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 import { z } from "zod";
 var todoItemSchema = z.object({
   id: z.string(),
-  text: z.string(),
-  done: z.boolean(),
+  title: z.string(),
+  description: z.string().optional(),
+  status: z.enum(["backlog", "todo", "in-progress", "blocked", "done"]),
+  priority: z.enum(["p0", "p1", "p2", "p3"]),
+  release: z.string().optional(),
+  sprint: z.string().optional(),
+  dueDate: z.string().optional(),
   createdAt: z.number(),
   completedAt: z.number().optional(),
-  // Must be carried explicitly: these are strict codecs, so a field the schema
-  // does not name would be stripped off the wire and archiving would not persist.
   archivedAt: z.number().optional()
 });
 var todoListSchema = z.object({

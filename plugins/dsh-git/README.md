@@ -20,6 +20,42 @@ AI-written message), initialize, and sync — without leaving the session.
 - **Sync** — Fetch, Pull (fast-forward only), Push / Publish, and a combined
   pull-then-push, with ahead/behind counts on the buttons.
 
+## The layout
+
+The diff sits **beside** the file list when the tab is wide and **below** it when
+it is narrow. The switch is a **container query** (`@container dshgit (min-width:
+720px)`), not a media query: this is a tab inside a shell whose sidebar and
+panels resize independently of the viewport, so the width that matters is the
+tab's own. `container-type` is declared on `.dshgit` — the root — because a
+container query cannot style its *own* container.
+
+**Opening a diff never moves a row.** The list's column width is reserved even
+with no diff open, so the first click can't cut it from full width to a column
+and reflow every filename under the pointer. Stacked, the diff takes the lower
+55% *in normal flow* rather than floating over the list — shrinking a scrollport
+does not move the content inside it (`scrollTop` stays put and the maximum
+`scrollTop` rises), whereas an overlay hid the very row you had just clicked
+whenever the list was scrolled near its end.
+
+While a patch is in flight the pane shows a **skeleton shaped like a diff** —
+shimmering meta / hunk / add / del bands at varied widths, sized off the real
+18px diff line — instead of a spinner, which blanks a large surface. The shimmer
+animates `background-position` over an oversized gradient, never a transform or
+a box dimension, so it cannot shift layout, and `prefers-reduced-motion`
+flattens the bars to a static tone. Loading is a separate flag rather than a
+sentinel string, so a diff whose text genuinely reads "Loading diff…" can't
+render as a skeleton. Clicking down a list starts overlapping requests, so each
+carries a monotonic sequence number and any reply that isn't the newest is
+discarded — otherwise a slow one settling late paints the wrong file's patch
+under the right filename.
+
+Icons are inline 16px SVGs on a matching `0 0 16 16` viewBox, in 20px buttons.
+The size is fixed and not a prop: the shell pairs each icon size with its own
+viewBox, so 16-unit path data rendered into a 14px box comes out shrunk with
+thinned strokes. The 20px button box (not 24px) and `.dshgit-row`'s pinned
+`line-height: 20px` are what keep file rows at 32px — in a flex row the tallest
+child sets the height.
+
 ## Architecture
 
 The plugin ships **two halves** that never share a process:
@@ -79,11 +115,26 @@ pnpm typecheck
 pnpm test         # parsers, contract, and real-git operations
 ```
 
-The offline suite runs git against throwaway repositories. Three further checks
-drive a real headless Chrome against a running server:
+The offline suite runs git against throwaway repositories. Four probes drive
+headless Chrome against the **built** `lib/client.js` and need no running
+harness:
+
+```bash
+pnpm test:layout     # the diff sits beside the list at 1200px, below it at 560px
+pnpm test:stability  # opening a diff moves no row, and never covers the list
+pnpm test:skeleton   # the loading placeholder matches the real diff line's rhythm
+pnpm test:icons      # icon geometry and the 32px row budget
+```
+
+Three further checks drive a real headless Chrome against a running server:
 
 ```bash
 pnpm test:ui      # the tab registers, mounts, and renders
 pnpm test:ai      # the AI button produces a Conventional Commits message
 pnpm test:commit  # staging + committing changes real bytes on disk
 ```
+
+`test:layout` and `test:stability` both slice the CSS out of the built bundle,
+which is also why **a backtick must never appear in the stylesheet's comments**:
+it is a template literal, so a stray one closes it early and silently truncates
+every rule after it.

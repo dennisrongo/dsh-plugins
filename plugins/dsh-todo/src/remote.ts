@@ -23,15 +23,24 @@
  */
 import { z } from 'zod'
 
-/** One stored todo item, as it crosses the wire. */
+/**
+ * One stored task, as it crosses the wire.
+ *
+ * EVERY field must be named here. These are strict codecs, so a field the
+ * schema does not carry is stripped off the wire — which fails silently: the
+ * UI would show a release or a status that simply never reaches the host.
+ */
 const todoItemSchema = z.object({
   id: z.string(),
-  text: z.string(),
-  done: z.boolean(),
+  title: z.string(),
+  description: z.string().optional(),
+  status: z.enum(['backlog', 'todo', 'in-progress', 'blocked', 'done']),
+  priority: z.enum(['p0', 'p1', 'p2', 'p3']),
+  release: z.string().optional(),
+  sprint: z.string().optional(),
+  dueDate: z.string().optional(),
   createdAt: z.number(),
   completedAt: z.number().optional(),
-  // Must be carried explicitly: these are strict codecs, so a field the schema
-  // does not name would be stripped off the wire and archiving would not persist.
   archivedAt: z.number().optional(),
 })
 

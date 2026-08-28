@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-git",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Git source-control tab for DeepSeek Harness (dsh) — view, stage, AI-commit and sync a workspace's changes",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,11 @@
     "test": "node build/build.mjs && node --experimental-strip-types test/smoke.mjs && node --experimental-strip-types test/host-ops.mjs",
     "test:ui": "node test/verify-ui.mjs",
     "test:ai": "node test/verify-ai.mjs",
-    "test:commit": "node test/verify-commit.mjs"
+    "test:commit": "node test/verify-commit.mjs",
+    "test:layout": "node test/layout-probe.mjs",
+    "test:stability": "node test/list-stability-probe.mjs",
+    "test:skeleton": "node test/skeleton-probe.mjs",
+    "test:icons": "node test/icon-probe.mjs"
   },
   "dsh": {
     "bundle": {

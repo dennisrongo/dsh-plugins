@@ -82,6 +82,38 @@ await build({
   logLevel: 'info',
 })
 
+// 1c) CLI — a plain node ESM executable.
+//
+// Bundled with NO externals beyond node builtins: it imports only ./db.ts and
+// ./types.ts, so it must run with no profile, no server and no @deepseek-ai
+// package present. Keeping zod out of this path is deliberate — the CLI
+// validates through the dependency-free helpers in types.ts, so the binary
+// works in a bare checkout.
+await build({
+  entryPoints: [join(root, 'src/bin.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: 'es2022',
+  minify: false,
+  outfile: join(outdir, 'bin.js'),
+  banner: { js: '#!/usr/bin/env node' },
+  logLevel: 'info',
+})
+
+// 1d) CLI as a library, for callers that want run()/parseArgs() in-process
+// (the smoke test drives every command through this, with no shell).
+await build({
+  entryPoints: [join(root, 'src/cli.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: 'es2022',
+  minify: false,
+  outfile: join(outdir, 'cli.js'),
+  logLevel: 'info',
+})
+
 // 2) client half — CJS body wrapped in the __ModuleLoader__ load call.
 //
 // This half bundles zod, because the client `$mount` rejects any descriptor

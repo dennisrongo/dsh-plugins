@@ -1129,10 +1129,26 @@ body[data-ds-dark-theme] .dshmc {
    Clearing 36px also keeps the buttons clear of the caption controls and the
    native menu button, which share that strip on the right edge where this rail
    docks. Non-Windows desktop and plain web get 0px and are unaffected. */
-.dshmc {
+.dshmc,
+.dshmc-stage {
   --mc-titlebar-h: 0px;
+  /* Standard control metrics. The panel is a 400px rail where compact controls
+     are appropriate; Stage is a full-screen surface, so it overrides these to
+     comfortable sizes rather than inheriting the rail's cramped ones. */
+  --mc-ctl-h: 28px;
+  --mc-ctl-font: 11.5px;
 }
-body.dsh-desktop-windows-titlebar-layout .dshmc {
+.dshmc-stage {
+  --mc-ctl-h: 32px;
+  --mc-ctl-font: 13px;
+  /* Message text too: 11px is tuned for the 400px rail's narrow tiles, and on a
+     full-screen grid of 420px-wide tiles it reads as undersized next to the
+     standard-size controls. Overridden here so the panel keeps its own scale. */
+  --mc-msg-size: 13.5px;
+  --mc-msg-line: 1.55;
+}
+body.dsh-desktop-windows-titlebar-layout .dshmc,
+body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   --mc-titlebar-h: 36px;
 }
 .dshmc-header {
@@ -1149,12 +1165,15 @@ body.dsh-desktop-windows-titlebar-layout .dshmc {
    own alignment, so no auto margin is carried here. */
 .dshmc-close {
   flex: none;
-  width: 28px; height: 28px;
+  width: var(--mc-ctl-h); height: var(--mc-ctl-h);
   display: grid; place-items: center;
-  border: 0; border-radius: 50%;
+  border: 0; border-radius: 8px;
   background: transparent;
   color: var(--mc-text-3); cursor: pointer;
-  font-size: 15px; line-height: 1;
+  /* The multiplication-sign glyph draws much smaller than its font-size, so it
+     needs a deliberate bump to look the same weight as the text controls it
+     sits beside — matching their font-size alone leaves it visibly small. */
+  font-size: calc(var(--mc-ctl-font) + 7px); line-height: 1;
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease);
 }
 .dshmc-close:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
@@ -1189,7 +1208,8 @@ body.dsh-desktop-windows-titlebar-layout .dshmc {
    contract rather than an incidental tag match — so state it directly and
    survive any future narrowing of that allowlist. */
 .dshmc-icon-btn,
-.dshmc-header {
+.dshmc-header,
+.dshmc-stage-bar {
   -webkit-app-region: no-drag;
 }
 .dshmc-icon-btn:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
@@ -1197,16 +1217,38 @@ body.dsh-desktop-windows-titlebar-layout .dshmc {
 
 /* Settings drawer */
 .dshmc-settings {
-  padding: 10px 12px;
+  /* Extra right padding: the panel is docked flush to the VIEWPORT edge, and a
+     native <select> popup is anchored to the control's own right edge. With the
+     control running to the drawer edge the popup opened hard against the screen
+     with no gap, so the control column is inset to give the popup room. */
+  padding: 10px 16px 10px 12px;
   border-bottom: 1px solid var(--mc-border-subtle);
   background: var(--mc-surface-hover);
 }
+/* Two-column grid: every label shares one left column and every control one
+   right column, so labels and controls line up across ALL rows. Per-row
+   space-between could not do that — it aligns each control to its own label. */
+/* The control column is sized for the widest option string the selects offer
+   ("Least recently active"), not for the number inputs — a column that merely
+   fit those truncated the sort labels. The label column is auto so it yields
+   space rather than squeezing the control. */
 .dshmc-settings-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, auto) var(--mc-settings-control, 168px);
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
 }
-.dshmc-settings-label { font-size: 11.5px; color: var(--mc-text-2); }
+.dshmc-settings-label {
+  font-size: 11.5px;
+  color: var(--mc-text-2);
+  min-width: 0;
+}
 .dshmc-settings-select {
-  flex: none;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  justify-self: stretch;
   background: var(--mc-input);
   color: var(--mc-text);
   border: 1px solid var(--mc-border);
@@ -1445,10 +1487,13 @@ body.dsh-desktop-windows-titlebar-layout .dshmc {
 }
 .dshmc-pomo-btn:focus-visible { outline: 2px solid var(--mc-pomo-hue); outline-offset: -2px; }
 
-/* Number inputs in the settings drawer (pomodoro durations) */
+/* Number inputs in the settings drawer (pomodoro durations). Capped rather
+   than stretched: a 152px box for a two-digit minute count reads as broken. It
+   keeps the column's LEFT edge, so it still lines up with the selects above. */
 .dshmc-settings-num {
-  flex: none;
-  width: 62px;
+  width: 72px;
+  min-width: 0;
+  justify-self: start;
   background: var(--mc-input);
   color: var(--mc-text);
   border: 1px solid var(--mc-border);
@@ -1459,7 +1504,21 @@ body.dsh-desktop-windows-titlebar-layout .dshmc {
   font-variant-numeric: tabular-nums;
 }
 .dshmc-settings-num:focus-visible { outline: 2px solid var(--mc-accent); outline-offset: 1px; }
-.dshmc-settings-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+/* The checkbox row is label-on-the-left too: the control column holds only the
+   box, so it lines up with the selects and number inputs above and below it. */
+.dshmc-settings-check {
+  display: block;
+  cursor: pointer;
+  min-width: 0;
+}
+.dshmc-settings-box {
+  justify-self: start;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--mc-accent);
+}
 .dshmc-settings-sep {
   margin: 9px 0 7px;
   border-top: 1px solid var(--mc-border-subtle);
@@ -2159,20 +2218,40 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   background: var(--dsw-specific-bubble, var(--mc-surface-hover));
   color: var(--mc-text);
   border-radius: 14px;
-  padding: 6px 11px;
+  /* Derived from the message size so the bubble stays proportional on Stage,
+     which raises --mc-msg-size; a fixed 6px/11px looked pinched at 13px. */
+  padding: calc(var(--mc-msg-size) * 0.55) calc(var(--mc-msg-size) * 1.0);
 }
 .dshmc-tile-msg.assistant { color: var(--mc-text); }
 .dshmc-tile-msg.tool { color: var(--mc-accent); }
 .dshmc-tile-msg.err { color: var(--mc-red); }
-/* Host markdown inside tiles: inherit tile metrics, tighten block rhythm */
-.dshmc-md { white-space: normal; font-size: inherit; line-height: inherit; }
+/* Host markdown inside tiles: inherit tile metrics, tighten block rhythm.
+   Assistant text comes from the host's own MarkdownText component, which ships
+   its own font sizing. Those host rules can outrank a bare .dshmc-md, leaving
+   assistant messages a different size from the plain user rows beside them, so
+   force every descendant onto the surface's message size. The exceptions below
+   (headings, code, tables) then re-derive from the same token. */
+.dshmc-md,
+.dshmc-md * {
+  font-size: inherit;
+  line-height: inherit;
+}
+.dshmc-md { white-space: normal; }
 .dshmc-md p { margin: 0 0 6px; }
 .dshmc-md p:last-child { margin-bottom: 0; }
-.dshmc-md h1, .dshmc-md h2, .dshmc-md h3, .dshmc-md h4 { margin: 8px 0 4px; font-size: 12.5px; line-height: 1.4; }
+/* These all derive from --mc-msg-size rather than hardcoding px: assistant text
+   renders through .dshmc-md, so fixed sizes here left assistant messages at 11px
+   while user bubbles inherited the token — the two read as different sizes in
+   the same conversation. Everything scales with the surface now. */
+.dshmc-md h1, .dshmc-md h2, .dshmc-md h3, .dshmc-md h4 {
+  margin: 8px 0 4px;
+  font-size: calc(var(--mc-msg-size) + 1px);
+  line-height: 1.4;
+}
 .dshmc-md ul, .dshmc-md ol { margin: 4px 0; padding-left: 18px; }
-.dshmc-md pre { margin: 6px 0; font-size: 11px; }
-.dshmc-md code { font-size: 11px; }
-.dshmc-md table { font-size: 11px; }
+.dshmc-md pre { margin: 6px 0; font-size: calc(var(--mc-msg-size) - 1px); }
+.dshmc-md code { font-size: calc(var(--mc-msg-size) - 1px); }
+.dshmc-md table { font-size: calc(var(--mc-msg-size) - 1px); }
 .dshmc-tile-foot {
   display: flex; align-items: center; gap: 6px;
   padding: 5px 9px;
@@ -2259,16 +2338,23 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   from { opacity: 0; transform: scale(0.995); }
   to { opacity: 1; transform: none; }
 }
+/* Stage covers the whole viewport (inset: 0), so unlike the docked panel it
+   also spans DSH Desktop's window-drag strip — the same 36px band documented on
+   .dshmc-header above, which holds the caption controls on its right edge. The
+   bar's own controls (window toggles, exit) sit at that right edge, so without
+   this offset they land under the minimize/maximize/close buttons and are
+   unclickable: the drag region resolves before hit-testing and outranks this
+   overlay's z-index, so clearing the strip is the only fix. */
 .dshmc-stage-bar {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 16px;
+  padding: calc(12px + var(--mc-titlebar-h)) 16px 12px;
   border-bottom: 1px solid var(--mc-border-subtle);
   flex: none;
 }
 .dshmc-stage-title { font-weight: 500; font-size: 14px; }
-.dshmc-stage-count { color: var(--mc-text-3); font-size: 11.5px; }
+.dshmc-stage-count { color: var(--mc-text-3); font-size: var(--mc-ctl-font); }
 .dshmc-stage-count b { color: var(--mc-text-2); font-weight: 500; }
 .dshmc-stage-window {
   display: flex;
@@ -2279,6 +2365,22 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   background: var(--mc-surface-hover);
 }
 .dshmc-stage-bar .dshmc-close { margin-left: 0; }
+/* Stage bar controls take the full-screen surface's standard metrics: the
+   panel's 11.5px/28px segmented control reads as undersized here. */
+.dshmc-stage-window .dshmc-mode {
+  font-size: var(--mc-ctl-font);
+  padding: 0 14px;
+  height: calc(var(--mc-ctl-h) - 4px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The exit button matches the segmented control's outer height, so the two
+   groups at the bar's right edge share one baseline and one visual size. */
+.dshmc-stage-bar .dshmc-close {
+  width: var(--mc-ctl-h);
+  height: var(--mc-ctl-h);
+}
 .dshmc-stage-grid {
   flex: 1;
   min-height: 0;
@@ -2311,7 +2413,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 }
 .dshmc-stage-tile-title {
   flex: 1; min-width: 0;
-  font-size: 12.5px; font-weight: 500;
+  font-size: var(--mc-ctl-font); font-weight: 500;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   cursor: pointer;
 }
@@ -2324,7 +2426,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   border-radius: 6px;
   padding: 1px 6px;
   color: var(--mc-text-4);
-  font-size: 10.5px;
+  font-size: calc(var(--mc-ctl-font) - 2px);
 }
 .dshmc-stage-tile-body {
   flex: 1;
@@ -2349,17 +2451,28 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   border-radius: 8px;
   background: var(--mc-input);
   color: var(--mc-text);
-  font: inherit; font-size: 12px;
-  padding: 6px 9px;
-  max-height: 96px;
+  /* font-family only. The "font" shorthand resets font-size, so keeping them as
+     separate declarations avoids depending on source order. */
+  font-family: inherit;
+  /* Matches the message text it composes, not the smaller control font. */
+  font-size: var(--mc-msg-size);
+  line-height: var(--mc-msg-line);
+  /* Two lines of room by default: rows={1} plus a control-height min made this
+     a single cramped line on a full-screen surface. */
+  min-height: calc(var(--mc-msg-size) * var(--mc-msg-line) * 2 + 18px);
+  padding: 8px 11px;
+  max-height: 200px;
 }
 .dshmc-stage-tile-input textarea:focus { outline: none; border-color: var(--mc-accent); }
 .dshmc-stage-tile-send {
   border: 0; border-radius: 7px;
   background: var(--dsw-alias-button-info-fill, var(--mc-accent));
   color: var(--mc-on-accent);
-  font: inherit; font-size: 11.5px; font-weight: 500;
-  padding: 6px 12px;
+  font: inherit; font-size: var(--mc-ctl-font); font-weight: 500;
+  /* Fixed height rather than vertical padding: the textarea beside it grows as
+     it wraps, and align-items: flex-end keeps their baselines together. */
+  height: var(--mc-ctl-h);
+  padding: 0 16px;
   cursor: pointer;
   flex: none;
 }
@@ -2367,10 +2480,10 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-stage-tile-send:disabled { opacity: 0.5; cursor: default; }
 .dshmc-stage-tile-foot {
   display: flex; align-items: center; gap: 8px;
-  padding: 5px 12px;
+  padding: 6px 12px;
   border-top: 1px solid var(--mc-border-subtle);
   color: var(--mc-text-4);
-  font-size: 10.5px;
+  font-size: calc(var(--mc-ctl-font) - 2px);
   flex: none;
 }
 /* A wait rendered inside its tile — reuses the inbox card, re-scoped to the
@@ -4474,11 +4587,34 @@ function StageView({
       <div className="dshmc-stage-bar">
         <span className="dshmc-stage-title">Stage</span>
         <span className="dshmc-stage-count"><b>{tiles.length}</b> active</span>
+        {/* data-dsh-no-drag: same contract the panel header's buttons use — the
+            Stage bar sits across DSH Desktop's drag strip, which swallows
+            clicks before hit-testing unless a control opts out. */}
         <div className="dshmc-stage-window" role="group" aria-label="Activity window">
-          <button className={`dshmc-mode${windowMin === 30 ? ' on' : ''}`} onClick={() => setWindowMin(30)}>30m</button>
-          <button className={`dshmc-mode${windowMin === 120 ? ' on' : ''}`} onClick={() => setWindowMin(120)}>2h</button>
+          <button
+            className={`dshmc-mode${windowMin === 30 ? ' on' : ''}`}
+            data-dsh-no-drag=""
+            onClick={() => setWindowMin(30)}
+          >
+            30m
+          </button>
+          <button
+            className={`dshmc-mode${windowMin === 120 ? ' on' : ''}`}
+            data-dsh-no-drag=""
+            onClick={() => setWindowMin(120)}
+          >
+            2h
+          </button>
         </div>
-        <button className="dshmc-close" onClick={onExit} aria-label="Exit Stage" title="Exit Stage (Esc)">×</button>
+        <button
+          className="dshmc-close"
+          data-dsh-no-drag=""
+          onClick={onExit}
+          aria-label="Exit Stage"
+          title="Exit Stage (Esc)"
+        >
+          ×
+        </button>
       </div>
       {tiles.length === 0 ? (
         <div className="dshmc-stage-empty">
@@ -5362,9 +5498,6 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
                 ))}
               </select>
             </div>
-            <div className="dshmc-settings-hint">
-              Fleet groups list this many sessions; the rest stay one click away.
-            </div>
             <div className="dshmc-settings-row">
               <label className="dshmc-settings-label" htmlFor="dshmc-fleet-sort">
                 Sort sessions by
@@ -5382,20 +5515,18 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
                 ))}
               </select>
             </div>
-            <div className="dshmc-settings-hint">
-              Sessions needing attention always stay on top; this orders the rest.
-            </div>
             <div className="dshmc-settings-sep">Pomodoro</div>
             <div className="dshmc-settings-row">
-              <label className="dshmc-settings-check" htmlFor="dshmc-pomo-enabled">
-                <input
-                  id="dshmc-pomo-enabled"
-                  type="checkbox"
-                  checked={settings.pomodoroEnabled}
-                  onChange={(e) => updateSettings({ pomodoroEnabled: e.target.checked })}
-                />
-                <span className="dshmc-settings-label">Show break timer</span>
+              <label className="dshmc-settings-check dshmc-settings-label" htmlFor="dshmc-pomo-enabled">
+                Show break timer
               </label>
+              <input
+                id="dshmc-pomo-enabled"
+                className="dshmc-settings-box"
+                type="checkbox"
+                checked={settings.pomodoroEnabled}
+                onChange={(e) => updateSettings({ pomodoroEnabled: e.target.checked })}
+              />
             </div>
             <div className="dshmc-settings-row">
               <label className="dshmc-settings-label" htmlFor="dshmc-pomo-work">Focus minutes</label>

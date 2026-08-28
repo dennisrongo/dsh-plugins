@@ -1,11 +1,14 @@
 {
   "name": "@dennisrongo/dsh-todo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Todo list for DeepSeek Harness (dsh) — a per-workspace task list persisted on disk by the host",
   "type": "module",
   "license": "MIT",
   "author": "Dennis Rongo",
   "main": "lib/index.js",
+  "bin": {
+    "dsh-todo": "lib/bin.js"
+  },
   "exports": {
     ".": {
       "default": "./lib/index.js"
@@ -15,6 +18,9 @@
     },
     "./typert": {
       "default": "./lib/typert.host.js"
+    },
+    "./cli": {
+      "default": "./lib/cli.js"
     },
     "./package.json": "./package.json"
   },
@@ -28,7 +34,10 @@
   "scripts": {
     "build": "node build/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.mjs"
+    "test": "node test/smoke.mjs && node test/cli.test.mjs",
+    "test:icons": "node test/icon-probe.mjs",
+    "test:modal": "node test/modal-probe.mjs",
+    "test:cli": "node test/cli.test.mjs"
   },
   "dsh": {
     "bundle": {
@@ -58,6 +67,7 @@
   "devDependencies": {
     "@types/node": "^22.20.1",
     "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
     "esbuild": "^0.24.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",

@@ -16,7 +16,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 
 | Package | Adds | Halves | Endpoints |
 |---|---|---|---|
-| [`dsh-todo`](plugins/dsh-todo) | per-workspace todo list | host + client | `dshTodo/list`, `replace` |
+| [`dsh-todo`](plugins/dsh-todo) | per-workspace sprint/roadmap task list, plus a `dsh-todo` CLI | host + client + CLI | `dshTodo/list`, `replace` |
 | [`dsh-git`](plugins/dsh-git) | source-control "Changes" tab | host + client | `dshGit/status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage` |
 | [`dsh-weather`](plugins/dsh-weather) | weather bar in the shell overlay | client only | — |
 | [`dsh-headless-plus`](plugins/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
@@ -27,15 +27,28 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 
 ### `dsh-todo`
 
-A Todo tab scoped to the workspace you're working in, so each project keeps its own list instead of one global pile.
+A task tab scoped to the workspace you're working in, so each project keeps its own backlog instead of one global pile. It is a **sprint/roadmap list, not a checklist**: each task carries a status, a priority, and optional release and sprint labels.
 
-**What you get.** A tab beside Chat and Trajectory with add/complete/reorder, `All` / `Open` / `Done` / `Archive` filters, an `n/m done` progress readout, and per-row archive. Completed work is **archived, not deleted** — an item carries an optional `archivedAt` stamp whose *presence* is the archived state, so there's one source of truth and no way to store an archived item without a date. Restoring clears the stamp.
+**What you get.** A tab beside Chat and Trajectory. Tasks move through real workflow states — `backlog · todo · in-progress · blocked · done` — changed from a pill on the row, because a boolean can't express the two things a standup actually asks: what is moving, and what is stuck. Priority is `P0`–`P3` as a chip, with only P0/P1 coloured so the list flags what's urgent instead of turning into a rainbow. **Release** (`v1.2.0`, what ships together) and **sprint** (`Sprint 24`, when it's worked) are deliberately separate free-text axes — a task can be in both, and grouping works with no releases table to administer. **Group by** None · Status · Release · Sprint · Priority gives collapsible sections with their own progress bars; grouping by status is a kanban board without drag-and-drop. Clicking a title opens a **task detail modal** (description, status, priority, labels, due date); the chevron still gives a cheap in-row peek, and double-click renames inline. Due dates are stored as **calendar days**, so "due the 14th" reads as the 14th in every timezone; overdue is flagged red, due-today amber. Completed work is **archived, not deleted** — an item carries an optional `archivedAt` stamp whose *presence* is the archived state, so there's one source of truth and no way to store an archived item without a date. Every irreversible action goes through a confirmation dialog that quotes the task by name.
+
+**CLI.** The package ships a `dsh-todo` binary so an AI agent can shell out and manage the same list you see in the tab — no profile, no session, no running server:
+
+```bash
+npx dsh-todo list --open --json
+npx dsh-todo add "Fix token refresh" --priority p0 --release v1.2.0 --due 2026-03-14
+npx dsh-todo update t1a2 --status in-progress --sprint "Sprint 24"
+npx dsh-todo done t1a2 && npx dsh-todo archive
+```
+
+It targets a workspace **directory** (`--workspace`, default cwd) and talks to the same SQLite file the host uses, which is safe by construction: SQLite's file lock refuses a writer that lands inside another process's transaction, and the CLI sets a `busy_timeout` so it waits for the harness to commit rather than failing. Verified live — the CLI wrote while a running server held its handle and the API returned the new task with no restart. Ids accept any unambiguous prefix, an empty value clears a field (`--release ""`), invalid values are refused rather than dropped, and `--json` prints structured output on the **error** path too. Exit codes are distinct: `0` ok, `2` usage, `3` not found.
 
 **How it works.** `TodoService extends TypertRemoteService` registers under the cordis key `dshTodo` and owns one SQLite database per project at `<workspace>/.dsh/todo.db`, resolved through `workspaceRegistry`. Writes use optimistic concurrency: every `replace` states the `revision` it observed, and the host rejects a stale write with `ok:false, code:'revision-conflict'` and the current list, rather than silently clobbering. A legacy central `~/.dsh/storages/dsh_todo.json` is migrated on first read.
 
 **Endpoints.** `POST /api/dshTodo/list` → `{ list: { items, revision, updatedAt } }`; `POST /api/dshTodo/replace` → the new list or a revision conflict. Both take a single parameter named `request`.
 
-**Requires.** The storage rows (`storage`, `storage-json`, `storage-domain`) — `@deepseek-ai/dsh-web-app` composes these by default — plus `workspaceRegistry` from `dsh-base`.
+The task shape is `{ id, title, description?, status, priority, release?, sprint?, dueDate?, createdAt, completedAt?, archivedAt? }`. `status` is the source of truth — there is no separate `done` flag to fall out of sync — and only the status transition writes `completedAt`. Absent optional fields are absent *keys*, never `''`. Existing v1 databases are migrated **in place** on first open: `CREATE TABLE IF NOT EXISTS` doesn't add columns to a table that already exists, so each new column is added with `ALTER TABLE` after consulting `PRAGMA table_info`, then `title` is backfilled from the old `text` and `done = 1` becomes `status = 'done'`. The v1 columns are still written on every insert, so a downgrade still reads a sane list. `src/db.ts` is shared by the host and the CLI on purpose — a second copy of the migration is the one duplication that could genuinely corrupt a database.
+
+**Requires.** `workspaceRegistry` from `dsh-base`, which `@deepseek-ai/dsh-web-app` composes by default. The CLI requires none of it.
 
 ---
 
@@ -44,6 +57,8 @@ A Todo tab scoped to the workspace you're working in, so each project keeps its 
 Source control for the workspace, without leaving the harness.
 
 **What you get.** A Changes tab showing branch, upstream ahead/behind, and a file list split into staged and unstaged, with per-row stage/unstage/discard and a diff pane. An **✦AI message** button drafts a commit message from the staged diff through the harness's own `llm` service, then `Commit all` commits. Recent history is listed underneath. A directory that isn't a repository reports `repo: false` and offers `Initialize repository` rather than erroring.
+
+**The layout is responsive to the tab, not the window.** The diff sits beside the file list when there's room and below it when there isn't, switched by a **container query** (`@container dshgit (min-width: 720px)`) — the tab is resized by the shell's own sidebar and panels independently of the viewport, so the width that matters is its own. Opening a diff never moves a row: the list's column width is reserved in both states, so the first click can't reflow and re-truncate every filename under the pointer. While a patch is in flight the pane shows a **skeleton shaped like a diff** — shimmering meta/hunk/add/del bands sized off the real 18px diff line — rather than a spinner, which would blank a large surface; the shimmer animates `background-position`, never a transform or a box dimension, so it can't shift layout, and `prefers-reduced-motion` flattens it. Clicking down a list starts overlapping requests, so each is stamped with a monotonic sequence and a stale reply is discarded rather than painted under the wrong filename. Icons are inline 16px SVGs on a matching `0 0 16 16` viewBox in 20px buttons, which keeps file rows at 32px.
 
 **How it works.** `GitService extends TypertRemoteService` under the cordis key `dshGit`, shelling out to `git` in the workspace directory. Writes are **serialised per repository root** through an internal queue, so two tabs can't interleave a stage and a commit. Paths from the client go through `assertSafePath`, which refuses absolute paths and `..` escapes. Untracked files have no diff for git to produce, so their contents are synthesized into a `/dev/null` patch — otherwise clicking a new file would show a blank pane and look broken. `push` without a remote fails as data (`{ ok: false, output }`), not an exception.
 
@@ -103,9 +118,13 @@ node scripts/link-superpowers-skills.mjs     # --dry-run to preview, --restore t
 
 One glass panel over the whole agent fleet, floating above the stock web UI.
 
-**What you get.** A `shell.overlay` dashboard with a **Fleet** list of every session (root and subagents) showing running / waiting / done, a **swarm tree** of coordinator → worker lineages, a **stats strip** (session count, running, subagents, waiting-on-you), estimated **token burn** broken down by model, and a **permission inbox** surfacing sessions blocked on `approval` / `question` / `plan-review`.
+**What you get.** A `shell.overlay` dashboard, docked as a right rail, with a **Fleet** list of every session (root and subagents) grouped by workspace and showing running / waiting / done, a **swarm tree** of coordinator → worker lineages, a **stats strip** (session count, running, subagents, waiting-on-you), estimated **token burn** broken down by model, and a **permission inbox** surfacing sessions blocked on `approval` / `question` / `plan-review`.
 
-**How it works.** A pure consumer on public faces only — `ctx.sessions.list` as an ObservableSnapshot bridged into React, `sessionStats` projections (turns / steps / llmMs / decodeTokens), and `PendingInteraction` off the session summaries. No services, no tools, no presets and no host half; it floats over the stock UI without touching it. CSS is namespaced `dshmc-`.
+**Stage** is a full-screen takeover — press it and the rail swaps for a live grid of tiles, one per session that is running, waiting on you, or was touched inside the activity window (`30m` / `2h` toggle), busiest first. A tile carries the session's live conversation and answers a pending permission **in place**, so you never lose the tab you came from; Esc or × returns to the panel. Because Stage covers the whole viewport it also spans DSH Desktop's 36px window-drag strip, which swallows clicks before hit-testing — its bar clears that band and every control opts out with `data-dsh-no-drag`.
+
+A **settings drawer** persists to `localStorage` (bad shapes fall back to defaults, and a storage failure degrades to in-memory rather than throwing): sessions listed per workspace group, fleet sort order, and an optional **pomodoro timer** in the footer with configurable work / short-break / long-break lengths and a desktop notification on phase change.
+
+**How it works.** A pure consumer on public faces only — `ctx.sessions.list` and `ctx.workspaces.list` as ObservableSnapshots bridged into React, `sessionStats` projections (turns / steps / llmMs / decodeTokens), and `PendingInteraction` off the session summaries. No services, no tools, no presets and no host half; it floats over the stock UI without touching it. CSS is namespaced `dshmc-`, and control metrics are CSS custom properties so the 400px rail's compact sizing and Stage's full-screen sizing derive from one set of tokens rather than diverging.
 
 ---
 
@@ -113,7 +132,7 @@ Every package carries an `AGENTS.md` with its endpoints, mount row, dev loop and
 
 ## Install a plugin
 
-All five are on npm, and each declares `dsh.bundle` — so one command installs **and** mounts
+All six are on npm, and each declares `dsh.bundle` — so one command installs **and** mounts
 it. `dsh plugin` forwards to pnpm inside the profile directory:
 
 ```bash
@@ -139,8 +158,21 @@ dsh plugin --profile web add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-t
 dsh plugin --profile web add "github:dennisrongo/dsh-plugins#main&path:/plugins/dsh-todo"   # pin a ref
 ```
 
-Quote the argument — `#` and `&` are shell metacharacters. All five ship their built `lib/`,
+Quote the argument — `#` and `&` are shell metacharacters. All six ship their built `lib/`,
 so a git install works even though it runs no build step.
+
+### The `dsh-todo` command
+
+`dsh-todo` needs no profile and no running server, so it can also be installed on its own —
+useful for CI, or to let an agent manage a project's tasks without the web UI:
+
+```bash
+npx @dennisrongo/dsh-todo list --open     # no install at all
+pnpm add -g @dennisrongo/dsh-todo         # then: dsh-todo list --open
+```
+
+Installing it into a profile already puts the binary on that profile's `node_modules/.bin`.
+Full command and flag reference: [plugins/dsh-todo](plugins/dsh-todo#cli--for-you-and-for-ai-agents).
 
 ## Installing from a clone
 
@@ -319,6 +351,8 @@ Cross-platform, exits non-zero on failure. It reports the dsh version on each su
 
 **Run this after upgrading dsh.** A harness upgrade doesn't break `pnpm test` — that only proves this repo is self-consistent. What it breaks is resolution and the wire contract, which is what this checks.
 
+When something is wrong at the harness level rather than the plugin level — a session that won't load, a workspace showing no history, a hand-edited registry that reverts — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). Most of those failures are silent.
+
 ## Publishing
 
 `.github/workflows/publish.yml` publishes every package that isn't already on npm at its
@@ -354,6 +388,9 @@ scripts/     verify.mjs                    — check the plugins against your in
              anchor.mjs                    — point each package's @deepseek-ai at that dsh
              dev-link.ps1                  — anchor + junction into profiles (Windows)
              link-superpowers-skills.mjs   — link an upstream superpowers clone's skills
+
+AGENTS.md            repo conventions and the rules that are not obvious
+TROUBLESHOOTING.md   harness-level failure modes, mostly silent ones
 ```
 
 `dsh-todo`, `dsh-git` and `dsh-weather` were consolidated here from standalone repos.

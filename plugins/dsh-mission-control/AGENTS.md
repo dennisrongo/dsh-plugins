@@ -15,6 +15,55 @@ off the session summaries.
 Because there is no host half, the identity check and wire probe the sibling packages
 document don't apply. Verify through the served bundle and the rendered DOM instead.
 
+## Surfaces
+
+Two surfaces share one component tree, and that is why control sizing is tokenised rather
+than hardcoded:
+
+- **The docked panel** — a 400px right rail the shell reflows around. Compact controls are
+  appropriate here.
+- **Stage** — a full-screen takeover (`inset: 0`) holding a live grid of tiles. It is
+  layered *over* the panel modes and is deliberately **not** a fourth mode, so exiting
+  restores the tab you came from. Membership *and order* come from `stageRows`:
+  running/waiting roots plus anything touched inside the activity window (`30m`/`2h`), most
+  active first. A tile answers a pending permission **in place** through the same
+  `PendingInteraction` path the inbox uses.
+
+`--mc-ctl-h`, `--mc-ctl-font`, `--mc-msg-size` and `--mc-msg-line` are declared on `.dshmc`
+and **overridden on `.dshmc-stage`**. Hardcoding a px size in a rule both surfaces use is the
+bug this prevents: the rail's 11.5px/28px controls read as undersized on a full-screen grid
+of 420px tiles.
+
+Assistant text renders through the host's own `MarkdownText`, which ships its own font
+sizing and can outrank a bare `.dshmc-md`. So `.dshmc-md, .dshmc-md *` force
+`font-size: inherit`, and the exceptions (headings, code, tables) re-derive from
+`--mc-msg-size` with `calc()`. Fixed px there left assistant messages a different size from
+the plain user rows beside them in the same conversation.
+
+**Stage spans DSH Desktop's window-drag strip; the docked panel does not.** That region
+resolves before hit-testing and outranks this overlay's z-index, so raising z-index cannot
+help — the bar clears the 36px band with `padding-top: calc(12px + var(--mc-titlebar-h))`
+and every control in it carries `data-dsh-no-drag`. Without both, the exit and window
+toggles land under the minimize/maximize/close buttons and simply do not click.
+
+## Settings
+
+Persisted to `localStorage` under `dsh-mission-control:settings` via `parseSettings`, which
+is **defensive by contract**: any bad shape falls back to defaults, and a write failure
+(private mode, quota) keeps the in-memory value rather than throwing into the shell.
+`parseSettings` is exported so it can be driven directly from a test.
+
+Settings are: sessions listed per workspace group (`0` = All), fleet sort order, whether the
+pomodoro footer shows, and its work / break / long-break lengths. Sessions needing attention
+stay on top regardless of sort.
+
+The drawer is a **two-column grid** — one shared label column, one shared control column — so
+controls line up across every row; per-row `space-between` aligns each control to its own
+label instead, which is what it replaced. The control column is sized for the widest option
+string the selects offer ("Least recently active"), not for the number inputs: a column that
+merely fit those truncated the sort labels. Number inputs and the checkbox use
+`justify-self: start` so they keep the column's left edge without stretching to its width.
+
 ## Mounting
 
 **Self-mounting.** `package.json` declares `dsh.bundle.patch` pointing at this package's own

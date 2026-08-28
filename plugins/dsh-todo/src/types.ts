@@ -8,23 +8,82 @@
  * @module @dennisrongo/dsh-todo/types
  */
 
-/** One todo entry as stored on disk and rendered in the UI. */
+/**
+ * Workflow state of one task.
+ *
+ * This replaces the old boolean `done` as the source of truth, because a sprint
+ * runs on two states a boolean cannot express: what is moving RIGHT NOW
+ * (`in-progress`) and what needs escalating at standup (`blocked`).
+ *
+ * `backlog` is deliberately distinct from `todo`: backlog is "someday, not this
+ * sprint", todo is "committed, not started". Collapsing them is what turns a
+ * roadmap back into an undifferentiated pile.
+ */
+export type TodoStatus = 'backlog' | 'todo' | 'in-progress' | 'blocked' | 'done'
+
+/** Every status, in board order — the order the UI presents and groups by. */
+export const STATUSES: readonly TodoStatus[] = ['backlog', 'todo', 'in-progress', 'blocked', 'done']
+
+/** The status a task gets when none is supplied, and the fallback for junk input. */
+export const DEFAULT_STATUS: TodoStatus = 'todo'
+
+/**
+ * Priority band. Four levels, not five: a scale people actually triage on. `p2`
+ * is the default, so an unranked task sits mid-pile rather than jumping the queue.
+ */
+export type TodoPriority = 'p0' | 'p1' | 'p2' | 'p3'
+
+/** Every priority, most urgent first. */
+export const PRIORITIES: readonly TodoPriority[] = ['p0', 'p1', 'p2', 'p3']
+
+/** The priority a task gets when none is supplied. */
+export const DEFAULT_PRIORITY: TodoPriority = 'p2'
+
+/** One task as stored on disk and rendered in the UI. */
 export interface TodoItem {
   id: string
-  text: string
-  done: boolean
+  /** Short, scannable summary — the one line shown on a collapsed row. */
+  title: string
+  /**
+   * The body: repro steps, acceptance criteria, links. Optional and hidden
+   * until a row is expanded, so adding it never costs list scannability.
+   */
+  description?: string
+  /** Workflow state. `done` is derived from this, never stored separately. */
+  status: TodoStatus
+  priority: TodoPriority
+  /**
+   * What ships together, e.g. `"v1.2.0"`. Free text on purpose: a release is
+   * modelled as a LABEL rather than an entity, so grouping and filtering work
+   * with no releases table, no CRUD, and no migration when one is renamed.
+   */
+  release?: string
+  /**
+   * When it is worked on, e.g. `"Sprint 24"`. Deliberately a separate axis from
+   * {@link TodoItem.release}: a task can be worked in Sprint 24 and ship in
+   * v1.3.0, and collapsing the two loses the ability to answer either question.
+   */
+  sprint?: string
+  /**
+   * Due date as `YYYY-MM-DD`, not epoch ms.
+   *
+   * A due date is a CALENDAR day, not an instant: "due the 14th" must read as
+   * the 14th in Berlin and in Denver alike. Storing an epoch would bind it to a
+   * timezone and let the same task show two different days.
+   */
+  dueDate?: string
   /** Epoch ms. */
   createdAt: number
-  /** Epoch ms, set when `done` flips true. */
+  /** Epoch ms, set when `status` becomes `done`. */
   completedAt?: number
   /**
    * Epoch ms, set when the item is archived. Presence — not a separate boolean
    * — IS the archived state, so there is one source of truth and no way to
    * store an archived item with no archive date.
    *
-   * An archived item is hidden from the All / Open / Done views but is never
-   * deleted; it stays in the same `items` array and is reachable through the
-   * Archive view, where it can be restored or permanently removed.
+   * An archived item is hidden from the active views but is never deleted; it
+   * stays in the same `items` array and is reachable through the Archive view,
+   * where it can be restored or permanently removed.
    */
   archivedAt?: number
 }
@@ -75,8 +134,67 @@ export type TodoReplaceResult =
   | { ok: true; list: TodoList }
   | { ok: false; code: 'revision-conflict'; list: TodoList }
 
-/** Hard cap on stored text length; enforced on both sides. */
+/** True when this status means the work is finished. */
+export function isDoneStatus(status: TodoStatus): boolean {
+  return status === 'done'
+}
+
+/** Coerce untrusted input to a known status, falling back to the default. */
+export function toStatus(value: unknown): TodoStatus {
+  return typeof value === 'string' && (STATUSES as readonly string[]).includes(value)
+    ? (value as TodoStatus)
+    : DEFAULT_STATUS
+}
+
+/** Coerce untrusted input to a known priority, falling back to the default. */
+export function toPriority(value: unknown): TodoPriority {
+  return typeof value === 'string' && (PRIORITIES as readonly string[]).includes(value)
+    ? (value as TodoPriority)
+    : DEFAULT_PRIORITY
+}
+
+/**
+ * Normalize a release/sprint label: trimmed, collapsed, capped, and `undefined`
+ * when empty — so an absent label is one value, never `''` competing with it.
+ */
+export function normalizeLabel(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const text = raw.replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL)
+  return text.length > 0 ? text : undefined
+}
+
+/** Matches a `YYYY-MM-DD` calendar date. */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Coerce untrusted input to a `YYYY-MM-DD` date, or `undefined`.
+ *
+ * The shape is checked AND the date is round-tripped through `Date`, so
+ * `2025-02-31` is rejected rather than silently normalized to March 3rd by the
+ * browser's date input.
+ */
+export function normalizeDueDate(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const text = raw.trim()
+  if (!DATE_RE.test(text)) return undefined
+  // Parsed as UTC so the check cannot drift a day either side of the date line.
+  const parsed = new Date(`${text}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime())) return undefined
+  return parsed.toISOString().slice(0, 10) === text ? text : undefined
+}
+
+/** Hard cap on stored title length; enforced on both sides. */
 export const MAX_TEXT = 500
+
+/**
+ * Hard cap on stored description length. Much larger than {@link MAX_TEXT}
+ * because a description holds acceptance criteria and repro steps; reusing the
+ * title's 500 would silently truncate real notes.
+ */
+export const MAX_DESC = 5000
+
+/** Hard cap on a release/sprint label, which is a tag rather than prose. */
+export const MAX_LABEL = 60
 
 /** Hard cap on stored items per workspace, so a runaway client cannot bloat the file. */
 export const MAX_ITEMS = 1000

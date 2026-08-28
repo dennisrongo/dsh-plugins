@@ -37,8 +37,8 @@
  *
  * @module @dennisrongo/dsh-todo
  */
-import { mkdirSync, readFileSync, renameSync, existsSync } from 'node:fs'
-import { DatabaseSync } from 'node:sqlite'
+import { readFileSync, renameSync, existsSync } from 'node:fs'
+import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute, join, resolve } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
@@ -46,9 +46,18 @@ import { z } from 'zod'
 // Imported for its side effect on the type level: dsh-workspace's module
 // augmentation is what declares `ctx.workspaceRegistry` on Context.
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
+// The durable storage layer is shared with the CLI so there is exactly one
+// implementation of the schema and the v1 -> v2 migration.
+import { openDb as openTodoDb, readList as readTodoList, writeList as writeTodoList } from './db.ts'
 import {
+  MAX_DESC,
   MAX_ITEMS,
+  MAX_LABEL,
   MAX_TEXT,
+  normalizeDueDate,
+  normalizeLabel,
+  toPriority,
+  toStatus,
   type TodoItem,
   type TodoList,
   type TodoListRequest,
@@ -65,8 +74,13 @@ export type * from './types.ts'
  */
 const todoItemSchema = z.object({
   id: z.string().min(1),
-  text: z.string().max(MAX_TEXT),
-  done: z.boolean(),
+  title: z.string().max(MAX_TEXT),
+  description: z.string().max(MAX_DESC).optional(),
+  status: z.enum(['backlog', 'todo', 'in-progress', 'blocked', 'done']),
+  priority: z.enum(['p0', 'p1', 'p2', 'p3']),
+  release: z.string().max(MAX_LABEL).optional(),
+  sprint: z.string().max(MAX_LABEL).optional(),
+  dueDate: z.string().optional(),
   createdAt: z.number(),
   completedAt: z.number().optional(),
   archivedAt: z.number().optional(),
@@ -224,20 +238,8 @@ export class TodoService extends TypertRemoteService {
     const resolved = resolve(dir)
     const cached = this.dbs.get(resolved)
     if (cached) return cached
-    mkdirSync(join(resolved, DOT_DSH), { recursive: true })
-    const db = new DatabaseSync(join(resolved, DOT_DSH, DB_FILE))
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS todo (
-        id           TEXT PRIMARY KEY,
-        text         TEXT NOT NULL,
-        done         INTEGER NOT NULL DEFAULT 0,
-        created_at   INTEGER NOT NULL,
-        completed_at INTEGER,
-        archived_at  INTEGER,
-        position     INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    `)
+    // Schema creation and migration live in ./db.ts, shared with the CLI.
+    const db = openTodoDb(resolved)
     this.dbs.set(resolved, db)
     return db
   }
@@ -334,68 +336,25 @@ export class TodoService extends TypertRemoteService {
     this.dbs.clear()
   }
 
-  /** Read the whole list from the database, ordered by `position`. */
+  /**
+   * Read the whole list, then re-validate it at this service's own boundary.
+   *
+   * `db.readList` already coerces rows, but the host keeps the zod check: it is
+   * the durable read boundary for the WIRE, and a shape the schema rejects must
+   * not reach the browser even if the storage layer was willing to build it.
+   */
   private readList(db: DatabaseSync): TodoList {
-    const revision = Number(db.prepare(`SELECT value FROM meta WHERE key = 'revision'`).get()?.value ?? 0)
-    const updatedAt = Number(db.prepare(`SELECT value FROM meta WHERE key = 'updatedAt'`).get()?.value ?? 0)
-    const rows = db
-      .prepare(
-        `SELECT id, text, done, created_at, completed_at, archived_at
-         FROM todo ORDER BY position ASC`,
-      )
-      .all()
-    const items: TodoItem[] = []
-    for (const row of rows) {
-      const candidate = {
-        id: String(row.id),
-        text: String(row.text),
-        done: Number(row.done) === 1,
-        createdAt: Number(row.created_at),
-        ...(row.completed_at !== null && row.completed_at !== undefined
-          ? { completedAt: Number(row.completed_at) }
-          : {}),
-        ...(row.archived_at !== null && row.archived_at !== undefined
-          ? { archivedAt: Number(row.archived_at) }
-          : {}),
-      }
-      const parsed = todoItemSchema.safeParse(candidate)
-      if (parsed.success) items.push(parsed.data)
-    }
-    const list = { items, revision, updatedAt }
-    const check = todoListSchema.safeParse(list)
-    return check.success ? list : { items: [], revision, updatedAt }
+    const list = readTodoList(db)
+    const items = list.items.filter((item) => todoItemSchema.safeParse(item).success)
+    const checked = { items, revision: list.revision, updatedAt: list.updatedAt }
+    return todoListSchema.safeParse(checked).success
+      ? checked
+      : { items: [], revision: list.revision, updatedAt: list.updatedAt }
   }
 
   /** Replace every row inside one transaction and stamp the meta tokens. */
   private writeList(db: DatabaseSync, items: TodoItem[], revision: number, updatedAt = Date.now()): void {
-    const now = updatedAt
-    db.exec('BEGIN')
-    try {
-      db.prepare('DELETE FROM todo').run()
-      const insert = db.prepare(
-        `INSERT INTO todo (id, text, done, created_at, completed_at, archived_at, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      items.forEach((item, index) => {
-        insert.run(
-          item.id,
-          item.text,
-          item.done ? 1 : 0,
-          item.createdAt,
-          item.completedAt ?? null,
-          item.archivedAt ?? null,
-          index,
-        )
-      })
-      db.prepare(`INSERT INTO meta (key, value) VALUES ('revision', ?)
-                  ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(revision))
-      db.prepare(`INSERT INTO meta (key, value) VALUES ('updatedAt', ?)
-                  ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(now))
-      db.exec('COMMIT')
-    } catch (err) {
-      db.exec('ROLLBACK')
-      throw err
-    }
+    writeTodoList(db, items, revision, updatedAt)
   }
 }
 
@@ -412,19 +371,37 @@ function sanitizeItems(value: unknown): TodoItem[] {
     if (!entry || typeof entry !== 'object') continue
     const e = entry as Record<string, unknown>
     if (typeof e.id !== 'string' || e.id.length === 0) continue
-    if (typeof e.text !== 'string') continue
+    // Accept the v1 `text` as the title, so a client mid-upgrade is not silently
+    // dropped at the durable boundary.
+    const rawTitle = typeof e.title === 'string' ? e.title : e.text
+    if (typeof rawTitle !== 'string') continue
     // Duplicate ids would make item lookup ambiguous in the UI.
     if (seen.has(e.id)) continue
     seen.add(e.id)
-    const done = e.done === true
+    // A v1 client sends `done` and no status; honour it rather than resetting
+    // finished work back to 'todo'.
+    const status = e.status === undefined && e.done === true ? 'done' : toStatus(e.status)
+    const done = status === 'done'
+    const description =
+      typeof e.description === 'string' && e.description.length > 0
+        ? e.description.slice(0, MAX_DESC)
+        : undefined
+    const release = normalizeLabel(e.release)
+    const sprint = normalizeLabel(e.sprint)
+    const dueDate = normalizeDueDate(e.dueDate)
     const completedAt = typeof e.completedAt === 'number' ? e.completedAt : undefined
     const archivedAt = typeof e.archivedAt === 'number' ? e.archivedAt : undefined
     out.push({
       id: e.id,
-      text: e.text.slice(0, MAX_TEXT),
-      done,
+      title: rawTitle.slice(0, MAX_TEXT),
+      status,
+      priority: toPriority(e.priority),
+      ...(description !== undefined ? { description } : {}),
+      ...(release !== undefined ? { release } : {}),
+      ...(sprint !== undefined ? { sprint } : {}),
+      ...(dueDate !== undefined ? { dueDate } : {}),
       createdAt: typeof e.createdAt === 'number' ? e.createdAt : 0,
-      // completedAt is meaningless on an open item; drop it rather than store a lie.
+      // completedAt is meaningless on an unfinished item; drop it rather than store a lie.
       ...(done && completedAt !== undefined ? { completedAt } : {}),
       // archivedAt is the archived flag itself, so a non-numeric value must not
       // survive as a truthy marker.

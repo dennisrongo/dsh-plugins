@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-superpowers",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Superpowers methodology bootstrap for dsh: injects the using-superpowers skill as a persistent system-prompt section (session start + compaction-safe)",
   "type": "module",
   "license": "MIT",

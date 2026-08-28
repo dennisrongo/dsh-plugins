@@ -9,12 +9,15 @@ Two supported surfaces, and a change to dependency resolution must be checked on
 and macOS) that bundles its own harness copy and keeps its own `DSH_HOME`.
 
 Read `README.md` for what each plugin does and how to install it. Read the package's own
-`AGENTS.md` before changing that package.
+`AGENTS.md` before changing that package. `TROUBLESHOOTING.md` covers harness-level failures
+that are not this repo's code — corrupt session logs, hidden history, registry edits that
+revert — and they are silent, so recognising them matters more than debugging them.
 
 ## Layout
 
 ```
 plugins/dsh-todo         host + client — Todo tab, service key dshTodo
+                         + CLI     — bin dsh-todo, same list from a terminal
 plugins/dsh-git          host + client — Changes tab, service key dshGit
 plugins/dsh-weather      client only   — shell.overlay weather bar
 plugins/dsh-mission-control client only — shell.overlay fleet dashboard

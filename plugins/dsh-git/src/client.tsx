@@ -466,8 +466,12 @@ const VIEW_STYLES = `
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  /* The tab itself is the query container: a container query can never style
+     its OWN container, so this must sit above the panes it switches. */
+  container-type: inline-size;
+  container-name: dshgit;
   color: var(--g-secondary);
-  font: 400 13px/1.5 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
+  font: 400 14px/22px var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
   font-variant-numeric: tabular-nums;
 }
 .dshgit *, .dshgit *::before, .dshgit *::after { box-sizing: border-box; }
@@ -479,10 +483,10 @@ const VIEW_STYLES = `
 }
 .dshgit-branch {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 13px; font-weight: 600; color: var(--g-primary);
+  font-size: 14px; line-height: 22px; font-weight: 600; color: var(--g-primary);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.dshgit-branch svg { flex: none; opacity: 0.7; }
+.dshgit-branch svg { flex: none; }
 .dshgit-spacer { flex: 1 1 auto; }
 .dshgit-actions { flex: none; display: flex; gap: 4px; align-items: center; }
 
@@ -490,7 +494,7 @@ const VIEW_STYLES = `
 .dshgit-btn {
   border: 1px solid var(--g-border); border-radius: 7px;
   background: transparent; color: var(--g-secondary);
-  font: inherit; font-size: 12px; padding: 5px 11px; cursor: pointer;
+  font: inherit; font-size: 12px; line-height: 18px; padding: 5px 11px; cursor: pointer;
   white-space: nowrap; display: inline-flex; align-items: center; gap: 5px;
 }
 .dshgit-btn:hover:not(:disabled) { background: var(--g-hover); color: var(--g-primary); }
@@ -503,7 +507,7 @@ const VIEW_STYLES = `
 .dshgit-btn.ai:hover:not(:disabled) { background: var(--g-info); color: #04121f; }
 .dshgit-badge-count {
   display: inline-block; min-width: 16px; padding: 0 4px; border-radius: 999px;
-  background: var(--g-hover); color: var(--g-caption); font-size: 10px; text-align: center;
+  background: var(--g-hover); color: var(--g-caption); font-size: 12px; line-height: 16px; text-align: center;
 }
 
 /* ---- commit box ---- */
@@ -518,13 +522,54 @@ const VIEW_STYLES = `
 .dshgit-msg:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
 .dshgit-commitrow { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 
-/* ---- sections ---- */
-.dshgit-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* ---- panes ----
+   The list and the diff share one flex container so a single direction switch
+   moves the diff between "beside the list" and "under the list".
+
+   Container queries are used rather than a media query: this is a TAB inside a
+   shell whose sidebar and panels resize independently of the viewport, so the
+   width that matters is the tab's own, not the window's. inline-size is the
+   containment the query needs. */
+.dshgit-panes {
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+}
+
+/* ---- sections ----
+   The list's own box must NOT depend on whether a diff is open. Sizing it off
+   the open/closed state meant the FIRST click resized the list under the
+   pointer — rows reflowed and re-truncated mid-click, which reads as the list
+   "jumping". So the list's geometry is reserved up front and identical in both
+   states; only the DIFF is switched, via .dshgit-panes.hasdiff. */
+.dshgit-scroll { flex: 1 1 auto; min-height: 0; min-width: 0; overflow-y: auto; }
+/* Stacked (narrow): the diff takes the lower 55% and the list keeps the rest.
+   Shrinking a scrollport does NOT move the content inside it — the viewport gets
+   shorter while scrollTop stays put, and because the maximum scrollTop RISES as
+   the port shrinks, the browser never has to clamp it. So every row keeps its
+   exact screen position and simply ends up below the fold, still reachable by
+   scrolling. An earlier attempt floated the diff over the list to avoid the
+   resize entirely; that held rows still but hid the row that had just been
+   clicked whenever the list was scrolled near its end, which reads as the list
+   jumping away. In flow is both stable and visible. */
+.dshgit-panes.hasdiff .dshgit-scroll { flex: 0 0 45%; }
+.dshgit-panes.hasdiff .dshgit-diff { flex: 0 0 55%; }
+
+/* Wide: side by side. The list holds the same column width in both states, so
+   opening a diff changes nothing about the rows the pointer is over. */
+@container dshgit (min-width: 720px) {
+  .dshgit-panes { flex-direction: row; }
+  .dshgit-scroll, .dshgit-panes.hasdiff .dshgit-scroll {
+    flex: 0 0 clamp(240px, 34%, 420px); max-height: none;
+  }
+  .dshgit-panes.hasdiff .dshgit-scroll { border-right: 1px solid var(--g-border); }
+  /* Side by side the diff takes the remaining width instead of a height share. */
+  .dshgit-panes.hasdiff .dshgit-diff { flex: 1 1 auto; }
+}
 .dshgit-section { padding: 8px 0 4px; }
 .dshgit-sechead {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 20px; color: var(--g-caption);
-  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  font-size: 12px; line-height: 18px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
 }
 .dshgit-sechead .dshgit-spacer { min-width: 8px; }
 .dshgit-secbtns { display: flex; gap: 1px; opacity: 0; transition: opacity 100ms ease; }
@@ -536,11 +581,15 @@ const VIEW_STYLES = `
   display: flex; align-items: center; gap: 9px;
   padding: 5px 8px; border-radius: 7px; border: 1px solid transparent;
   cursor: pointer;
+  /* The filename is the tallest thing in the row, so the body's 22px line-height
+     would set the row height and undo the compact list. 20px matches the icon
+     button and keeps rows at their original height while the text stays 14px. */
+  line-height: 20px;
 }
 .dshgit-row:hover { background: var(--g-hover); border-color: var(--g-border); }
 .dshgit-row.active { background: var(--g-hover); border-color: var(--dsw-alias-border-focus, #6b7280); }
 .dshgit-code {
-  flex: none; width: 16px; text-align: center; font-size: 11px; font-weight: 700;
+  flex: none; width: 16px; text-align: center; font-size: 12px; line-height: 16px; font-weight: 700;
   font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .dshgit-code.M { color: var(--g-warn); }
@@ -559,35 +608,91 @@ const VIEW_STYLES = `
 .dshgit-row:hover .dshgit-base { color: var(--g-primary); }
 .dshgit-rowbtns { flex: none; display: flex; gap: 1px; opacity: 0; transition: opacity 100ms ease; }
 .dshgit-row:hover .dshgit-rowbtns, .dshgit-row:focus-within .dshgit-rowbtns { opacity: 1; }
+/* A 16px glyph centred in a fixed 20px square, so rows keep a stable rhythm
+   whichever icon is shown.
+
+   20px, not 24px: the button is the tallest thing in a file row, so its height
+   sets the row height. The old glyph buttons measured 20px, and a 24px box
+   silently made every row 4px taller. Size the box to the row, and let the glyph
+   stay at the shell's 16px. */
 .dshgit-icon {
   border: 0; background: transparent; cursor: pointer; color: var(--g-caption);
-  font-size: 12px; line-height: 1; padding: 4px 6px; border-radius: 5px;
+  width: 20px; height: 20px; padding: 0; border-radius: 5px;
+  display: inline-flex; align-items: center; justify-content: center;
 }
+.dshgit-icon svg, .dshgit-btn svg { display: block; flex: none; }
 .dshgit-icon:hover { background: var(--g-hover); color: var(--g-primary); }
 .dshgit-icon.danger:hover { color: var(--g-danger); }
 
 /* ---- diff pane ---- */
 .dshgit-diff {
-  flex: none; max-height: 42%; overflow: auto;
+  flex: 1 1 auto; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden;
   border-top: 1px solid var(--g-border); background: rgba(0,0,0,0.16);
+}
+/* Side by side the divider belongs on the list's right edge, not above the
+   diff, or the pane reads as a stacked row that happens to sit alongside. */
+@container dshgit (min-width: 720px) {
+  .dshgit-diff { border-top: 0; }
 }
 .dshgit-diffhead {
   position: sticky; top: 0; z-index: 1;
   display: flex; align-items: center; gap: 8px;
   padding: 7px 20px; border-bottom: 1px solid var(--g-border);
   background: var(--dsw-alias-bg-l1, #16181c);
-  color: var(--g-caption); font-size: 11px;
+  color: var(--g-caption); font-size: 12px; line-height: 18px;
 }
 .dshgit-diffbody {
   margin: 0; padding: 8px 0;
-  font: 400 12px/1.55 var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  white-space: pre; tab-size: 2;
+  font: 400 12px/18px var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2;
 }
-.dshgit-dl { padding: 0 20px; }
+/* Wrapped lines are indented past the +/- column and the pane no longer scrolls
+   sideways, so a continuation reads as part of its line, not a new one. */
+.dshgit-dl { padding: 0 20px 0 32px; text-indent: -12px; }
 .dshgit-dl.add { background: rgba(34,197,94,0.14); color: #86efac; }
 .dshgit-dl.del { background: rgba(239,68,68,0.14); color: #fca5a5; }
 .dshgit-dl.hunk { color: var(--g-info); background: rgba(59,130,246,0.10); }
 .dshgit-dl.meta { color: var(--g-caption); }
+
+/* ---- diff loading skeleton ----
+   Padding and line box are copied from .dshgit-diffbody so the placeholder rows
+   land on the same rhythm the real patch will use. */
+.dshgit-skel { margin: 0; padding: 8px 0; }
+/* Real diff lines pull their first character back with text-indent: -12px (the
+   +/- column), so the padding alone would start the bars 12px to the right of
+   the text they stand in for. Match the actual glyph position instead. */
+.dshgit-skel-line {
+  height: 18px; display: flex; align-items: center;
+  padding: 0 20px 0 20px;
+}
+.dshgit-skel-line.add { background: rgba(34,197,94,0.07); }
+.dshgit-skel-line.del { background: rgba(239,68,68,0.07); }
+.dshgit-skel-line.hunk { background: rgba(59,130,246,0.06); }
+/* 10px keeps the bar visually inside the 18px line without touching its edges. */
+.dshgit-skel-bar {
+  height: 10px; border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--g-border) 0%,
+    var(--g-hover) 40%,
+    var(--g-border) 80%
+  );
+  /* The gradient is wider than the bar so there is off-screen runway to travel;
+     animating background-position (not transform) leaves layout untouched, so
+     the sweep cannot nudge anything around it. */
+  background-size: 300% 100%;
+  animation: dshgit-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes dshgit-shimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+/* Visually hidden, still announced. */
+.dshgit-sronly {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
 
 /* ---- empty + footer ---- */
 .dshgit-empty { padding: 40px 20px; text-align: center; color: var(--g-caption); }
@@ -596,25 +701,33 @@ const VIEW_STYLES = `
 .dshgit-init { display: flex; gap: 6px; justify-content: center; margin-top: 14px; }
 .dshgit-init input {
   border: 1px solid var(--g-border); border-radius: 7px; background: transparent;
-  color: var(--g-primary); font: inherit; font-size: 12px; padding: 5px 10px; width: 130px;
+  color: var(--g-primary); font: inherit; font-size: 12px; line-height: 18px; padding: 5px 10px; width: 130px;
 }
 .dshgit-init input:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
 .dshgit-foot {
   flex: none; display: flex; align-items: center; gap: 8px;
   padding: 8px 20px; border-top: 1px solid var(--g-border);
-  color: var(--g-caption); font-size: 11px; min-height: 32px;
+  color: var(--g-caption); font-size: 12px; line-height: 18px; min-height: 32px;
 }
 .dshgit-out {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .dshgit-out.err { color: var(--g-danger); }
-.dshgit-spin { display: inline-block; animation: dshgit-rot 900ms linear infinite; }
+/* inline-flex (not inline-block) so the SVG child rotates about the box centre
+   rather than drifting on the text baseline. */
+.dshgit-spin {
+  display: inline-flex; align-items: center; justify-content: center;
+  animation: dshgit-rot 900ms linear infinite;
+}
 @keyframes dshgit-rot { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
   .dshgit-rowbtns, .dshgit-secbtns { transition: none; }
   .dshgit-spin { animation: none; }
+  /* Hold the bars at a flat mid-tone: the skeleton still communicates "loading"
+     by being there, without the sweep. */
+  .dshgit-skel-bar { animation: none; background: var(--g-border); }
 }
 `
 
@@ -632,13 +745,58 @@ function injectStyles(): void {
 // Components
 // ---------------------------------------------------------------------------
 
-/** Branch glyph, inlined so the tab carries no icon-font dependency. */
-function BranchIcon(): React.JSX.Element {
+/**
+ * Icons, matching the shell's own convention: an inline SVG stroked in
+ * `currentColor` and marked `aria-hidden`, because every call site already
+ * carries a `title`/`aria-label`.
+ *
+ * Size is fixed at 16 and NOT a prop. The shell draws icons at 12/14/16/20, but
+ * it pairs each size with a matching viewBox (a 14px icon is authored on
+ * `0 0 14 14`) so the artwork is drawn at its native scale. Rendering this
+ * 16-unit geometry into a 14px box instead shrinks the drawing and thins the
+ * strokes — which is exactly how these icons first shipped, and why they read as
+ * off-size next to the file rows. Spacing belongs to the button box below, not
+ * to the glyph.
+ *
+ * These are inlined rather than imported: the shell's icon set lives in
+ * `@deepseek-ai/dsh-client-ui-primitives`, which is a build-time external of the
+ * host bundles — it is neither a loadable client module nor served over
+ * `/plugins/`, so a plugin cannot import it. Inlining to the same spec is the
+ * only way to match, and it keeps the tab free of an icon-font dependency.
+ */
+function Icon({ path }: { path: string }): React.JSX.Element {
   return (
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 2.122a2.25 2.25 0 1 0-1.5 0v5.256a2.251 2.251 0 1 0 1.5 0V9.5a1 1 0 0 1 1-1h2.75a2.75 2.75 0 0 0 2.75-2.75V5.372a2.25 2.25 0 1 0-1.5 0v.378A1.25 1.25 0 0 1 8.75 7H6c-.36 0-.7.076-1 .212V5.372ZM4.25 12.5a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5ZM12.25 3a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5Z" />
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={path} />
     </svg>
   )
+}
+
+/** Path data, keyed by role, so call sites read as names rather than glyphs. */
+const ICON = {
+  branch: 'M4.5 4.5v7M4.5 3.25a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Zm0 7a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Zm7-7a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Zm0 2.5v1A2.5 2.5 0 0 1 9 10.5H6.75',
+  refresh: 'M13.5 8a5.5 5.5 0 1 1-1.61-3.89M13.5 2.5v3h-3',
+  sync: 'M2.5 5.5h9l-2-2M13.5 10.5h-9l2 2',
+  sparkle: 'M8 2.5 9.2 6.3 13 7.5 9.2 8.7 8 12.5 6.8 8.7 3 7.5l3.8-1.2Z',
+  close: 'M4 4l8 8M12 4l-8 8',
+  plus: 'M8 3.5v9M3.5 8h9',
+  minus: 'M3.5 8h9',
+  discard: 'M3 8a5 5 0 1 0 1.6-3.68M3 2.5v3h3',
+} as const
+
+/** Branch glyph for the header. */
+function BranchIcon(): React.JSX.Element {
+  return <Icon path={ICON.branch} />
 }
 
 /** One changed-file row. */
@@ -683,7 +841,7 @@ function FileRow({
             aria-label={`Discard changes to ${file.path}`}
             onClick={onDiscard}
           >
-            ↺
+            <Icon path={ICON.discard} />
           </button>
         ) : null}
         <button
@@ -692,10 +850,55 @@ function FileRow({
           aria-label={`${section === 'staged' ? 'Unstage' : 'Stage'} ${file.path}`}
           onClick={onPrimary}
         >
-          {section === 'staged' ? '−' : '+'}
+          <Icon path={section === 'staged' ? ICON.minus : ICON.plus} />
         </button>
       </span>
     </li>
+  )
+}
+
+/* Placeholder rows, shaped like a real patch: a couple of meta lines, a hunk
+   header, then a run of context/add/del at varied widths. Mirroring the eventual
+   layout keeps the pane from lurching when the real diff replaces it. */
+const SKELETON_ROWS: { kind: string; width: number }[] = [
+  { kind: 'meta', width: 42 },
+  { kind: 'meta', width: 34 },
+  { kind: 'hunk', width: 26 },
+  { kind: '', width: 68 },
+  { kind: 'add', width: 54 },
+  { kind: 'add', width: 76 },
+  { kind: '', width: 47 },
+  { kind: 'del', width: 61 },
+  { kind: '', width: 72 },
+  { kind: 'add', width: 39 },
+  { kind: '', width: 58 },
+  { kind: '', width: 44 },
+]
+
+/**
+ * Placeholder shown while a patch is in flight.
+ *
+ * A skeleton rather than a spinner: the pane is a large surface, and shimmering
+ * bars in the diff's own shape read as "this content is arriving" instead of
+ * blanking the area. The wrapper carries the live region so a screen reader is
+ * told the diff is loading without narrating twelve decorative rows.
+ * @returns the loading placeholder.
+ */
+function DiffSkeleton(): React.JSX.Element {
+  return (
+    <div className="dshgit-skel" role="status" aria-live="polite" aria-busy="true">
+      <span className="dshgit-sronly">Loading diff…</span>
+      {SKELETON_ROWS.map((row, i) => (
+        <div className={`dshgit-skel-line ${row.kind}`} key={i} aria-hidden="true">
+          <span
+            className="dshgit-skel-bar"
+            /* Staggering the shimmer makes it sweep down the pane instead of
+               every bar flashing in lockstep. */
+            style={{ width: `${row.width}%`, animationDelay: `${i * 70}ms` }}
+          />
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -770,14 +973,14 @@ function Section({
                   if (confirmDiscard(files.length)) void store.stage('discard', paths)
                 }}
               >
-                ↺
+                <Icon path={ICON.discard} />
               </button>
               <button
                 className="dshgit-icon"
                 title="Stage all"
                 onClick={() => void store.stage('stage', paths)}
               >
-                +
+                <Icon path={ICON.plus} />
               </button>
             </>
           ) : (
@@ -786,7 +989,7 @@ function Section({
               title="Unstage all"
               onClick={() => void store.stage('unstage', paths)}
             >
-              −
+              <Icon path={ICON.minus} />
             </button>
           )}
         </span>
@@ -826,6 +1029,9 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
   const [branch, setBranch] = React.useState('main')
   const [selected, setSelected] = React.useState<string | null>(null)
   const [patch, setPatch] = React.useState<string>('')
+  // Loading is its own flag rather than a sentinel string in `patch`, so a real
+  // diff whose text happens to read "Loading diff…" cannot render as a skeleton.
+  const [loading, setLoading] = React.useState(false)
 
   React.useEffect(() => {
     injectStyles()
@@ -841,6 +1047,9 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
     store ? store.getSnapshot : getMissingSnapshot,
   )
 
+  // Monotonic click counter; see the ordering guard in openDiff.
+  const requestSeq = React.useRef(0)
+
   /** Load a file's patch into the diff pane. */
   const openDiff = React.useCallback(
     (path: string, staged: boolean) => {
@@ -851,12 +1060,21 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
       if (selected === key) {
         setSelected(null)
         setPatch('')
+        setLoading(false)
         return
       }
       setSelected(key)
-      setPatch('Loading diff…')
+      setPatch('')
+      setLoading(true)
+      // Clicking down a list starts overlapping requests, and they can settle out
+      // of order — a slow diff landing after a later one would show the wrong
+      // file's patch under the right filename. Only the newest click may write.
+      requestSeq.current += 1
+      const seq = requestSeq.current
       void store.diff(path, staged).then((text) => {
+        if (seq !== requestSeq.current) return
         setPatch(text.trim().length === 0 ? 'No textual changes.' : text)
+        setLoading(false)
       })
     },
     [store, selected],
@@ -869,8 +1087,10 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
     if (selected === null || !status || !status.repo) return
     const [, path] = splitKey(selected)
     if (!status.files.some((f) => f.path === path)) {
+      requestSeq.current += 1
       setSelected(null)
       setPatch('')
+      setLoading(false)
     }
   }, [status, selected])
 
@@ -966,7 +1186,7 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
   }
 
   return (
-    <div className="dshgit">
+    <div className={`dshgit${selected !== null ? ' diffopen' : ''}`}>
       <div className="dshgit-head">
         <span className="dshgit-branch" title={status.root}>
           <BranchIcon />
@@ -980,7 +1200,7 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
             disabled={busy !== null}
             onClick={() => void store.refresh()}
           >
-            ⟳
+            <Icon path={ICON.refresh} />
           </button>
           {status.hasRemote ? (
             <>
@@ -1018,7 +1238,13 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
                 disabled={busy !== null}
                 onClick={() => void store.sync('sync')}
               >
-                {busy === 'sync:sync' ? <span className="dshgit-spin">⟳</span> : '⇅'}
+                {busy === 'sync:sync' ? (
+                  <span className="dshgit-spin">
+                    <Icon path={ICON.refresh} />
+                  </span>
+                ) : (
+                  <Icon path={ICON.sync} />
+                )}
               </button>
             </>
           ) : (
@@ -1054,7 +1280,13 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
             disabled={busy !== null || counts.total === 0}
             onClick={() => void doSuggest()}
           >
-            {busy === 'suggest' ? <span className="dshgit-spin">✦</span> : '✦'}
+            {busy === 'suggest' ? (
+              <span className="dshgit-spin">
+                <Icon path={ICON.sparkle} />
+              </span>
+            ) : (
+              <Icon path={ICON.sparkle} />
+            )}
             {busy === 'suggest' ? 'Writing…' : 'AI message'}
           </button>
           <span className="dshgit-spacer" />
@@ -1068,73 +1300,77 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
         </div>
       </div>
 
-      <div className="dshgit-scroll">
-        {counts.total === 0 ? (
-          <div className="dshgit-empty">
-            <b>No changes</b>
-            The working tree is clean.
-          </div>
-        ) : (
-          <>
-            {conflicts.length > 0 ? (
-              <div className="dshgit-section">
-                <div className="dshgit-sechead">
-                  <span>Conflicts</span>
-                  <span className="dshgit-badge-count">{conflicts.length}</span>
+      <div className={`dshgit-panes${selected !== null ? ' hasdiff' : ''}`}>
+        <div className="dshgit-scroll">
+          {counts.total === 0 ? (
+            <div className="dshgit-empty">
+              <b>No changes</b>
+              The working tree is clean.
+            </div>
+          ) : (
+            <>
+              {conflicts.length > 0 ? (
+                <div className="dshgit-section">
+                  <div className="dshgit-sechead">
+                    <span>Conflicts</span>
+                    <span className="dshgit-badge-count">{conflicts.length}</span>
+                  </div>
+                  <ul className="dshgit-list">
+                    {conflicts.map((file) => (
+                      <FileRow
+                        key={`conflict:${file.path}`}
+                        file={file}
+                        section="unstaged"
+                        active={selected === `unstaged:${file.path}`}
+                        onOpen={() => openDiff(file.path, false)}
+                        onPrimary={() => void store.stage('stage', [file.path])}
+                      />
+                    ))}
+                  </ul>
                 </div>
-                <ul className="dshgit-list">
-                  {conflicts.map((file) => (
-                    <FileRow
-                      key={`conflict:${file.path}`}
-                      file={file}
-                      section="unstaged"
-                      active={selected === `unstaged:${file.path}`}
-                      onOpen={() => openDiff(file.path, false)}
-                      onPrimary={() => void store.stage('stage', [file.path])}
-                    />
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            <Section
-              title="Staged changes"
-              files={staged}
-              section="staged"
-              selected={selected}
-              store={store}
-              onOpen={openDiff}
-            />
-            <Section
-              title="Changes"
-              files={unstaged}
-              section="unstaged"
-              selected={selected}
-              store={store}
-              onOpen={openDiff}
-            />
-          </>
-        )}
-      </div>
-
-      {selected !== null ? (
-        <div className="dshgit-diff">
-          <div className="dshgit-diffhead">
-            <span>{splitKey(selected)[1]}</span>
-            <span className="dshgit-spacer" />
-            <button
-              className="dshgit-icon"
-              title="Close diff"
-              onClick={() => {
-                setSelected(null)
-                setPatch('')
-              }}
-            >
-              ✕
-            </button>
-          </div>
-          <DiffBody patch={patch} />
+              ) : null}
+              <Section
+                title="Staged changes"
+                files={staged}
+                section="staged"
+                selected={selected}
+                store={store}
+                onOpen={openDiff}
+              />
+              <Section
+                title="Changes"
+                files={unstaged}
+                section="unstaged"
+                selected={selected}
+                store={store}
+                onOpen={openDiff}
+              />
+            </>
+          )}
         </div>
-      ) : null}
+
+        {selected !== null ? (
+          <div className="dshgit-diff">
+            <div className="dshgit-diffhead">
+              <span>{splitKey(selected)[1]}</span>
+              <span className="dshgit-spacer" />
+              <button
+                className="dshgit-icon"
+                title="Close diff"
+                onClick={() => {
+                  requestSeq.current += 1
+                  setSelected(null)
+                  setPatch('')
+                  setLoading(false)
+                }}
+              >
+                <Icon path={ICON.close} />
+              </button>
+            </div>
+            {loading ? <DiffSkeleton /> : <DiffBody patch={patch} />}
+          </div>
+        ) : null}
+      </div>
 
       <div className="dshgit-foot">
         <span>

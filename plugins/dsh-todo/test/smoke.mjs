@@ -79,7 +79,7 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   // First write from a client that has not read yet.
   const first = await service.replace({
     workspaceId: 'ws-1',
-    items: [{ id: 'a', text: 'one', done: false, createdAt: 1 }],
+    items: [{ id: 'a', title: 'one', status: 'todo', priority: 'p2', createdAt: 1 }],
     ifRevision: null,
   })
   assert.equal(first.ok, true, 'first write should commit')
@@ -107,28 +107,77 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   const dirty = await service.replace({
     workspaceId: 'ws-3-does-not-exist'.replace('ws-3-does-not-exist', 'ws-1'),
     items: [
-      { id: 'x', text: 'y'.repeat(900), done: false, createdAt: 2 },
-      { id: 'x', text: 'duplicate id', done: false, createdAt: 3 },
-      { id: 'z', text: 'open', done: false, createdAt: 4, completedAt: 99 },
+      { id: 'x', title: 'y'.repeat(900), status: 'todo', priority: 'p2', createdAt: 2 },
+      { id: 'x', title: 'duplicate id', status: 'todo', priority: 'p2', createdAt: 3 },
+      { id: 'z', title: 'open', status: 'todo', priority: 'p2', createdAt: 4, completedAt: 99 },
+      // Unknown status/priority must decay to the defaults, not be stored raw.
+      { id: 'w', title: 'junk enums', status: 'nonsense', priority: 'p9', createdAt: 5 },
       'garbage',
       null,
     ],
     ifRevision: 2,
   })
   assert.equal(dirty.ok, true)
-  assert.equal(dirty.list.items.length, 2, 'malformed and duplicate entries must be dropped')
-  assert.equal(dirty.list.items[0].text.length, 500, 'stored text must be capped at 500 chars')
-  assert.equal(dirty.list.items[1].completedAt, undefined, 'completedAt must not survive on an open item')
+  assert.equal(dirty.list.items.length, 3, 'malformed and duplicate entries must be dropped')
+  assert.equal(dirty.list.items[0].title.length, 500, 'stored title must be capped at 500 chars')
+  assert.equal(dirty.list.items[1].completedAt, undefined, 'completedAt must not survive on an unfinished item')
+  assert.equal(dirty.list.items[2].status, 'todo', 'an unknown status must fall back to the default')
+  assert.equal(dirty.list.items[2].priority, 'p2', 'an unknown priority must fall back to the default')
+
+  // The roadmap fields must survive the durable boundary intact.
+  const roadmap = await service.replace({
+    workspaceId: 'ws-1',
+    items: [
+      {
+        id: 'r1',
+        title: 'ship login',
+        description: 'AC: user can sign in\nAC: bad password shows an error',
+        status: 'in-progress',
+        priority: 'p0',
+        release: 'v1.2.0',
+        sprint: 'Sprint 24',
+        createdAt: 6,
+      },
+      // Blank labels must clear rather than store an empty string, so "no
+      // release" has exactly one representation on disk.
+      { id: 'r2', title: 'blank labels', status: 'todo', priority: 'p2', release: '   ', sprint: '', createdAt: 7 },
+    ],
+    ifRevision: 3,
+  })
+  assert.equal(roadmap.ok, true)
+  const [r1, r2] = roadmap.list.items
+  assert.equal(r1.status, 'in-progress', 'status must survive the host sanitizer')
+  assert.equal(r1.priority, 'p0', 'priority must survive the host sanitizer')
+  assert.equal(r1.release, 'v1.2.0', 'release must survive the host sanitizer')
+  assert.equal(r1.sprint, 'Sprint 24', 'sprint must survive the host sanitizer')
+  assert.match(r1.description, /bad password/, 'description must survive the host sanitizer')
+  assert.equal(r2.release, undefined, 'a whitespace-only release must be stored as absent')
+  assert.equal(r2.sprint, undefined, 'an empty sprint must be stored as absent')
+
+  // Due dates are stored as calendar days, and junk must not reach the UI.
+  const dues = await service.replace({
+    workspaceId: 'ws-1',
+    items: [
+      { id: 'd1', title: 'has due', status: 'todo', priority: 'p2', dueDate: '2025-03-14', createdAt: 8 },
+      { id: 'd2', title: 'impossible', status: 'todo', priority: 'p2', dueDate: '2025-02-31', createdAt: 9 },
+      { id: 'd3', title: 'garbage', status: 'todo', priority: 'p2', dueDate: 'soon', createdAt: 10 },
+    ],
+    ifRevision: 4,
+  })
+  assert.equal(dues.ok, true)
+  assert.equal(dues.list.items[0].dueDate, '2025-03-14', 'a valid due date must survive the host sanitizer')
+  assert.equal(dues.list.items[1].dueDate, undefined, 'an impossible calendar date must be dropped')
+  assert.equal(dues.list.items[2].dueDate, undefined, 'a non-ISO due date must be dropped')
 
   // Archived state must survive the durable boundary, and a non-numeric marker
   // must not sneak through as a truthy "archived" flag.
   const arch = await service.replace({
     workspaceId: 'ws-1',
     items: [
-      { id: 'a', text: 'archived', done: true, createdAt: 1, completedAt: 2, archivedAt: 3 },
-      { id: 'b', text: 'bad marker', done: true, createdAt: 1, completedAt: 2, archivedAt: 'yes' },
+      { id: 'a', title: 'archived', status: 'done', priority: 'p2', createdAt: 1, completedAt: 2, archivedAt: 3 },
+      { id: 'b', title: 'bad marker', status: 'done', priority: 'p2', createdAt: 1, completedAt: 2, archivedAt: 'yes' },
     ],
-    ifRevision: 3,
+    ifRevision: 5,
   })
   assert.equal(arch.ok, true)
   assert.equal(arch.list.items[0].archivedAt, 3, 'archivedAt must survive the host sanitizer')
@@ -156,10 +205,72 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   rmSync(secondDir, { recursive: true, force: true })
 }
 
+// --- v1 -> v2 schema migration ----------------------------------------------
+// CREATE TABLE IF NOT EXISTS does NOT add columns, so a database written by the
+// old version must be upgraded in place. Getting this wrong breaks the plugin
+// for every existing user, and only for them — which a fresh-install test would
+// never catch.
+{
+  const { mkdtempSync, rmSync, mkdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { DatabaseSync } = await import('node:sqlite')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-todo-v1-'))
+  mkdirSync(join(dir, '.dsh'), { recursive: true })
+
+  // Write a genuine v1 database: the old columns, and nothing else.
+  const legacy = new DatabaseSync(join(dir, '.dsh', 'todo.db'))
+  legacy.exec(`
+    CREATE TABLE todo (
+      id           TEXT PRIMARY KEY,
+      text         TEXT NOT NULL,
+      done         INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL,
+      completed_at INTEGER,
+      archived_at  INTEGER,
+      position     INTEGER NOT NULL
+    );
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `)
+  legacy.prepare('INSERT INTO todo VALUES (?,?,?,?,?,?,?)').run('v1a', 'old open task', 0, 100, null, null, 0)
+  legacy.prepare('INSERT INTO todo VALUES (?,?,?,?,?,?,?)').run('v1b', 'old done task', 1, 101, 102, null, 1)
+  legacy.prepare("INSERT INTO meta VALUES ('revision', '7')").run()
+  legacy.close()
+
+  const svc = new host.TodoService(new Context())
+  svc.ctx.workspaceRegistry = { list: () => [{ id: 'w', path: dir }] }
+  const read = await svc.list({ workspaceId: 'w' })
+
+  assert.equal(read.list.items.length, 2, 'a v1 database must still read its rows after upgrade')
+  const [a, b] = read.list.items
+  assert.equal(a.title, 'old open task', 'v1 text must be backfilled into title')
+  assert.equal(a.status, 'todo', 'a v1 unfinished row must become status todo')
+  assert.equal(a.priority, 'p2', 'a migrated row must get the default priority')
+  assert.equal(b.title, 'old done task')
+  assert.equal(b.status, 'done', 'v1 done=1 must become status done, not silently reopen')
+  assert.equal(b.completedAt, 102, 'the completion stamp must survive migration')
+  assert.equal(read.list.revision, 7, 'the revision token must survive migration')
+
+  // And the upgraded database must still accept writes carrying new fields.
+  const wrote = await svc.replace({
+    workspaceId: 'w',
+    items: [{ id: 'v1a', title: 'now with a release', status: 'blocked', priority: 'p1', release: 'v2.0.0', createdAt: 100 }],
+    ifRevision: 7,
+  })
+  assert.equal(wrote.ok, true, 'a migrated database must accept v2 writes')
+  assert.equal(wrote.list.items[0].release, 'v2.0.0', 'new fields must persist into a migrated table')
+  assert.equal(wrote.list.items[0].status, 'blocked')
+
+  svc.close()
+  rmSync(dir, { recursive: true, force: true })
+}
+
 // --- evaluate the client bundle to reach the exported pure logic ------------
 let captured = null
+const reactDom = { createPortal: (node) => node }
 const react = {
   createElement: () => ({}),
+  useRef: () => ({ current: null }),
+  useCallback: (fn) => fn,
   useState: (v) => [typeof v === 'function' ? v() : v, () => {}],
   useEffect: () => {},
   useSyncExternalStore: (_s, get) => get(),
@@ -168,7 +279,15 @@ const storage = new Map()
 globalThis.window = {
   __ModuleLoader__: {
     load: ({ id, factory }) => {
-      captured = { id, exports: factory((name) => (name === 'react' ? react : {})) }
+      // react-dom is supplied by the shell's module table, exactly as the
+    // shipped ui-trajectory / ui-renderer bundles receive it. The modal
+    // portals through createPortal, so an absent stub would fail at import.
+    captured = {
+      id,
+      exports: factory((name) =>
+        name === 'react' ? react : name === 'react-dom' ? reactDom : {},
+      ),
+    }
     },
   },
   localStorage: {
@@ -234,22 +353,39 @@ assert.equal(typeof m.apply, 'function', 'client half must export apply()')
   replaceDesc.parameters[0].codec.schema.parse({ workspaceId: 'w1', items: [], ifRevision: null })
   replaceDesc.parameters[0].codec.schema.parse({
     workspaceId: 'w1',
-    items: [{ id: 'a', text: 't', done: true, createdAt: 1, completedAt: 2 }],
+    items: [{ id: 'a', title: 't', status: 'done', priority: 'p2', createdAt: 1, completedAt: 2 }],
     ifRevision: 3,
   })
-  // Strict codecs strip unnamed fields, so the wire schema must carry
-  // archivedAt explicitly or archiving would never reach the host.
-  const withArchive = replaceDesc.parameters[0].codec.schema.parse({
-    workspaceId: 'w1',
-    items: [{ id: 'a', text: 't', done: true, createdAt: 1, completedAt: 2, archivedAt: 4 }],
-    ifRevision: 3,
+  // Strict codecs STRIP fields the schema does not name, and do it silently, so
+  // every field has to be proven across both directions of the wire or it would
+  // simply never reach the host.
+  const full = {
+    id: 'a', title: 't', description: 'why', status: 'in-progress', priority: 'p0',
+    release: 'v1.2.0', sprint: 'Sprint 24', dueDate: '2025-03-14',
+    createdAt: 1, completedAt: 2, archivedAt: 4,
+  }
+  const sent = replaceDesc.parameters[0].codec.schema.parse({
+    workspaceId: 'w1', items: [full], ifRevision: 3,
   })
-  assert.equal(withArchive.items[0].archivedAt, 4, 'archivedAt must survive the request codec')
-  const backArchive = replaceDesc.result.schema.parse({
-    ok: true,
-    list: { items: [{ id: 'a', text: 't', done: true, createdAt: 1, archivedAt: 4 }], revision: 1, updatedAt: 1 },
+  for (const key of Object.keys(full)) {
+    assert.equal(sent.items[0][key], full[key], key + ' must survive the request codec')
+  }
+  const back = replaceDesc.result.schema.parse({
+    ok: true, list: { items: [full], revision: 1, updatedAt: 1 },
   })
-  assert.equal(backArchive.list.items[0].archivedAt, 4, 'archivedAt must survive the result codec')
+  for (const key of Object.keys(full)) {
+    assert.equal(back.list.items[0][key], full[key], key + ' must survive the result codec')
+  }
+  // An unknown status must be REJECTED at the wire, not silently coerced: the
+  // codec is a contract check, unlike the tolerant parser used on stored data.
+  assert.throws(
+    () => replaceDesc.parameters[0].codec.schema.parse({
+      workspaceId: 'w1',
+      items: [{ id: 'a', title: 't', status: 'nope', priority: 'p2', createdAt: 1 }],
+      ifRevision: 3,
+    }),
+    'an invalid status must not pass the wire codec',
+  )
   replaceDesc.result.schema.parse({ ok: true, list: { items: [], revision: 1, updatedAt: 1 } })
   replaceDesc.result.schema.parse({
     ok: false,
@@ -259,17 +395,34 @@ assert.equal(typeof m.apply, 'function', 'client half must export apply()')
 }
 
 // computeStats
-assert.deepEqual(m.computeStats([]), { total: 0, done: 0, open: 0, percent: 0, archived: 0 })
+assert.deepEqual(m.computeStats([]),
+  { total: 0, done: 0, open: 0, percent: 0, archived: 0, inProgress: 0, blocked: 0 })
 const sample = [
-  { id: 'a', text: 'one', done: true, createdAt: 1 },
-  { id: 'b', text: 'two', done: false, createdAt: 2 },
-  { id: 'c', text: 'three', done: false, createdAt: 3 },
+  { id: 'a', title: 'one', status: 'done', priority: 'p2', createdAt: 1 },
+  { id: 'b', title: 'two', status: 'todo', priority: 'p2', createdAt: 2 },
+  { id: 'c', title: 'three', status: 'todo', priority: 'p2', createdAt: 3 },
 ]
-assert.deepEqual(m.computeStats(sample), { total: 3, done: 1, open: 2, percent: 33, archived: 0 })
+assert.deepEqual(m.computeStats(sample),
+  { total: 3, done: 1, open: 2, percent: 33, archived: 0, inProgress: 0, blocked: 0 })
+
+// The two states a boolean `done` could never express are counted separately,
+// because they are what a standup actually asks about.
+{
+  const board = [
+    { id: 'a', title: 'a', status: 'in-progress', priority: 'p2', createdAt: 1 },
+    { id: 'b', title: 'b', status: 'blocked', priority: 'p2', createdAt: 2 },
+    { id: 'c', title: 'c', status: 'backlog', priority: 'p2', createdAt: 3 },
+  ]
+  const st = m.computeStats(board)
+  assert.equal(st.inProgress, 1, 'in-progress work must be counted')
+  assert.equal(st.blocked, 1, 'blocked work must be counted')
+  assert.equal(st.open, 3, 'everything unfinished counts as open')
+  assert.equal(st.done, 0)
+}
 
 // nextOpen
-assert.equal(m.nextOpen(sample).id, 'b', 'nextOpen returns the first undone item')
-assert.equal(m.nextOpen([{ id: 'x', text: 'x', done: true, createdAt: 0 }]), undefined)
+assert.equal(m.nextOpen(sample).id, 'b', 'nextOpen returns the first unfinished item')
+assert.equal(m.nextOpen([{ id: 'x', title: 'x', status: 'done', priority: 'p2', createdAt: 0 }]), undefined)
 
 // normalizeText
 assert.equal(m.normalizeText('  hello   world  '), 'hello world')
@@ -278,18 +431,58 @@ assert.equal(m.normalizeText('x'.repeat(900)).length, 500, 'text is capped at 50
 
 // makeItem — deterministic with injected now/rand
 const made = m.makeItem('write tests', 1700000000000, () => 0.5)
-assert.equal(made.text, 'write tests')
-assert.equal(made.done, false)
+assert.equal(made.title, 'write tests')
+assert.equal(made.status, 'todo', 'a new task starts as todo, not backlog')
+assert.equal(made.priority, 'p2', 'a new task starts at the default priority')
+assert.equal(m.isDone(made), false)
 assert.equal(made.createdAt, 1700000000000)
 assert.ok(typeof made.id === 'string' && made.id.length > 1, 'item id must be a string')
+// Optional fields must be ABSENT rather than present-and-undefined, so "unset"
+// has one representation across the wire and the database.
+assert.ok(!('release' in made), 'a new task carries no release key')
+assert.ok(!('description' in made), 'a new task carries no description key')
+const seeded = m.makeItem('seeded', 1, () => 0.5, { status: 'backlog', priority: 'p0', release: ' v9 ' })
+assert.equal(seeded.status, 'backlog')
+assert.equal(seeded.priority, 'p0')
+assert.equal(seeded.release, 'v9', 'a seeded label is normalized')
 
-// toggleItem
+// toggleItem — still the checkbox's action, now expressed as a status change
 const toggled = m.toggleItem(sample, 'b', 555)
-assert.equal(toggled[1].done, true)
+assert.equal(toggled[1].status, 'done')
 assert.equal(toggled[1].completedAt, 555, 'completedAt is stamped on completion')
 assert.equal(m.toggleItem(toggled, 'b')[1].completedAt, undefined, 'completedAt clears on un-toggle')
-assert.equal(toggled[0].done, true, 'other items are untouched')
+assert.equal(m.toggleItem(toggled, 'b')[1].status, 'todo', 'un-checking returns a task to todo')
+assert.equal(toggled[0].status, 'done', 'other items are untouched')
 assert.notEqual(toggled, sample, 'toggleItem must not mutate its input')
+
+// setStatus — the single write path for workflow state
+{
+  const prog = m.setStatus(sample, 'b', 'in-progress')
+  assert.equal(prog[1].status, 'in-progress')
+  assert.equal(prog[1].completedAt, undefined, 'moving to in-progress must not stamp completion')
+  const fin = m.setStatus(prog, 'b', 'done', 900)
+  assert.equal(fin[1].completedAt, 900, 'reaching done stamps the completion time')
+  const back = m.setStatus(fin, 'b', 'blocked')
+  assert.ok(!('completedAt' in back[1]), 'leaving done must clear the completion stamp, not keep a lie')
+  assert.equal(m.setStatus(sample, 'b', 'todo'), sample, 'setting the status it already has is a no-op')
+  assert.equal(m.setStatus(sample, 'nope', 'done'), sample, 'unknown id is a no-op')
+}
+
+// setPriority / updateItem
+{
+  const p = m.setPriority(sample, 'b', 'p0')
+  assert.equal(p[1].priority, 'p0')
+  assert.equal(m.setPriority(p, 'b', 'p0'), p, 'setting the same priority is a no-op')
+
+  const u = m.updateItem(sample, 'b', { title: 'renamed', release: 'v1.0.0', description: 'why' })
+  assert.equal(u[1].title, 'renamed')
+  assert.equal(u[1].release, 'v1.0.0')
+  assert.equal(u[1].description, 'why')
+  // Clearing a label must remove the key entirely, so "no release" is one value.
+  const cleared = m.updateItem(u, 'b', { release: '  ', description: '' })
+  assert.ok(!('release' in cleared[1]), 'a blank release clears the key')
+  assert.ok(!('description' in cleared[1]), 'a blank description clears the key')
+}
 
 // moveItem
 assert.deepEqual(m.moveItem(sample, 'c', -1).map((i) => i.id), ['a', 'c', 'b'])
@@ -306,6 +499,61 @@ assert.deepEqual(m.filterItems(sample, 'open').map((i) => i.id), ['b', 'c'])
 assert.deepEqual(m.filterItems(sample, 'done').map((i) => i.id), ['a'])
 assert.deepEqual(m.filterItems(sample, 'bogus').map((i) => i.id), ['a', 'b', 'c'], 'unknown filter falls back to all')
 assert.deepEqual(m.filterItems([], 'open'), [])
+
+// Every status is directly selectable in the ring.
+{
+  const board = [
+    { id: 'a', title: 'a', status: 'in-progress', priority: 'p2', createdAt: 1 },
+    { id: 'b', title: 'b', status: 'blocked', priority: 'p2', createdAt: 2 },
+    { id: 'c', title: 'c', status: 'backlog', priority: 'p2', createdAt: 3 },
+  ]
+  assert.deepEqual(m.filterItems(board, 'in-progress').map((i) => i.id), ['a'])
+  assert.deepEqual(m.filterItems(board, 'blocked').map((i) => i.id), ['b'])
+  assert.deepEqual(m.filterItems(board, 'backlog').map((i) => i.id), ['c'])
+  assert.deepEqual(m.filterItems(board, 'open').map((i) => i.id), ['a', 'b', 'c'],
+    'open means everything unfinished, whatever stage it is at')
+}
+
+// --- grouping ---------------------------------------------------------------
+// Sections are ordered by MEANING, not alphabetically: a board that sorted
+// "In Progress" under "Backlog" would misrepresent the sprint.
+{
+  const roadmap = [
+    { id: 'a', title: 'a', status: 'done', priority: 'p1', release: 'v1.0.0', sprint: 'Sprint 1', createdAt: 1 },
+    { id: 'b', title: 'b', status: 'in-progress', priority: 'p0', release: 'v1.1.0', createdAt: 2 },
+    { id: 'c', title: 'c', status: 'todo', priority: 'p0', release: 'v1.0.0', createdAt: 3 },
+    { id: 'd', title: 'd', status: 'backlog', priority: 'p3', createdAt: 4 },
+  ]
+
+  assert.deepEqual(m.groupItems(roadmap, 'none').map((g) => g.items.length), [4],
+    'grouping by none yields one flat section')
+
+  const byStatus = m.groupItems(roadmap, 'status')
+  assert.deepEqual(byStatus.map((g) => g.key), ['backlog', 'todo', 'in-progress', 'done'],
+    'status groups follow board order, and empty ones are omitted')
+
+  const byPriority = m.groupItems(roadmap, 'priority')
+  assert.deepEqual(byPriority.map((g) => g.key), ['p0', 'p1', 'p3'], 'priority groups run most urgent first')
+  assert.equal(byPriority[0].items.length, 2)
+
+  // Releases sort newest-first, with Unassigned pinned last however it collates.
+  const byRelease = m.groupItems(roadmap, 'release')
+  assert.deepEqual(byRelease.map((g) => g.key), ['v1.1.0', 'v1.0.0', m.UNASSIGNED],
+    'releases sort newest first with Unassigned last')
+  assert.deepEqual(byRelease[1].items.map((i) => i.id), ['a', 'c'])
+
+  const bySprint = m.groupItems(roadmap, 'sprint')
+  assert.deepEqual(bySprint.map((g) => g.key), ['Sprint 1', m.UNASSIGNED])
+
+  // Release and sprint are independent axes: one task can sit in both.
+  assert.equal(roadmap[0].release, 'v1.0.0')
+  assert.equal(roadmap[0].sprint, 'Sprint 1')
+
+  // knownLabels drives the datalist suggestions that keep free text convergent.
+  assert.deepEqual(m.knownLabels(roadmap, 'release'), ['v1.1.0', 'v1.0.0'])
+  assert.deepEqual(m.knownLabels(roadmap, 'sprint'), ['Sprint 1'])
+  assert.deepEqual(m.knownLabels([], 'release'), [])
+}
 
 // --- archive ----------------------------------------------------------------
 // Archiving is the safe alternative to deleting: the item stays in the record
@@ -332,7 +580,8 @@ assert.deepEqual(m.filterItems([], 'open'), [])
   assert.deepEqual(m.activeItems(archived).map((i) => i.id), ['b', 'c'])
 
   // Stats treat the archive as out of scope, so tidying up cannot dent progress.
-  assert.deepEqual(m.computeStats(archived), { total: 2, done: 0, open: 2, percent: 0, archived: 1 })
+  assert.deepEqual(m.computeStats(archived),
+    { total: 2, done: 0, open: 2, percent: 0, archived: 1, inProgress: 0, blocked: 0 })
   assert.equal(m.computeStats(sample).archived, 0, 'an unarchived list reports zero archived')
 
   // nextOpen must never point at archived work.
@@ -352,7 +601,10 @@ assert.deepEqual(m.filterItems([], 'open'), [])
   assert.equal(bulk[0].archivedAt, 77)
   assert.deepEqual(m.filterItems(bulk, 'all').map((i) => i.id), ['b', 'c'])
   assert.equal(m.archiveCompleted(bulk, 88), bulk, 'archiving twice is a no-op')
-  assert.equal(m.archiveCompleted([{ id: 'o', text: 'open', done: false, createdAt: 1 }], 1).length, 1)
+  assert.equal(
+    m.archiveCompleted([{ id: 'o', title: 'open', status: 'todo', priority: 'p2', createdAt: 1 }], 1).length,
+    1,
+  )
 
   // Archiving preserves data, unlike clearCompleted which destroys it.
   assert.equal(bulk.length, 3, 'archiveCompleted must keep every item in the record')
@@ -365,9 +617,9 @@ assert.deepEqual(m.filterItems([], 'open'), [])
   // Archived items sort newest-first so the Archive view reads as a log.
   const log = m.archiveCompleted(
     [
-      { id: 'p', text: 'p', done: true, createdAt: 1, archivedAt: 10 },
-      { id: 'q', text: 'q', done: true, createdAt: 2, archivedAt: 30 },
-      { id: 'r', text: 'r', done: true, createdAt: 3, archivedAt: 20 },
+      { id: 'p', title: 'p', status: 'done', priority: 'p2', createdAt: 1, archivedAt: 10 },
+      { id: 'q', title: 'q', status: 'done', priority: 'p2', createdAt: 2, archivedAt: 30 },
+      { id: 'r', title: 'r', status: 'done', priority: 'p2', createdAt: 3, archivedAt: 20 },
     ],
     0,
   )
@@ -376,9 +628,9 @@ assert.deepEqual(m.filterItems([], 'open'), [])
   // Reordering happens in active-list space, so a hidden archived entry between
   // two visible ones cannot swallow a move.
   const mixed = [
-    { id: 'a', text: 'a', done: false, createdAt: 1 },
-    { id: 'h', text: 'hidden', done: true, createdAt: 2, archivedAt: 5 },
-    { id: 'b', text: 'b', done: false, createdAt: 3 },
+    { id: 'a', title: 'a', status: 'todo', priority: 'p2', createdAt: 1 },
+    { id: 'h', title: 'hidden', status: 'done', priority: 'p2', createdAt: 2, archivedAt: 5 },
+    { id: 'b', title: 'b', status: 'todo', priority: 'p2', createdAt: 3 },
   ]
   const moved = m.moveItem(mixed, 'b', -1)
   assert.deepEqual(m.activeItems(moved).map((i) => i.id), ['b', 'a'], 'move skips over archived rows')
@@ -392,12 +644,39 @@ assert.deepEqual(m.filterItems([], 'open'), [])
 // would silently not survive a reload.
 {
   const round = m.parseItems(JSON.stringify([
-    { id: 'a', text: 'hi', done: true, createdAt: 7, completedAt: 9, archivedAt: 11 },
+    { id: 'a', title: 'hi', status: 'done', priority: 'p2', createdAt: 7, completedAt: 9, archivedAt: 11 },
   ]))
   assert.equal(round[0].archivedAt, 11, 'archivedAt must survive parseItems')
-  const junk = m.parseItems('[{"id":"a","text":"hi","archivedAt":"soon"}]')
+  const junk = m.parseItems('[{"id":"a","title":"hi","archivedAt":"soon"}]')
   assert.equal(junk[0].archivedAt, undefined, 'a non-numeric archivedAt must not mark an item archived')
   assert.equal(m.isArchived(junk[0]), false)
+
+  // A list written by the OLD version must survive the upgrade rather than
+  // being discarded as malformed — this is the client-side half of the v1 path.
+  const v1 = m.parseItems(JSON.stringify([
+    { id: 'a', text: 'legacy open', done: false, createdAt: 1 },
+    { id: 'b', text: 'legacy done', done: true, createdAt: 2, completedAt: 3 },
+  ]))
+  assert.equal(v1.length, 2, 'v1 items must not be dropped by the parser')
+  assert.equal(v1[0].title, 'legacy open', 'v1 text is read as the title')
+  assert.equal(v1[0].status, 'todo', 'a v1 unfinished item becomes todo')
+  assert.equal(v1[1].status, 'done', 'a v1 done item stays done')
+  assert.equal(v1[1].priority, 'p2', 'a v1 item gets the default priority')
+
+  // Roadmap fields must survive the parse boundary or they would vanish on reload.
+  const rich = m.parseItems(JSON.stringify([
+    { id: 'r', title: 't', status: 'blocked', priority: 'p0', release: 'v2.0.0', sprint: 'Sprint 9',
+      description: 'details', createdAt: 1 },
+  ]))
+  assert.equal(rich[0].status, 'blocked')
+  assert.equal(rich[0].priority, 'p0')
+  assert.equal(rich[0].release, 'v2.0.0')
+  assert.equal(rich[0].sprint, 'Sprint 9')
+  assert.equal(rich[0].description, 'details')
+  // Junk enums decay to the defaults rather than reaching the UI.
+  const bad = m.parseItems('[{"id":"a","title":"t","status":"wat","priority":"p9"}]')
+  assert.equal(bad[0].status, 'todo', 'an unknown status decays to the default')
+  assert.equal(bad[0].priority, 'p2', 'an unknown priority decays to the default')
 }
 
 // parseItems — defensive against junk
@@ -405,13 +684,132 @@ assert.deepEqual(m.parseItems(null), [])
 assert.deepEqual(m.parseItems('not json'), [])
 assert.deepEqual(m.parseItems('{"a":1}'), [], 'non-array JSON yields an empty list')
 assert.deepEqual(m.parseItems('[1,null,"x",{"id":"a"}]'), [], 'malformed entries are dropped')
-const parsed = m.parseItems(JSON.stringify([{ id: 'a', text: 'hi', done: true, createdAt: 7, completedAt: 9 }]))
+const parsed = m.parseItems(JSON.stringify([
+  { id: 'a', title: 'hi', status: 'done', priority: 'p2', createdAt: 7, completedAt: 9 },
+]))
 // coerceItems normalizes the optional stamps to an explicit undefined, exactly
 // as it already did for completedAt.
 assert.deepEqual(parsed, [
-  { id: 'a', text: 'hi', done: true, createdAt: 7, completedAt: 9, archivedAt: undefined },
+  {
+    id: 'a', title: 'hi', status: 'done', priority: 'p2', createdAt: 7,
+    completedAt: 9, archivedAt: undefined, description: undefined,
+    release: undefined, sprint: undefined, dueDate: undefined,
+  },
 ])
-assert.equal(m.parseItems('[{"id":"a","text":"hi"}]')[0].done, false, 'missing done defaults to false')
+assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a missing status is not done')
+
+
+// --- due dates --------------------------------------------------------------
+// Dates are calendar days (YYYY-MM-DD), not instants: an epoch would bind the
+// due date to a timezone and let the same task read as two different days.
+{
+  assert.equal(m.today(new Date(2025, 2, 14)), '2025-03-14', 'today() uses the viewer local day')
+
+  const due = (d, status) => ({ id: 'x', title: 't', status: status ?? 'todo', priority: 'p2', createdAt: 1, dueDate: d })
+  assert.equal(m.isOverdue(due('2025-03-13'), '2025-03-14'), true, 'a past due date is overdue')
+  assert.equal(m.isOverdue(due('2025-03-14'), '2025-03-14'), false, 'due today is not yet overdue')
+  assert.equal(m.isOverdue(due('2025-03-15'), '2025-03-14'), false, 'a future due date is not overdue')
+  // Shipping late does not leave a task pending.
+  assert.equal(m.isOverdue(due('2025-03-13', 'done'), '2025-03-14'), false, 'a finished task is never overdue')
+  assert.equal(m.isOverdue({ id: 'y', title: 't', status: 'todo', priority: 'p2', createdAt: 1 }, '2025-03-14'), false,
+    'a task with no due date is never overdue')
+  assert.equal(m.isDueToday(due('2025-03-14'), '2025-03-14'), true)
+  assert.equal(m.isDueToday(due('2025-03-15'), '2025-03-14'), false)
+
+  assert.equal(m.fmtDue('2025-03-14', '2025-03-14'), 'Today')
+  assert.equal(m.fmtDue('2025-03-15', '2025-03-14'), 'Tomorrow')
+  assert.equal(m.fmtDue('2025-03-20', '2025-03-14'), 'Mar 20')
+  // Month rollover must not produce 'Tomorrow' for the wrong day.
+  assert.equal(m.fmtDue('2025-04-01', '2025-03-31'), 'Tomorrow', 'tomorrow works across a month boundary')
+
+  // updateItem accepts and clears the date, and rejects impossible ones.
+  const list = [{ id: 'a', title: 'a', status: 'todo', priority: 'p2', createdAt: 1 }]
+  const set = m.updateItem(list, 'a', { dueDate: '2025-03-14' })
+  assert.equal(set[0].dueDate, '2025-03-14')
+  assert.ok(!('dueDate' in m.updateItem(set, 'a', { dueDate: '' })[0]), 'a blank due date clears the key')
+  // Feb 31 would be silently rolled to Mar 3 by Date; it must be refused.
+  assert.ok(!('dueDate' in m.updateItem(list, 'a', { dueDate: '2025-02-31' })[0]),
+    'an impossible calendar date must be rejected, not rolled forward')
+  assert.ok(!('dueDate' in m.updateItem(list, 'a', { dueDate: '14/03/2025' })[0]), 'a non-ISO date is rejected')
+
+  // And it must survive the parse boundary.
+  const parsedDue = m.parseItems('[{"id":"a","title":"t","dueDate":"2025-03-14"}]')
+  assert.equal(parsedDue[0].dueDate, '2025-03-14', 'dueDate must survive parseItems')
+  const badDue = m.parseItems('[{"id":"a","title":"t","dueDate":"nope"}]')
+  assert.equal(badDue[0].dueDate, undefined, 'a malformed dueDate must not reach the UI')
+}
+
+// --- the task modal ---------------------------------------------------------
+// It portals to document.body because the list is an overflow-y: auto scroll
+// container: rendered in place it would be clipped by its own scroller.
+{
+  assert.equal(typeof m.TodoModal, 'function', 'the client must export TodoModal')
+  const bundle = readFileSync(join(root, 'lib/client.js'), 'utf8')
+  assert.ok(bundle.includes('createPortal'), 'the modal must portal out of the scroll container')
+  assert.ok(bundle.includes('require("react-dom")'),
+    'react-dom must stay EXTERNAL — bundling a copy would fight the shell React')
+  assert.ok(bundle.includes('aria-modal'), 'the dialog must be marked aria-modal for assistive tech')
+  assert.ok(bundle.includes('dshtd-modal-backdrop'), 'the modal backdrop class must ship')
+  // The desktop drag strip sits at 2147483644 and swallows clicks; the panel
+  // must stay below it and clear the 36px band with padding instead.
+  assert.ok(bundle.includes('2147483100'), 'the modal must sit below the desktop drag strip')
+}
+
+// --- dropdown dark mode -----------------------------------------------------
+// A select's popup is painted by the OS OUTSIDE the page, so no descendant CSS
+// reaches it: it obeys color-scheme alone. Without this the popup renders light
+// while the option text stays near-white — white-on-white and unreadable.
+{
+  const bundle = readFileSync(join(root, 'lib/client.js'), 'utf8')
+  assert.ok(/color-scheme: ?dark/.test(bundle),
+    'the tab must declare color-scheme: dark so native popups are readable')
+  // Scoped to the query: applied unconditionally the same declarations paint a
+  // DARK popup under a LIGHT theme, which is this bug with the polarity flipped.
+  assert.ok(/prefers-color-scheme: ?dark/.test(bundle),
+    'color-scheme must be scoped to the dark media query, never hardcoded')
+  // The modal portals to document.body, so it inherits nothing from .dshtd.
+  assert.ok(bundle.includes('.dshtd-modal') && /\.dshtd-modal[^{]*\{[^}]*color-scheme/.test(bundle.replace(/\s+/g, ' ')),
+    'the portalled modal must carry color-scheme in its own right')
+}
+
+
+// --- destructive actions are guarded ----------------------------------------
+// Delete is the only irreversible action in the tab. Every path to it must go
+// through the confirm dialog — a call site that filters the list inline would
+// silently bypass the guard, which is exactly the regression to catch.
+{
+  const bundle = readFileSync(join(root, 'lib/client.js'), 'utf8')
+  assert.equal(typeof m.ConfirmDialog, 'function', 'the client must export ConfirmDialog')
+  assert.ok(bundle.includes('dshtd-confirm'), 'the confirm dialog styles must ship')
+  // alertdialog, not dialog: this interrupts to demand a decision.
+  assert.ok(bundle.includes('alertdialog'), 'a destructive prompt must be role=alertdialog')
+  // window.confirm was the old guard for the bulk action; it must be gone, or
+  // two different confirmation UIs would ship side by side.
+  assert.ok(!bundle.includes('window.confirm'), 'window.confirm must be replaced by the in-app dialog')
+  assert.ok(!/function confirmDelete/.test(bundle), 'the old confirmDelete helper must be removed')
+  // The dialog must name what it is about to destroy — a prompt that does not
+  // quote the subject is one people learn to click through.
+  assert.ok(bundle.includes('dshtd-confirm-subject'), 'the dialog must quote the subject')
+  assert.ok(bundle.includes('Delete task') && bundle.includes('Delete archived tasks'),
+    'both the single and bulk delete prompts must ship')
+}
+
+// Every delete path routes through the confirm dialog. Asserted on the SOURCE
+// rather than the minified bundle: minification renames the callback parameter,
+// so a bundle-level regex silently matches nothing and passes vacuously.
+{
+  const source = readFileSync(join(root, 'src/client.tsx'), 'utf8')
+  // A task may be removed in exactly ONE place, and that place must be a
+  // confirm handler. Any other occurrence is a button deleting behind the guard.
+  const removals = source.match(/filter\(\(i\) => i\.id !== item\.id\)/g) ?? []
+  assert.equal(removals.length, 1, 'a task must be removed in exactly one place')
+  const guarded = /onConfirm: \(\) => store\.update\(\(list\) => list\.filter\(\(i\) => i\.id !== item\.id\)\)/
+  assert.ok(guarded.test(source), 'the single removal must sit inside onConfirm')
+  // Both row variants (active and archived) delegate rather than mutate.
+  const delegated = source.match(/onClick=\{onDelete\}/g) ?? []
+  assert.equal(delegated.length, 2, 'both the active and archived delete buttons must call onDelete')
+  assert.ok(/askDelete/.test(source), 'the shared delete prompt builder must exist')
+}
 
 // workspaceIdForSession — the per-workspace routing rule
 const wsList = [
@@ -435,7 +833,7 @@ assert.equal(m.fmtAge(1, 1 + 2 * 86400000), '2d')
 storage.set('dsh-todo:items', JSON.stringify([{ id: 'old', text: 'legacy', done: false, createdAt: 5 }]))
 const firstTake = m.takeLegacyItems()
 assert.equal(firstTake.length, 1, 'legacy todos must be migrated on first read')
-assert.equal(firstTake[0].text, 'legacy')
+assert.equal(firstTake[0].title, 'legacy', 'the legacy text becomes the title')
 assert.deepEqual(m.takeLegacyItems(), [], 'legacy todos must not be imported twice')
 assert.ok(storage.get('dsh-todo:items'), 'the legacy key must be preserved, not destroyed')
 
@@ -463,11 +861,14 @@ assert.ok(storage.get('dsh-todo:items'), 'the legacy key must be preserved, not 
   assert.equal(store.getSnapshot().saving, false, 'saving must clear once committed')
 
   // Simulate another tab winning the race, then confirm we adopt its list.
-  stored = { items: [{ id: 'other', text: 'from another tab', done: false, createdAt: 9 }], revision: 99, updatedAt: 2 }
+  stored = {
+    items: [{ id: 'other', title: 'from another tab', status: 'todo', priority: 'p2', createdAt: 9 }],
+    revision: 99, updatedAt: 2,
+  }
   store.update((items) => [...items, m.makeItem('doomed')])
   await new Promise((r) => setTimeout(r, 10))
   assert.equal(store.getSnapshot().items.length, 1, 'a conflict must adopt the authoritative list')
-  assert.equal(store.getSnapshot().items[0].text, 'from another tab')
+  assert.equal(store.getSnapshot().items[0].title, 'from another tab')
 }
 
 // --- client store: a host failure surfaces instead of pretending to save ----
