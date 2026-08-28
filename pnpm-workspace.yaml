@@ -27,3 +27,12 @@ autoInstallPeers: false
 # esbuild never fetches its platform binary.
 allowBuilds:
   esbuild: true
+
+# GitHub-hosted runners apply a 24h minimumReleaseAge by default. That is the
+# right default for third-party deps, but it also blocks THIS workspace from
+# installing a @dennisrongo/skills version we published a few hours ago — which
+# is exactly what `dsh-skills` does, and exactly what the publish workflow has
+# to do before it can ship the plugin. Exclude the first-party scope so our
+# own packages are trusted the moment they land on npm.
+minimumReleaseAgeExclude:
+  - "@dennisrongo/*"

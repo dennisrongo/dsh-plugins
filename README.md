@@ -21,7 +21,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | [`dsh-weather`](plugins/dsh-weather) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-weather) | weather bar in the shell overlay | client only | — |
 | [`dsh-headless-plus`](plugins/dsh-headless-plus) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
 | [`dsh-superpowers`](plugins/dsh-superpowers) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
-| [`dsh-skills`](plugins/dsh-skills) | *unpublished* | the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library as an installable skill catalog | host | — |
+| [`dsh-skills`](plugins/dsh-skills) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-skills) | the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library as an installable skill catalog | host | — |
 | [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox | client only | — |
 
 ---
@@ -171,9 +171,8 @@ Every package carries an `AGENTS.md` with its endpoints, mount row, dev loop and
 
 ## Install a plugin
 
-Six of the seven are on npm (`dsh-skills` is clone-only for now), and each declares
-`dsh.bundle` — so one command installs **and** mounts it. `dsh plugin` forwards to pnpm
-inside the profile directory:
+All seven are on npm, and each declares `dsh.bundle` — so one command installs **and**
+mounts it. `dsh plugin` forwards to pnpm inside the profile directory:
 
 > **Profile names carry templates.** `dsh plugin --profile <name> add ...` scaffolds a new
 > profile if `<name>` doesn't exist — but only `web` and `headless` get a full template.
@@ -188,10 +187,12 @@ dsh plugin --profile web add @dennisrongo/dsh-todo
 dsh plugin --profile web add @dennisrongo/dsh-git
 dsh plugin --profile web add @dennisrongo/dsh-weather
 dsh plugin --profile web add @dennisrongo/dsh-mission-control
+dsh plugin --profile web add @dennisrongo/dsh-skills
 
 # CLI-app and prompt plugins, in a headless-style profile
 dsh plugin --profile headless add @dennisrongo/dsh-headless-plus
 dsh plugin --profile headless add @dennisrongo/dsh-superpowers
+dsh plugin --profile headless add @dennisrongo/dsh-skills
 ```
 
 Several at once is fine. Restart the profile and it's live — there is no

@@ -1,20 +1,18 @@
 # dsh-skills
 
+[![npm](https://img.shields.io/npm/v/@dennisrongo/dsh-skills)](https://www.npmjs.com/package/@dennisrongo/dsh-skills)
+
+**npm:** [`@dennisrongo/dsh-skills`](https://www.npmjs.com/package/@dennisrongo/dsh-skills) ·
+**source:** [dennisrongo/dsh-plugins](https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-skills)
+
 Serves the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library
 to dsh as a skill provider, so the whole catalog installs and updates as **one npm
 dependency**.
 
-> **Not yet published to npm.** `@dennisrongo/dsh-skills` currently 404s on the registry,
-> so install it from git or a clone — the npm command below is what will work once it is
-> released. The catalog it serves,
-> [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills), **is**
-> published and comes down as this plugin's dependency either way.
+> Mind the scope. The **unscoped** `dsh-skills` on npm is an unrelated plugin by another
+> author, so `add dsh-skills` fetches theirs, not this one.
 
 ```bash
-# from git (works today) — quote it: # and & are shell metacharacters
-dsh plugin --profile <name> add "github:dennisrongo/dsh-plugins#path:/plugins/dsh-skills"
-
-# from npm (once published)
 dsh plugin --profile <name> add @dennisrongo/dsh-skills
 ```
 

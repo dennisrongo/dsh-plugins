@@ -31,9 +31,7 @@ scripts/                 verify.mjs, anchor.mjs, link-superpowers-skills.mjs (po
 
 Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package.
 
-All seven are scoped `@dennisrongo/`, six of them published — `dsh-skills` is **not on npm
-yet** (it 404s), so document it as a clone or git install, never `add @dennisrongo/dsh-skills`.
-The folder name is not the package name: a
+All seven are scoped `@dennisrongo/` and published. The folder name is not the package name: a
 `cordis.patch.yml` row takes the **package** name (`@dennisrongo/dsh-superpowers`), while the
 folder stays `plugins/dsh-superpowers`. Keep the scope: the bare `dsh-superpowers` on npm is
 an unrelated plugin by another author, and unscoped generic names in this space get taken.
