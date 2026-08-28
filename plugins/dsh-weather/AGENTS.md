@@ -28,7 +28,11 @@ Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (esbuild dual build → `lib/index.js` + `lib/client.js`) and `pnpm test`. The test reads `lib/client.js`, so **build before testing** or it passes against a stale bundle.
+`pnpm install` at the monorepo root, then `pnpm run build` here (esbuild dual build → `lib/index.js` + `lib/client.js`) and `pnpm test`.
+
+**`pnpm test` rebuilds first** (`node build/build.mjs && node test/smoke.mjs`), matching `dsh-git`. The suite asserts marker strings against the **built** `lib/client.js`, so without that prefix it happily passes against a stale bundle — verified: deleting `dshwx-sep-where` from `src/` and not rebuilding left the suite green. That is the defect class that rotted `dsh-mission-control`'s markers unnoticed, and the build prefix makes it structurally impossible rather than a thing to remember. Running `test/smoke.mjs` directly still skips the build, so prefer `pnpm test`.
+
+Note the build invoked by `test` is `build.mjs` directly, NOT `pnpm run build` — so the `postbuild` deploy hook does **not** fire. That is deliberate: testing should not mutate a profile.
 
 Profiles materialise `file:` deps as copies **frozen at install time**, so a rebuild does not reach them. `scripts/dev-link.ps1` at the repo root replaces those copies with junctions — this plugin is client-only, so edits then deploy on **browser refresh** with no profile restart. **Re-run that script after any `pnpm install`**, including the one DSH Desktop runs during profile repair, because pnpm replaces junctions with copies.
 
@@ -50,3 +54,4 @@ Then load the UI and confirm the bar renders: `dshwx-*` nodes present, location 
 - The type-only `@deepseek-ai/dsh-client-runtime/client` import resolves through a `paths` mapping to `./node_modules/@deepseek-ai/...`, which only exists once `scripts/dev-link.ps1` has run. If `pnpm run typecheck` reports `TS2307: Cannot find module '@deepseek-ai/dsh-client-runtime/client'`, run that script — don't "fix" it with a local stub.
 - A11y is deliberate (`aria-label` on the unit toggle, `aria-live="polite"`, styled `:focus-visible`, `prefers-reduced-motion` disabling the spinner). Preserve it, and keep clickable controls real `<button>`s.
 - Location resolution is `localStorage["dsh-weather:location"]` → a geo provider chain → hard fallback New York. Network paths must degrade to `status: 'error'`, never throw into the shell.
+- The bar pins to `top: 8px` — inside DSH Desktop's 36px Windows window-drag strip, which the compositor resolves before hit-testing. **Opting out with no-drag does NOT work**: the preload already grants every `button` under `body.dsh-desktop-windows-titlebar-layout` a `no-drag !important`, and the bar was still unclickable — a covered element's no-drag doesn't punch a hole in an overlapping drag element (same failure dsh-mission-control hit on its stage bar). The working fix is positional: `body.dsh-desktop-windows-titlebar-layout .dshwx { top: 44px }` drops the pill clear of the strip (that body class exists only in the Windows desktop build, so the browser keeps `top: 8px`). The pill still carries `-webkit-app-region: no-drag` + `data-dsh-no-drag` as belt-and-braces; the smoke test pins all the markers.

@@ -268,6 +268,23 @@ const BAR_STYLES = `
   cursor: default;
   user-select: none;
   white-space: nowrap;
+  /* DSH Desktop on Windows overlays a 36px window-drag strip at the top of the
+     viewport (#dsh-desktop-windows-drag-region: -webkit-app-region: drag,
+     z-index 2147483644, pointer-events: none) that the compositor resolves
+     BEFORE hit-testing. no-drag here is belt-and-braces only — the desktop
+     preload already grants every button no-drag !important and the bar was
+     still unclickable, so a covered element's no-drag does not punch a hole
+     in an overlapping drag element (the same failure dsh-mission-control
+     documented for its stage bar). The real fix is the layout rule below,
+     which drops the bar clear of the strip. In a plain browser all of this
+     is inert. */
+  -webkit-app-region: no-drag;
+}
+body.dsh-desktop-windows-titlebar-layout .dshwx {
+  /* Clear the desktop drag strip: 36px strip + the usual 8px gap. The body
+     class is added by DSH Desktop's preload on Windows only, so the browser
+     and non-Windows builds keep top: 8px. */
+  top: 44px;
 }
 body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 24px rgba(0,0,0,0.5); }
 .dshwx[hidden] { display: none; }
@@ -417,7 +434,7 @@ function WeatherBar(): React.JSX.Element {
       <div className="dshwx" aria-live="polite">
         <span className="dshwx-icon">⚠️</span>
         <span className="dshwx-error" title={state.error}>Weather unavailable</span>
-        <button className={`dshwx-refresh${busy ? ' busy' : ''}`} title="Retry" onClick={reload}>⟳</button>
+        <button className={`dshwx-refresh${busy ? ' busy' : ''}`} data-dsh-no-drag="" title="Retry" onClick={reload}>⟳</button>
       </div>
     )
   }
@@ -431,6 +448,7 @@ function WeatherBar(): React.JSX.Element {
       <button
         type="button"
         className="dshwx-temp"
+        data-dsh-no-drag=""
         onClick={toggleUnit}
         title={`Switch to °${other}`}
         aria-label={`Temperature ${fmtTemp(state.now.temperatureC, unit)}. Switch to degrees ${other === 'F' ? 'Fahrenheit' : 'Celsius'}.`}
@@ -460,7 +478,7 @@ function WeatherBar(): React.JSX.Element {
       ) : null}
       <span className="dshwx-sep dshwx-sep-meta" />
       <span className="dshwx-meta">💧{state.now.humidity}% 🌬️{Math.round(state.now.windKph)}km/h</span>
-      <button className={`dshwx-refresh${busy ? ' busy' : ''}`} title="Refresh weather" onClick={reload}>⟳</button>
+      <button className={`dshwx-refresh${busy ? ' busy' : ''}`} data-dsh-no-drag="" title="Refresh weather" onClick={reload}>⟳</button>
     </div>
   )
 }

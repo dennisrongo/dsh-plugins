@@ -26,6 +26,18 @@ assert.ok(client.includes('Clear'), 'weather-code table missing')
 // Positioning: the bar is pinned to the TOP of the viewport (moved off the
 // bottom, where it collided with the chat prompt).
 assert.ok(client.includes('top: 8px'), 'bar should be pinned to the top')
+
+// DSH Desktop on Windows adds a full-width 36px window-drag region
+// (-webkit-app-region: drag, z-index 2147483644) that resolves before
+// hit-testing and swallows clicks on the bar, which pins to top: 8px.
+// The only fix is opting the bar out of the drag region.
+assert.ok(client.includes('app-region: no-drag'), 'bar must opt out of the desktop window-drag region')
+// no-drag alone does not punch a hole in the overlapping drag strip (verified
+// against the desktop preload: every button already gets no-drag !important
+// and the bar was still unclickable) — the bar must clear the 36px strip.
+assert.ok(client.includes('dsh-desktop-windows-titlebar-layout .dshwx'), 'bar must drop below the desktop drag strip')
+assert.ok(client.includes('top: 44px'), 'desktop drag-strip offset missing')
+assert.ok(client.includes('data-dsh-no-drag'), 'buttons must carry the preload no-drag hook')
 assert.ok(!client.includes('bottom: 8px'), 'stale bottom anchor still in bundle')
 
 // Responsive tiers. Each breakpoint sheds a group of detail; the separator
