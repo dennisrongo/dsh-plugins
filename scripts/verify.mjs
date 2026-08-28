@@ -117,9 +117,20 @@ for (const name of packages) {
   }
 
   // 3. declared runtime deps must resolve from this package.
+  //    A data-only package (no `main`, no `exports`) has no importable entry, so a
+  //    bare specifier is unresolvable by design — @dennisrongo/skills ships skill
+  //    bundles, not modules. Fall back to its manifest subpath, which is what a
+  //    consumer of such a package actually resolves.
   for (const dep of Object.keys(manifest.dependencies ?? {})) {
-    try { req.resolve(dep); ok(`dependency ${dep} resolves`) }
-    catch (e) { fail(`dependency ${dep} does not resolve (${e.code}) — run \`pnpm install\` at the repo root`) }
+    try { req.resolve(dep); ok(`dependency ${dep} resolves`); continue }
+    catch (e) {
+      try {
+        req.resolve(`${dep}/package.json`)
+        ok(`dependency ${dep} resolves (data-only package, via package.json)`)
+      } catch {
+        fail(`dependency ${dep} does not resolve (${e.code}) — run \`pnpm install\` at the repo root`)
+      }
+    }
   }
 
   // 4. entry points. Host halves must import under Node. Client halves must NOT
