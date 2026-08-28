@@ -11,7 +11,19 @@ import { useSyncExternalStore } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { MC_REMOTE } from './remote.ts'
 
-/** Required services (cordis fiber inject — service access is granted per-fiber). */
+/**
+ * Required services (cordis fiber inject — service access is granted per-fiber).
+ *
+ * `remote` is the Typert client bridge, used here only for `$mount`. It MUST be
+ * listed: cordis THROWS on an undeclared service get rather than returning
+ * undefined, so the defensive `!ctx.remote` guard in apply() is itself the throw
+ * site when this is missing — which fails the whole loader entry and drops the
+ * app into startup recovery.
+ *
+ * The mounted namespace `remote.dshMissionControl` is deliberately NOT listed:
+ * this plugin mounts that contract itself, so requiring it up front would park
+ * apply() forever waiting on a service only apply() can create.
+ */
 export const inject = ['slots', 'remote', 'sessions', 'workspaces', 'modelDirectories']
 
 // The loader injects `require` into the factory; not declared in the DOM lib.

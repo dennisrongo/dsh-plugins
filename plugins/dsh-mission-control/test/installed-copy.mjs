@@ -210,7 +210,14 @@ async function checkInstall({ dir: installed, name: profileName }) {
     return m
   })
   assert.equal(typeof exports_.apply, 'function', 'exports apply()')
-  assert.deepEqual(exports_.inject, ['slots', 'sessions', 'workspaces', 'modelDirectories'], 'inject list')
+  // `remote` is load-bearing: cordis throws on an undeclared service get, so
+  // omitting it makes apply()'s own `!ctx.remote` guard fail the loader entry
+  // and drop DSH Desktop into startup recovery. Regression guard for that.
+  assert.deepEqual(
+    exports_.inject,
+    ['slots', 'remote', 'sessions', 'workspaces', 'modelDirectories'],
+    'inject list',
+  )
   assert.equal(typeof exports_.shouldOpenHistory, 'function', 'exports shouldOpenHistory')
   assert.equal(exports_.shouldOpenHistory('cold'), true, 'cold windows are opened by the tile')
   assert.equal(exports_.shouldOpenHistory('open'), false, 'open windows are not refetched')

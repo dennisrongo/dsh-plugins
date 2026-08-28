@@ -6,6 +6,9 @@
  *   3. totalBurn() aggregates stats
  *   4. client bundle registers via window.__ModuleLoader__.load
  *   5. apply() registers into shell.overlay through a stub ctx
+ *   6. `inject` declares exactly the services the plugin reads — enforced by
+ *      running apply() and a full render through a proxy that gates service
+ *      access the way cordis does (see section 4/5)
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -61,6 +64,20 @@ assert.equal(typeof exports.packPomodoroEnvelope, 'function', 'exports packPomod
 assert.equal(typeof exports.parsePomodoroEnvelope, 'function', 'exports parsePomodoroEnvelope')
 const clientSrc = readFileSync(join(root, 'lib/client.js'), 'utf8')
 assert.ok(clientSrc.includes('dshMissionControl'), 'client mounts the host state remote')
+
+// The inject list is load-bearing: cordis THROWS on a get of a service the
+// plugin did not declare, so an omission is not a soft degradation — it fails
+// the loader entry and drops DSH Desktop into startup recovery. `remote`
+// regressed exactly this way once. Section 4/5 enforces the real invariant
+// (declared set == actually-used set) by driving apply() AND a full render
+// through a proxy that reproduces cordis's gating; this is just the shape.
+assert.ok(Array.isArray(exports.inject), 'exports an inject list')
+// The namespace this plugin mounts ITSELF must stay out of the list, or apply()
+// parks forever waiting on a service only apply() can create.
+assert.ok(
+  !exports.inject.includes('remote.dshMissionControl'),
+  'inject omits the self-mounted remote namespace',
+)
 
 // buildFleet: subagents come from the durable per-parent catalogs, NOT from
 // ids/byId. The host list carries root sessions only; byId gains a subagent row
@@ -1139,29 +1156,97 @@ assert.equal(exports.fmtMs(90_000), '1.5m')
 }
 
 // --- 4/5) apply() against a stub ctx registering into shell.overlay
-let slotRegistered = null
-const stubCtx = {
-  effect(fn, label) {
-    fn()
-    return () => {}
-  },
-  // The host state bridge: $mount resolves, but the namespace never becomes
-  // injectable — the panel must stay on localStorage without hanging.
-  remote: { $mount: async () => async () => {} },
-  inject(services, callback) {
-    return { dispose() {} }
-  },
-  slots: {
-    inject(key, callback) {
-      // test double: declaration exists immediately, so run the effect now
-      return callback()
+//
+// The stub is wrapped in a Proxy that reproduces cordis's REAL gating rule:
+// reading a service the plugin did not declare in `inject` THROWS rather than
+// returning undefined. A permissive plain-object stub is what let the missing
+// `remote` declaration pass this suite while failing the desktop loader — the
+// test handed over any service asked for, the harness does not. Anything the
+// plugin touches must therefore appear in `exports.inject` or this blows up,
+// which makes the guard cover services added in the future, not just today's.
+
+/** Context members cordis always exposes; these are framework, not services. */
+const CTX_FRAMEWORK = new Set(['effect', 'inject'])
+
+/**
+ * Gate `target` the way a cordis fiber gates a context, recording every
+ * service actually reached.
+ * @param target - the stub context object.
+ * @param declared - the plugin's own `inject` list.
+ * @param touched - set that collects each service name read.
+ * @returns a proxy throwing on any undeclared service get.
+ */
+function guardCtx(target, declared, touched = new Set()) {
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      // Symbols and framework members are never service lookups.
+      if (typeof prop === 'symbol' || CTX_FRAMEWORK.has(prop)) {
+        return Reflect.get(obj, prop, receiver)
+      }
+      touched.add(prop)
+      if (!declared.includes(prop)) {
+        // Same shape as the harness error, so a failure here reads like the
+        // real one: `cannot get property "remote" without inject`.
+        throw new Error(`cannot get property "${prop}" without inject`)
+      }
+      return Reflect.get(obj, prop, receiver)
     },
-    register(spec, component) {
-      slotRegistered = { spec, component }
-    },
-  },
+  })
 }
-exports.apply(stubCtx)
+
+/** Minimal ObservableSnapshot<T> double — what `useObservable` binds to. */
+const stubObservable = (value) => ({ getSnapshot: () => value, subscribe: () => () => {} })
+
+/**
+ * Build a fresh stub context plus a handle on whatever slot it registers.
+ * Every service the panel consumes is present, so a render exercises the real
+ * read paths rather than dying on a missing double.
+ * @returns the stub and a getter for the registered slot entry.
+ */
+function makeStubCtx() {
+  let slot = null
+  const ctx = {
+    effect(fn, label) {
+      fn()
+      return () => {}
+    },
+    // The host state bridge: $mount resolves, but the namespace never becomes
+    // injectable — the panel must stay on localStorage without hanging.
+    remote: { $mount: async () => async () => {} },
+    inject(services, callback) {
+      return { dispose() {} }
+    },
+    slots: {
+      inject(key, callback) {
+        // test double: declaration exists immediately, so run the effect now
+        return callback()
+      },
+      register(spec, component) {
+        slot = { spec, component }
+      },
+    },
+    sessions: {
+      list: stubObservable({ ids: [], byId: {}, current: undefined, subagentsByParent: {} }),
+      scope: stubObservable({}),
+      binding: stubObservable({}),
+      sessionOf: () => undefined,
+      subagentAddress: () => undefined,
+      open: () => {},
+      openSubagent: () => {},
+      fork: () => {},
+      refreshSubagents: () => {},
+      setSubagentCatalogOpen: () => {},
+    },
+    workspaces: { list: stubObservable({ items: [] }) },
+    modelDirectories: { list: stubObservable({ items: [] }) },
+  }
+  return { ctx, getSlot: () => slot }
+}
+
+const { ctx: stubCtx, getSlot } = makeStubCtx()
+const guardedCtx = guardCtx(stubCtx, exports.inject)
+exports.apply(guardedCtx)
+const slotRegistered = getSlot()
 assert.ok(slotRegistered, 'apply() registered a slot entry')
 assert.equal(slotRegistered.spec.name, 'shell.overlay', 'registered into shell.overlay')
 assert.equal(typeof slotRegistered.component, 'function', 'component is renderable')
@@ -1170,6 +1255,55 @@ assert.equal(typeof slotRegistered.component, 'function', 'component is renderab
 const React = require('react')
 const element = slotRegistered.component()
 assert.equal(element.type.name, 'MissionControl', 'renders MissionControl')
+
+// --- REGRESSION (startup): the declared inject list must EQUAL the set of
+// services the plugin actually reads.
+//
+// apply() alone only reaches `slots` and `remote`; the panel reads `sessions`,
+// `workspaces` and `modelDirectories` from its render path. So drive a real
+// server render through the same cordis-faithful proxy and compare the two
+// sets. Under-declaring throws inside the proxy (the bug that broke desktop
+// startup); over-declaring leaves a stale name the equality check catches.
+//
+// Scanning the source for `ctx.<name>` was rejected as the mechanism: it reads
+// commented-out mentions as real uses and misses cast accesses like
+// `(ctx as unknown as {...}).modelDirectories`. Executing the code cannot lie.
+{
+  // A second instance is needed because the plugin calls the 2-argument
+  // useSyncExternalStore, which React's server renderer rejects outright. The
+  // test owns module resolution, so hand this instance a uSES that reads the
+  // snapshot directly. Isolated from `exports` so no other assertion shifts.
+  const ssrRegistered = []
+  const priorWindow = globalThis.window
+  globalThis.window = { __ModuleLoader__: { load: (e) => ssrRegistered.push(e) } }
+  await import(`${pathToFileURL(join(root, 'lib/client.js')).href}?ssr=1`)
+  globalThis.window = priorWindow
+  assert.equal(ssrRegistered.length, 1, 'ssr instance registers exactly one module')
+
+  const ssrReact = Object.create(require('react'))
+  ssrReact.useSyncExternalStore = (_subscribe, getSnapshot) => getSnapshot()
+  const ssrTable = { react: ssrReact, 'react/jsx-runtime': require('react/jsx-runtime') }
+  const ssrExports = ssrRegistered[0].factory((id) => {
+    if (!(id in ssrTable)) throw new Error(`unexpected require: ${id}`)
+    return ssrTable[id]
+  })
+
+  const touched = new Set()
+  const { ctx: ssrCtx, getSlot: getSsrSlot } = makeStubCtx()
+  // Throws `cannot get property "X" without inject` on the first undeclared
+  // read, in apply() or anywhere down the render tree.
+  ssrExports.apply(guardCtx(ssrCtx, ssrExports.inject, touched))
+
+  const { renderToStaticMarkup } = require('react-dom/server')
+  const html = renderToStaticMarkup(getSsrSlot().component())
+  assert.ok(html.length > 0, 'the panel server-renders through the guarded ctx')
+
+  assert.deepEqual(
+    [...touched].sort(),
+    [...ssrExports.inject].sort(),
+    'inject declares exactly the services the plugin reads (no missing, no stale)',
+  )
+}
 
 // --- REGRESSION: the panel must SUBSCRIBE to catalog membership.
 // The host refetches a parent's catalog on host/session-added only when that
