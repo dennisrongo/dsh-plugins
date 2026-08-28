@@ -27,6 +27,10 @@ import {
   type ChangeTokenRequest,
   type ChangeTokenResult,
   type CommandResult,
+  type CommitDiffRequest,
+  type CommitDiffResult,
+  type CommitFilesRequest,
+  type CommitFilesResult,
   type CommitRequest,
   type DiffRequest,
   type DiffResult,
@@ -38,7 +42,15 @@ import {
   type SuggestResult,
   type SyncRequest,
 } from './types.ts'
-import { assertSafePath, combined, readStatus, repoRoot, runGit } from './git.ts'
+import {
+  assertSafePath,
+  assertSafeSha,
+  combined,
+  parseCommitFiles,
+  readStatus,
+  repoRoot,
+  runGit,
+} from './git.ts'
 import { RepoWatcher } from './watch.ts'
 
 export type * from './types.ts'
@@ -181,6 +193,74 @@ export class GitService extends TypertRemoteService {
     if (path !== undefined) args.push(path)
 
     const run = await runGit(root, args)
+    const text = run.stdout
+    if (text.includes('Binary files')) {
+      return { patch: 'Binary file — no textual diff.', binary: true }
+    }
+    return { patch: clamp(text), binary: false }
+  }
+
+  /**
+   * List the paths one commit touched.
+   *
+   * Reads with `--name-status` rather than a full patch because the history
+   * pane shows the file list first and fetches a patch only for the file the
+   * user actually clicks — a commit touching hundreds of files would otherwise
+   * ship its entire diff to render a list of names.
+   * @param request - workspace and the commit to inspect.
+   * @returns one entry per path, in git's order.
+   */
+  @Remote
+  async commitFiles(request: CommitFilesRequest): Promise<CommitFilesResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const sha = assertSafeSha(request?.sha)
+    const root = await repoRoot(dir)
+    if (root === undefined) return { files: [] }
+
+    const run = await runGit(root, [
+      'show',
+      '--name-status',
+      '-z',
+      '--no-color',
+      // Without this a MERGE commit prints no file list at all, so its row would
+      // expand into a convincing but false "no files changed".
+      '--first-parent',
+      '--format=',
+      sha,
+    ])
+    // A sha that does not resolve exits non-zero; an empty list is the honest
+    // answer for the pane, which already renders "no files" as a state.
+    if (run.code !== 0) return { files: [] }
+    return { files: parseCommitFiles(run.stdout) }
+  }
+
+  /**
+   * Read the patch one commit introduced, for one path or in full.
+   *
+   * Returns the same shape as {@link diff} so the history pane and the changes
+   * pane can share one renderer.
+   * @param request - workspace, commit, and optional path.
+   * @returns the patch text, truncated when very large.
+   */
+  @Remote
+  async commitDiff(request: CommitDiffRequest): Promise<CommitDiffResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const sha = assertSafeSha(request?.sha)
+    const root = await repoRoot(dir)
+    if (root === undefined) return { patch: '', binary: false }
+
+    const path =
+      typeof request?.path === 'string' && request.path.length > 0
+        ? assertSafePath(request.path)
+        : undefined
+
+    const args = ['show', '--no-color', '--no-ext-diff', '--first-parent', '--format=', sha]
+    if (path !== undefined) args.push('--', path)
+
+    const run = await runGit(root, args)
+    if (run.code !== 0) {
+      return { patch: combined(run) || 'Could not read this commit.', binary: false }
+    }
     const text = run.stdout
     if (text.includes('Binary files')) {
       return { patch: 'Binary file — no textual diff.', binary: true }

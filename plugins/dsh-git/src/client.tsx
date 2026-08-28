@@ -14,6 +14,8 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GIT_REMOTE } from './remote.ts'
 import type {
   CommandResult,
+  GitCommit,
+  GitCommitFile,
   GitFileChange,
   GitStatus,
   StageAction,
@@ -537,6 +539,47 @@ export class GitStore {
   }
 
   /**
+   * List the paths one commit touched.
+   *
+   * Never rejects — a rejected promise would leave the clicked row stuck in its
+   * loading state forever — but it does NOT collapse a failure into an empty
+   * list. Those are different facts: "this commit changed nothing" and "we could
+   * not ask" look identical as `[]`, and rendering them the same way is what
+   * made a 404 from a stale host half read as nothing happening at all.
+   * @param sha - the commit to inspect.
+   * @returns the touched paths, or the reason the lookup failed.
+   */
+  async commitFiles(sha: string): Promise<CommitFilesOutcome> {
+    try {
+      const reply = await this.remote.commitFiles({ workspaceId: this.workspaceId, sha })
+      if (!reply.ok) return { ok: false, error: reply.error.message }
+      return { ok: true, files: reply.value.files }
+    } catch (error) {
+      return { ok: false, error: describe(error) }
+    }
+  }
+
+  /**
+   * Fetch the patch one commit introduced, for one path or in full.
+   * @param sha - the commit to read.
+   * @param path - repo-relative path, or undefined for the whole commit.
+   * @returns the patch text, or a short failure notice.
+   */
+  async commitDiff(sha: string, path: string | undefined): Promise<string> {
+    try {
+      const reply = await this.remote.commitDiff({
+        workspaceId: this.workspaceId,
+        sha,
+        ...(path !== undefined ? { path } : {}),
+      })
+      if (!reply.ok) return `Could not read commit: ${reply.error.message}`
+      return reply.value.patch
+    } catch (error) {
+      return `Could not read commit: ${describe(error)}`
+    }
+  }
+
+  /**
    * Read the current change token without acting on it.
    *
    * Deliberately RETURNS the value instead of assigning `this.token`: writing a
@@ -576,6 +619,15 @@ export interface GitRemote {
     path?: string
     staged?: boolean
   }) => Promise<RemoteReply<{ patch: string; binary: boolean }>>
+  commitFiles: (request: {
+    workspaceId: string
+    sha: string
+  }) => Promise<RemoteReply<{ files: GitCommitFile[] }>>
+  commitDiff: (request: {
+    workspaceId: string
+    sha: string
+    path?: string
+  }) => Promise<RemoteReply<{ patch: string; binary: boolean }>>
   stage: (request: {
     workspaceId: string
     action: StageAction
@@ -599,6 +651,17 @@ export interface GitRemote {
 }
 
 type RemoteReply<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
+
+/**
+ * The result of asking for one commit's files.
+ *
+ * A discriminated union rather than a bare array so the pane can tell "this
+ * commit touched nothing" apart from "the lookup failed" — the distinction the
+ * empty-list version threw away.
+ */
+export type CommitFilesOutcome =
+  | { ok: true; files: GitCommitFile[] }
+  | { ok: false; error: string }
 
 /**
  * Render an unknown throw as a short message for the status line.
@@ -672,6 +735,49 @@ const VIEW_STYLES = `
   display: inline-block; min-width: 16px; padding: 0 4px; border-radius: 999px;
   background: var(--g-hover); color: var(--g-caption); font-size: 12px; line-height: 16px; text-align: center;
 }
+
+/* ---- sub-tab switcher ----
+   Changes and History are two modes of ONE tab, so the switcher is a segmented
+   control rather than a second row of tabs: the shell already owns real tabs
+   and a nested set of the same weight would read as a peer of Chat/Trajectory.
+   Rendered as real buttons with aria-pressed so it is operable from a keyboard
+   and announced as a toggle, not as decoration. */
+.dshgit-modes {
+  flex: none; display: flex; gap: 2px; padding: 8px 20px 0;
+}
+.dshgit-mode {
+  border: none; border-bottom: 2px solid transparent; border-radius: 0;
+  background: transparent; color: var(--g-caption);
+  font: inherit; font-size: 13px; line-height: 20px; font-weight: 600;
+  padding: 4px 10px 6px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.dshgit-mode:hover { color: var(--g-primary); }
+.dshgit-mode[aria-pressed='true'] { color: var(--g-primary); border-bottom-color: var(--g-accent); }
+.dshgit-mode:focus-visible { outline: 2px solid var(--dsw-alias-border-focus, #6b7280); outline-offset: -2px; }
+
+/* ---- history ----
+   Commit rows reuse the .dshgit-row box so they inherit the same 32px height
+   and 20px line-height the icon probe pins; only the inner columns differ. */
+.dshgit-sha {
+  flex: none; color: var(--g-caption); font-size: 12px; line-height: 20px;
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.dshgit-subject {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--g-secondary);
+}
+.dshgit-row.active .dshgit-subject, .dshgit-row:hover .dshgit-subject { color: var(--g-primary); }
+.dshgit-when { flex: none; color: var(--g-caption); font-size: 12px; line-height: 20px; }
+/* The expanded file list is indented so it reads as belonging to the commit
+   above it rather than as another commit. */
+.dshgit-commitfiles { list-style: none; margin: 0 0 4px; padding: 0 0 0 20px; }
+.dshgit-commitfiles .dshgit-row { padding-left: 8px; }
+.dshgit-loadingrow {
+  padding: 5px 8px 5px 28px; color: var(--g-caption); font-size: 12px; line-height: 20px;
+}
+.dshgit-loadingrow.err { color: var(--g-danger); }
 
 /* ---- commit box ---- */
 .dshgit-commit { flex: none; padding: 12px 20px; border-bottom: 1px solid var(--g-border); }
@@ -1187,6 +1293,123 @@ function Section({
  * active, filling the session pane.
  * @param props - the per-workspace store, or null when no workspace owns the session.
  */
+/**
+ * The History pane: the recent commits, each expandable into the files it
+ * touched.
+ *
+ * The commit list itself costs nothing extra — `status.recent` is already
+ * fetched with every status read — so only the expansion talks to the host, and
+ * only for the one commit the user opened.
+ *
+ * @param commits - the recent commits, newest first.
+ * @param store - the workspace's git store.
+ * @param openSha - which commit is expanded, or null.
+ * @param onToggle - expand or collapse a commit.
+ * @param files - the expanded commit's outcome, or null while it loads.
+ * @param selected - the selected "sha:path" key, or null.
+ * @param onOpenFile - show one file's patch from a commit.
+ * @returns the pane.
+ */
+function HistoryPane({
+  commits,
+  openSha,
+  onToggle,
+  files,
+  selected,
+  onOpenFile,
+}: {
+  commits: readonly GitCommit[]
+  openSha: string | null
+  onToggle: (sha: string) => void
+  files: CommitFilesOutcome | null
+  selected: string | null
+  onOpenFile: (sha: string, path: string) => void
+}): React.JSX.Element {
+  if (commits.length === 0) {
+    return (
+      <div className="dshgit-empty">
+        <b>No commits yet</b>
+        This branch has no history to show.
+      </div>
+    )
+  }
+
+  return (
+    <div className="dshgit-section">
+      <div className="dshgit-sechead">
+        <span>History</span>
+        <span className="dshgit-badge-count">{commits.length}</span>
+      </div>
+      <ul className="dshgit-list">
+        {commits.map((commit) => {
+          const open = openSha === commit.sha
+          return (
+            <li key={commit.sha}>
+              <div
+                className={`dshgit-row${open ? ' active' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-expanded={open}
+                title={`${commit.subject}\n${commit.author} · ${new Date(commit.date).toLocaleString()}`}
+                onClick={() => onToggle(commit.sha)}
+                onKeyDown={(e) => {
+                  // A div with role=button is not natively operable, so the
+                  // keyboard contract has to be restored by hand.
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onToggle(commit.sha)
+                  }
+                }}
+              >
+                <span className="dshgit-sha">{commit.sha}</span>
+                <span className="dshgit-subject">{commit.subject}</span>
+                <span className="dshgit-when">{fmtAge(commit.date)}</span>
+              </div>
+              {open ? (
+                files === null ? (
+                  <div className="dshgit-loadingrow">Reading commit…</div>
+                ) : !files.ok ? (
+                  // Say so out loud. Silently rendering an empty list here is
+                  // what turned a stale host half's 404 into "nothing happens".
+                  <div className="dshgit-loadingrow err" title={files.error}>
+                    Couldn&apos;t read this commit — {files.error}
+                  </div>
+                ) : files.files.length === 0 ? (
+                  <div className="dshgit-loadingrow">No files in this commit.</div>
+                ) : (
+                  <ul className="dshgit-commitfiles">
+                    {files.files.map((file) => {
+                      const letter = file.status === ' ' ? 'M' : file.status
+                      return (
+                        <li
+                          key={`${commit.sha}:${file.path}`}
+                          className={`dshgit-row${selected === `${commit.sha}:${file.path}` ? ' active' : ''}`}
+                          onClick={() => onOpenFile(commit.sha, file.path)}
+                          title={`${describeCode(letter)} — ${file.path}`}
+                        >
+                          <span className={`dshgit-code ${letter}`} aria-hidden="true">
+                            {letter}
+                          </span>
+                          <span className="dshgit-path">
+                            <span>
+                              <span className="dshgit-dir">{dirName(file.path)}</span>
+                              <span className="dshgit-base">{baseName(file.path)}</span>
+                            </span>
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )
+              ) : null}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
 export function GitView({ store }: { store: GitStore | null }): React.JSX.Element {
   const [message, setMessage] = React.useState('')
   const [branch, setBranch] = React.useState('main')
@@ -1195,6 +1418,12 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
   // Loading is its own flag rather than a sentinel string in `patch`, so a real
   // diff whose text happens to read "Loading diff…" cannot render as a skeleton.
   const [loading, setLoading] = React.useState(false)
+  const [mode, setMode] = React.useState<'changes' | 'history'>('changes')
+  const [openSha, setOpenSha] = React.useState<string | null>(null)
+  // null means "still loading". Anything else is a settled outcome that knows
+  // whether it succeeded, so a loading commit, an empty commit, and a failed
+  // lookup are three distinct renders rather than one ambiguous blank.
+  const [commitFiles, setCommitFiles] = React.useState<CommitFilesOutcome | null>(null)
 
   React.useEffect(() => {
     injectStyles()
@@ -1218,7 +1447,11 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
     store ? store.getSnapshot : getMissingSnapshot,
   )
 
-  // Monotonic click counter; see the ordering guard in openDiff.
+  // Monotonic click counter, shared by every pane that writes the diff.
+  //
+  // It must be SHARED rather than per-pane: switching modes or expanding another
+  // commit while a patch is in flight has to invalidate that reply too, and two
+  // independent counters could each believe their own reply was the newest.
   const requestSeq = React.useRef(0)
 
   /** Load a file's patch into the diff pane. */
@@ -1251,11 +1484,80 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
     [store, selected],
   )
 
+  /** Expand or collapse one commit, loading its files on expand. */
+  const toggleCommit = React.useCallback(
+    (sha: string) => {
+      if (!store) return
+      if (openSha === sha) {
+        setOpenSha(null)
+        setCommitFiles(null)
+        return
+      }
+      setOpenSha(sha)
+      setCommitFiles(null)
+      // Stamped with the same counter as the diff: expanding another commit
+      // while this list is in flight must discard the slower reply, or a late
+      // one would paint the wrong commit's files under the right sha.
+      requestSeq.current += 1
+      const seq = requestSeq.current
+      void store.commitFiles(sha).then((outcome) => {
+        if (seq !== requestSeq.current) return
+        setCommitFiles(outcome)
+      })
+    },
+    [store, openSha],
+  )
+
+  /** Load one file's patch from a commit into the diff pane. */
+  const openCommitDiff = React.useCallback(
+    (sha: string, path: string) => {
+      if (!store) return
+      const key = `${sha}:${path}`
+      if (selected === key) {
+        requestSeq.current += 1
+        setSelected(null)
+        setPatch('')
+        setLoading(false)
+        return
+      }
+      setSelected(key)
+      setPatch('')
+      setLoading(true)
+      requestSeq.current += 1
+      const seq = requestSeq.current
+      void store.commitDiff(sha, path).then((text) => {
+        if (seq !== requestSeq.current) return
+        setPatch(text.trim().length === 0 ? 'No textual changes.' : text)
+        setLoading(false)
+      })
+    },
+    [store, selected],
+  )
+
+  /**
+   * Switch panes, dropping any open diff.
+   *
+   * The selection key means different things in the two modes ("staged:path"
+   * versus "sha:path"), so carrying one across would leave the other pane
+   * showing a patch it cannot match to any row it renders.
+   */
+  const switchMode = React.useCallback((next: 'changes' | 'history') => {
+    requestSeq.current += 1
+    setMode(next)
+    setSelected(null)
+    setPatch('')
+    setLoading(false)
+  }, [])
+
   // A file that stops being changed (staged, discarded, committed) must not
   // leave a stale patch on screen.
   const status = state.status
+  //
+  // Scoped to the changes pane: a commit's paths are history, not working-tree
+  // entries, so testing them against status.files would close every commit diff
+  // the moment it opened.
   React.useEffect(() => {
-    if (selected === null || !status || !status.repo) return
+    if (mode !== 'changes' || selected === null || !status || !status.repo) return
     const [, path] = splitKey(selected)
     if (!status.files.some((f) => f.path === path)) {
       requestSeq.current += 1
@@ -1263,7 +1565,24 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
       setPatch('')
       setLoading(false)
     }
-  }, [status, selected])
+  }, [status, selected, mode])
+
+  // A commit can leave the recent window entirely — a rebase, a reset, or simply
+  // fifteen newer commits — and an expansion left pointing at it would show a
+  // file list belonging to nothing on screen.
+  React.useEffect(() => {
+    if (openSha === null || !status || !status.repo) return
+    if (!status.recent.some((c) => c.sha === openSha)) {
+      requestSeq.current += 1
+      setOpenSha(null)
+      setCommitFiles(null)
+      if (selected !== null && splitKey(selected)[0] === openSha) {
+        setSelected(null)
+        setPatch('')
+        setLoading(false)
+      }
+    }
+  }, [status, openSha, selected])
 
   if (!store) {
     return (
@@ -1424,6 +1743,25 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
         </span>
       </div>
 
+      <div className="dshgit-modes" role="group" aria-label="Source control view">
+        <button
+          className="dshgit-mode"
+          aria-pressed={mode === 'changes'}
+          onClick={() => switchMode('changes')}
+        >
+          Changes
+          {counts.total > 0 ? <span className="dshgit-badge-count">{counts.total}</span> : null}
+        </button>
+        <button
+          className="dshgit-mode"
+          aria-pressed={mode === 'history'}
+          onClick={() => switchMode('history')}
+        >
+          History
+        </button>
+      </div>
+
+      {mode === 'changes' ? (
       <div className="dshgit-commit">
         <textarea
           className="dshgit-msg"
@@ -1470,10 +1808,20 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
           </button>
         </div>
       </div>
+      ) : null}
 
       <div className={`dshgit-panes${selected !== null ? ' hasdiff' : ''}`}>
         <div className="dshgit-scroll">
-          {counts.total === 0 ? (
+          {mode === 'history' ? (
+            <HistoryPane
+              commits={status.recent}
+              openSha={openSha}
+              onToggle={toggleCommit}
+              files={commitFiles}
+              selected={selected}
+              onOpenFile={openCommitDiff}
+            />
+          ) : counts.total === 0 ? (
             <div className="dshgit-empty">
               <b>No changes</b>
               The working tree is clean.
@@ -1524,6 +1872,9 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
           <div className="dshgit-diff">
             <div className="dshgit-diffhead">
               <span>{splitKey(selected)[1]}</span>
+              {mode === 'history' ? (
+                <span className="dshgit-sha">{splitKey(selected)[0]}</span>
+              ) : null}
               <span className="dshgit-spacer" />
               <button
                 className="dshgit-icon"
@@ -1677,7 +2028,7 @@ export function apply(ctx: ClientContext): void {
             name: 'conversation.view',
             id: 'git',
             order: 30,
-            label: () => 'Changes',
+            label: () => 'Source Control',
             inject: (sessionId: string) => {
               const workspaces = readyCtx.workspaces.list.getSnapshot().items as readonly {
                 workspaceId: string

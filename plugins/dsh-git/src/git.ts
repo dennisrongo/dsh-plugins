@@ -13,6 +13,7 @@ import { execFile } from 'node:child_process'
 import {
   RECENT_COMMITS,
   type GitCommit,
+  type GitCommitFile,
   type GitFileChange,
   type GitStatus,
   type GitStatusCode,
@@ -242,6 +243,68 @@ export async function recentCommits(root: string): Promise<GitCommit[]> {
       author: author ?? '',
       date: Number(at ?? 0) * 1000,
     })
+  }
+  return out
+}
+
+/**
+ * Reject anything that is not a plain hex object name.
+ *
+ * A sha arrives from the browser and is handed to git verbatim, exactly like a
+ * path — so it needs the same treatment {@link assertSafePath} gives one. The
+ * concrete risk is not a shell (there is none: {@link runGit} uses an argument
+ * array) but git's own argument grammar: a value starting with `-` is read as a
+ * FLAG, and revision syntax like `HEAD`, `main..dev` or `:/secret` would let a
+ * caller address commits the UI never offered. Hex-only refuses all of it.
+ * @param sha - untrusted commit identifier.
+ * @returns the same sha when it is a valid object name.
+ */
+export function assertSafeSha(sha: unknown): string {
+  if (typeof sha !== 'string' || !/^[0-9a-fA-F]{4,40}$/.test(sha)) {
+    throw new Error(`dsh-git: invalid commit sha ${String(sha)}`)
+  }
+  return sha
+}
+
+/**
+ * Parse `git show --name-status -z` into per-commit file entries.
+ *
+ * The `-z` form is mandatory for the same reason it is in {@link parseStatus}:
+ * the plain form quotes and escapes exactly the paths users struggle with most.
+ * Its layout differs though — the status letter and the path are SEPARATE
+ * NUL-delimited fields here, rather than one fixed-width `XY path` record, and a
+ * rename carries two path fields after its letter instead of one.
+ *
+ * @param raw - the command's stdout verbatim.
+ * @returns one entry per path the commit touched, in git's order.
+ */
+export function parseCommitFiles(raw: string): GitCommitFile[] {
+  const out: GitCommitFile[] = []
+  const fields = raw.split('\0')
+  for (let i = 0; i < fields.length; i += 1) {
+    const token = fields[i]
+    if (!token) continue
+    // A rename/copy letter carries a similarity score (R100, C075); the letter
+    // itself is the only part that describes the change.
+    const letter = token[0]
+    if (!/^[A-Z]/.test(token)) continue
+    const status = code(letter)
+
+    // R and C emit TWO path fields (from, to) — consuming only one would leave
+    // the destination to be misread as the next entry's status token.
+    if (status === 'R' || status === 'C') {
+      const from = fields[i + 1]
+      const to = fields[i + 2]
+      if (typeof from !== 'string' || typeof to !== 'string' || to.length === 0) break
+      out.push({ path: to, origPath: from, status })
+      i += 2
+      continue
+    }
+
+    const path = fields[i + 1]
+    if (typeof path !== 'string' || path.length === 0) break
+    out.push({ path, status })
+    i += 1
   }
   return out
 }

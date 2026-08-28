@@ -23,21 +23,29 @@ import {
   branchSummary,
   baseName,
   dirName,
+  GitStore,
 } from '../lib/client.test.mjs'
 
 let passed = 0
-/** Run one named check. */
-function test(name, fn) {
-  fn()
+/**
+ * Run one named check.
+ *
+ * AWAITS the body: a synchronous helper silently reports an async test as
+ * passing the moment it returns a promise, so a rejected assertion inside one
+ * would surface only as an unhandled rejection — after the run already claimed
+ * success.
+ */
+async function test(name, fn) {
+  await fn()
   passed += 1
   console.log(`  ok  ${name}`)
 }
 
 // --- 1. Remote contract -----------------------------------------------------
 
-test('every remote codec is strict', () => {
+await test('every remote codec is strict', () => {
   assert.equal(GIT_REMOTE.package, '@dennisrongo/dsh-git')
-  assert.equal(GIT_REMOTE.descriptors.length, 8)
+  assert.equal(GIT_REMOTE.descriptors.length, 10)
   for (const d of GIT_REMOTE.descriptors) {
     assert.equal(d.namespace, 'dshGit', `${d.method} namespace`)
     assert.equal(d.result.mode, 'strict', `${d.method} result codec`)
@@ -50,11 +58,71 @@ test('every remote codec is strict', () => {
   }
 })
 
-test('remote covers every host method', () => {
+await test('remote covers every host method', () => {
   const methods = GIT_REMOTE.descriptors.map((d) => d.method).sort()
   assert.deepEqual(methods, [
-    'changeToken', 'commit', 'diff', 'init', 'stage', 'status', 'suggestMessage', 'sync',
+    'changeToken', 'commit', 'commitDiff', 'commitFiles', 'diff', 'init', 'stage', 'status',
+    'suggestMessage', 'sync',
   ])
+})
+
+// --- 1b. A failed commit expansion must be DISTINGUISHABLE from an empty one -
+
+// This is the bug that made a 404 invisible: a stale host half (one booted
+// before commitFiles existed) 404s the call, and collapsing that into the same
+// empty list a real no-file commit returns renders as nothing happening at all.
+// The two states must stay separable so the pane can say which one it is.
+
+/** A store whose remote always fails the way an unregistered endpoint does. */
+function storeWithFailingRemote(message) {
+  return new GitStore(
+    {
+      commitFiles: async () => ({ ok: false, error: { code: 'HTTP_404', message } }),
+    },
+    'ws-test',
+  )
+}
+
+await test('a FAILED commitFiles reports the error instead of an empty list', async () => {
+  const store = storeWithFailingRemote('HTTP 404')
+  const result = await store.commitFiles('a1b2c3d')
+  assert.equal(result.ok, false, 'a failed call must not look successful')
+  assert.match(result.error, /404/, 'the reason reaches the caller')
+})
+
+await test('a rejected commitFiles is reported, not swallowed', async () => {
+  const store = new GitStore(
+    {
+      commitFiles: async () => {
+        throw new Error('network down')
+      },
+    },
+    'ws-test',
+  )
+  const result = await store.commitFiles('a1b2c3d')
+  assert.equal(result.ok, false)
+  assert.match(result.error, /network down/)
+})
+
+await test('a genuinely EMPTY commit is a success, not an error', async () => {
+  const store = new GitStore(
+    { commitFiles: async () => ({ ok: true, value: { files: [] } }) },
+    'ws-test',
+  )
+  const result = await store.commitFiles('a1b2c3d')
+  assert.equal(result.ok, true, 'no files is an ordinary outcome')
+  assert.deepEqual(result.files, [])
+})
+
+await test('a successful commitFiles carries its files through', async () => {
+  const files = [{ path: 'a.ts', status: 'M' }]
+  const store = new GitStore(
+    { commitFiles: async () => ({ ok: true, value: { files } }) },
+    'ws-test',
+  )
+  const result = await store.commitFiles('a1b2c3d')
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.files, files)
 })
 
 // --- 2. Porcelain parsing against real git ----------------------------------
@@ -137,14 +205,14 @@ try {
 
 // --- 3. View logic ----------------------------------------------------------
 
-test('badgeFor reads the column its section shows', () => {
+await test('badgeFor reads the column its section shows', () => {
   const f = { path: 'a', index: 'A', worktree: 'M', staged: true, conflicted: false, untracked: false }
   assert.equal(badgeFor(f, 'staged'), 'A')
   assert.equal(badgeFor(f, 'unstaged'), 'M')
   assert.equal(badgeFor({ ...f, untracked: true }, 'unstaged'), 'U')
 })
 
-test('canCommit blocks on conflicts and empty messages', () => {
+await test('canCommit blocks on conflicts and empty messages', () => {
   const clean = { repo: true, root: '/r', unborn: false, hasRemote: false, files: [], recent: [] }
   const changed = {
     ...clean,
@@ -161,7 +229,7 @@ test('canCommit blocks on conflicts and empty messages', () => {
   assert.equal(canCommit({ repo: false, root: '/r' }, 'feat: x'), false)
 })
 
-test('branchSummary reports divergence', () => {
+await test('branchSummary reports divergence', () => {
   const base = { repo: true, root: '/r', branch: 'main', unborn: false, hasRemote: true, files: [], recent: [] }
   assert.equal(branchSummary(base), 'main')
   assert.equal(
@@ -171,14 +239,14 @@ test('branchSummary reports divergence', () => {
   assert.equal(branchSummary({ ...base, unborn: true }), 'main · no commits yet')
 })
 
-test('path splitting handles root and nested files', () => {
+await test('path splitting handles root and nested files', () => {
   assert.equal(baseName('a/b/c.ts'), 'c.ts')
   assert.equal(dirName('a/b/c.ts'), 'a/b/')
   assert.equal(baseName('top.ts'), 'top.ts')
   assert.equal(dirName('top.ts'), '')
 })
 
-test('assertSafePath refuses escapes and absolute paths', () => {
+await test('assertSafePath refuses escapes and absolute paths', () => {
   assert.equal(assertSafePath('src/a.ts'), 'src/a.ts')
   assert.throws(() => assertSafePath('../etc/passwd'), /escape/)
   assert.throws(() => assertSafePath('/etc/passwd'), /absolute/)

@@ -120,6 +120,55 @@ export interface ChangeTokenResult {
   token: number
 }
 
+/**
+ * One path touched by a single commit.
+ *
+ * Deliberately NOT a {@link GitFileChange}: a commit is already recorded, so the
+ * staged/untracked/conflicted distinctions that exist to describe *pending* work
+ * are all meaningless here. Only one status letter applies — what this commit
+ * did to this path — and inventing an index/worktree pair to reuse the other
+ * type would mean fabricating a column git never reported.
+ */
+export interface GitCommitFile {
+  /** Repo-relative path, forward-slashed. */
+  path: string
+  /** Previous path, present only for renames/copies. */
+  origPath?: string
+  /** What the commit did to this path. */
+  status: GitStatusCode
+}
+
+/** `commitFiles` request: which paths one commit touched. */
+export interface CommitFilesRequest {
+  workspaceId: string
+  /** Commit to inspect, as a hex sha (short or full). */
+  sha: string
+}
+
+/** `commitFiles` reply. */
+export interface CommitFilesResult {
+  files: GitCommitFile[]
+}
+
+/**
+ * `commitDiff` request: the patch one commit introduced.
+ *
+ * With `path` omitted this is the whole commit, which is what the history pane
+ * shows before any file is picked.
+ */
+export interface CommitDiffRequest {
+  workspaceId: string
+  sha: string
+  /** Repo-relative path; omitted means every path in the commit. */
+  path?: string
+}
+
+/** `commitDiff` reply: same shape as {@link DiffResult}, so one pane renders both. */
+export interface CommitDiffResult {
+  patch: string
+  binary: boolean
+}
+
 /** `diff` request: the patch text for one path, or the whole tree. */
 export interface DiffRequest {
   workspaceId: string

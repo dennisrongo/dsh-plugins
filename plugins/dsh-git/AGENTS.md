@@ -1,9 +1,9 @@
 # AGENTS.md — @dennisrongo/dsh-git
 
-Source-control ("Changes") tab for DeepSeek Harness. Two halves in one package:
+Source-control ("Source Control") tab for DeepSeek Harness. Two halves in one package:
 
 - **Host** (`src/index.ts` → `lib/index.js`) — `GitService extends TypertRemoteService`, cordis service key `dshGit`. Runs git in the workspace directory resolved through `workspaceRegistry`, serialises writes per repo root, and drafts commit messages through `llm`. A directory that is not a repository reports `repo: false`, never an error. `src/watch.ts` holds the `fs.watch` layer behind `changeToken`.
-- **Client** (`src/client.tsx` → `lib/client.js`) — the Changes tab, CSS prefix `dshgit-`, calling the host over the Typert bridge as `ctx.remote.dshGit.*`.
+- **Client** (`src/client.tsx` → `lib/client.js`) — the Source Control tab, CSS prefix `dshgit-`, calling the host over the Typert bridge as `ctx.remote.dshGit.*`. The tab holds two sub-panes, **Changes** and **History**, switched by a segmented control below the branch header.
 
 ## Endpoints
 
@@ -11,6 +11,8 @@ Source-control ("Changes") tab for DeepSeek Harness. Two halves in one package:
 
 - `status` — `{ workspaceId }` → branch, head, unborn, upstream, hasRemote, files, recent
 - `diff` — `{ workspaceId, path?, staged? }` → `{ patch, binary }`; untracked files are synthesized into a `/dev/null` patch so a new file never renders a blank pane
+- `commitFiles` — `{ workspaceId, sha }` → `{ files }`; the paths one commit touched, via `show --name-status -z`
+- `commitDiff` — `{ workspaceId, sha, path? }` → `{ patch, binary }`; the patch one commit introduced, same shape as `diff` so one pane renders both
 - `stage` — `{ workspaceId, paths, ... }`, `commit` — `{ workspaceId, message, all? }`, `init` / `sync` — `{ workspaceId, ... }`, all → `{ ok, output }`
 - `suggestMessage` — AI-drafted commit message
 - `changeToken` — `{ workspaceId }` → `{ token }`; the POLLING endpoint. Answers from an `fs.watch` counter and **never spawns git** (measured 52 ms vs `status`'s 141 ms). `token: 0` means "not a repository", which is the client's signal to stop polling. A token is comparable only against an earlier token for the same workspace.
@@ -202,6 +204,60 @@ cannot render as a skeleton. And `openDiff` stamps each request with a monotonic
 `requestSeq`, discarding any reply that is not the newest — clicking down a list starts
 overlapping requests, and a slow one settling late would otherwise paint the wrong file's
 patch under the right filename.
+
+## History pane
+
+The commit list is **free**: `status` already returns `recent` (15 commits), so the pane
+renders what the tab has fetched all along and only the expansion talks to the host. Four
+things here are load-bearing:
+
+- **A sha is untrusted input and needs `assertSafeSha`.** The risk is not a shell —
+  `runGit` uses an argument array — but git's own argument grammar: a value starting with
+  `-` is read as a FLAG, and revision syntax (`HEAD`, `main..dev`, `:/secret`,
+  `refs/heads/main`) addresses commits the UI never offered. Hex-only refuses all of it,
+  and `remote.ts` carries the same regex so the browser's strict codec rejects a bad sha
+  before it costs a round trip. Verified live: all three of `HEAD`, `--output=...` and
+  `main..dev` fail boundary validation at the gateway.
+- **`--first-parent` is what makes a MERGE commit list its files.** Without it `git show`
+  prints no file list at all for a merge, so the row expands into a convincing but false
+  "No files in this commit." `host-ops.mjs` builds a real merge and was verified to fail
+  when the flag is dropped.
+- **A rename emits TWO path fields, not one.** `parseCommitFiles` must consume both, or
+  the destination path is misread as the next record's status token and the list gains a
+  phantom entry. The probe pins the destination as the row's path and asserts the source
+  does not appear separately.
+- **The stale-patch effect is scoped to `mode === 'changes'`.** It closes a diff whose
+  file has left the working tree — correct there, but a commit's paths are history, not
+  working-tree entries, so unscoped it closes every commit diff the instant it opens.
+- **`commitFiles` returns a discriminated outcome, never a bare array.** It must not
+  reject (that strands the clicked row in "Reading commit…" forever), but collapsing a
+  failure into `[]` is worse: "this commit changed nothing" and "we could not ask" then
+  render identically as an empty expansion. That is exactly how a stale host half — one
+  booted before these endpoints existed, which 404s them while the browser happily serves
+  the NEW client bundle — showed up as *clicking a commit does nothing at all*. The pane
+  now renders "Couldn't read this commit — <reason>" in `.dshgit-loadingrow.err`, which
+  makes that specific misconfiguration self-diagnosing. `smoke.mjs` pins all four states
+  (failed reply, thrown rejection, empty-but-successful, populated) against a stub remote.
+
+**`smoke.mjs`'s `test()` helper AWAITS its body, and every call site is `await`ed.** It
+was synchronous, which silently reported any async test as passing the moment it returned
+a promise — a failed assertion inside one would surface only as an unhandled rejection,
+after the run had already printed its success count.
+
+A commit that leaves the 15-commit window (a rebase, a reset, or simply fifteen newer
+commits) collapses its expansion, because an expansion left pointing at it would show a
+file list belonging to nothing on screen. Switching panes drops any open diff: the
+selection key means different things in the two modes (`staged:path` versus `sha:path`),
+so carrying one across leaves the other pane showing a patch it cannot match to any row.
+`requestSeq` is deliberately SHARED by both panes rather than split per pane — expanding
+another commit while a patch is in flight has to invalidate that reply too, and two
+counters would each believe their own reply was newest.
+
+`pnpm run test:history` drives headless Chrome against the **built** stylesheet and pins
+the invariants an expander can break: expanding a commit moves neither the CLICKED row nor
+any row above it, and commit rows plus expanded file rows hold the same 32px budget the
+icon probe pins for file rows. It was verified to fail on a taller line-height in the
+sha/when column, which inflates rows to 42px.
 
 `pnpm run test:commit` drives headless Chrome against a live harness, clicks the **first session row**, stages and commits, then asserts the repository on disk actually advanced. It provisions its own scratch tree at `%TEMP%\dsh-git-tree` (override with `DSH_REPO`), seeded from a template in the test itself. That path is stable rather than per-run because dsh-git acts on the workspace of the clicked session — add it as a workspace in dsh once, and make sure its session is the first row.
 

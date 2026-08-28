@@ -85,6 +85,35 @@ const diffRequestSchema = z.object({
 })
 const diffResultSchema = z.object({ patch: z.string(), binary: z.boolean() })
 
+/**
+ * A commit identifier as it crosses the wire.
+ *
+ * Constrained here as well as on the host: this schema is what the client's
+ * strict codec validates against, so a malformed sha is refused before it costs
+ * a round trip. The host's own `assertSafeSha` remains the real boundary —
+ * nothing trusts the browser to have checked.
+ */
+const shaSchema = z.string().regex(/^[0-9a-fA-F]{4,40}$/)
+
+const commitFileSchema = z.object({
+  path: z.string(),
+  origPath: z.string().optional(),
+  status: statusCodeSchema,
+})
+
+const commitFilesRequestSchema = z.object({
+  workspaceId: z.string(),
+  sha: shaSchema,
+})
+const commitFilesResultSchema = z.object({ files: z.array(commitFileSchema) })
+
+const commitDiffRequestSchema = z.object({
+  workspaceId: z.string(),
+  sha: shaSchema,
+  path: z.string().optional(),
+})
+const commitDiffResultSchema = z.object({ patch: z.string(), binary: z.boolean() })
+
 const stageRequestSchema = z.object({
   workspaceId: z.string(),
   action: z.enum(['stage', 'unstage', 'discard']),
@@ -161,6 +190,8 @@ export const GIT_REMOTE = {
   descriptors: [
     descriptor('status', statusRequestSchema, statusResultSchema),
     descriptor('diff', diffRequestSchema, diffResultSchema),
+    descriptor('commitFiles', commitFilesRequestSchema, commitFilesResultSchema),
+    descriptor('commitDiff', commitDiffRequestSchema, commitDiffResultSchema),
     descriptor('stage', stageRequestSchema, commandResultSchema),
     descriptor('commit', commitRequestSchema, commandResultSchema),
     descriptor('init', initRequestSchema, commandResultSchema),

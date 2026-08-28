@@ -36,6 +36,7 @@
     "test:stability": "node test/list-stability-probe.mjs",
     "test:skeleton": "node test/skeleton-probe.mjs",
     "test:icons": "node test/icon-probe.mjs",
+    "test:history": "node test/history-probe.mjs",
     "test:watch": "node --experimental-strip-types test/watch-probe.mjs"
   },
   "dsh": {

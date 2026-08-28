@@ -13,7 +13,13 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { readStatus, runGit, repoRoot } from '../src/git.ts'
+import {
+  assertSafeSha,
+  parseCommitFiles,
+  readStatus,
+  runGit,
+  repoRoot,
+} from '../src/git.ts'
 
 let passed = 0
 /** Run one named async check. */
@@ -129,6 +135,118 @@ try {
     const run = await runGit(dir, ['push'])
     assert.notEqual(run.code, 0)
     assert.ok(run.stderr.length > 0, 'git explains itself on stderr')
+  })
+
+  await test('assertSafeSha accepts hex and rejects git revision syntax', async () => {
+    assert.equal(assertSafeSha('a1b2c3d'), 'a1b2c3d')
+    assert.equal(assertSafeSha('A1B2C3D4'), 'A1B2C3D4')
+    for (const bad of [
+      // Anything git would read as a FLAG rather than an object name.
+      '--output=/tmp/pwned',
+      '-n',
+      // Revision syntax addressing commits the UI never offered.
+      'HEAD',
+      'HEAD~3',
+      'main..dev',
+      ':/secret',
+      'refs/heads/main',
+      // Too short to be an object name, and the non-string cases.
+      'abc',
+      '',
+      undefined,
+      null,
+      42,
+    ]) {
+      assert.throws(
+        () => assertSafeSha(bad),
+        /invalid commit sha/,
+        `should reject ${String(bad)}`,
+      )
+    }
+  })
+
+  await test('parseCommitFiles reads a real commit, including a rename', async () => {
+    // Land a commit that adds, modifies, deletes and renames in one go, so the
+    // parser meets every branch it has against git's actual output.
+    writeFileSync(join(dir, 'kept.txt'), 'kept\n')
+    writeFileSync(join(dir, 'doomed.txt'), 'doomed\n')
+    writeFileSync(join(dir, 'oldname.txt'), 'x'.repeat(200) + '\n')
+    await runGit(dir, ['add', '-A'])
+    await runGit(dir, ['commit', '-m', 'chore: set up rename fixture'])
+
+    writeFileSync(join(dir, 'kept.txt'), 'kept\nmore\n')
+    writeFileSync(join(dir, 'added.txt'), 'added\n')
+    rmSync(join(dir, 'doomed.txt'))
+    await runGit(dir, ['mv', 'oldname.txt', 'newname.txt'])
+    await runGit(dir, ['add', '-A'])
+    await runGit(dir, ['commit', '-m', 'feat: exercise every status letter'])
+
+    const run = await runGit(dir, [
+      'show',
+      '--name-status',
+      '-z',
+      '--no-color',
+      '--first-parent',
+      '--format=',
+      'HEAD',
+    ])
+    assert.equal(run.code, 0)
+    const files = parseCommitFiles(run.stdout)
+    const by = (p) => files.find((f) => f.path === p)
+
+    assert.equal(by('added.txt').status, 'A')
+    assert.equal(by('kept.txt').status, 'M')
+    assert.equal(by('doomed.txt').status, 'D')
+
+    const renamed = by('newname.txt')
+    assert.ok(renamed, 'the rename DESTINATION is the path, not the source')
+    assert.equal(renamed.status, 'R')
+    assert.equal(renamed.origPath, 'oldname.txt')
+    // The source must not also appear as its own entry: a rename emits two path
+    // fields, and consuming only one would misread the destination as the next
+    // record's status token.
+    assert.equal(by('oldname.txt'), undefined)
+    assert.equal(files.length, 4, 'exactly four paths, with no phantom entry')
+  })
+
+  await test('parseCommitFiles survives truncated and empty output', async () => {
+    assert.deepEqual(parseCommitFiles(''), [])
+    // A status letter with no path behind it must not produce a pathless entry.
+    assert.deepEqual(parseCommitFiles('M\0'), [])
+    assert.deepEqual(parseCommitFiles('R100\0only-source.txt\0'), [])
+  })
+
+  await test('a merge commit still lists its files', async () => {
+    // Without --first-parent, `git show` prints NO file list for a merge, so the
+    // history pane would expand a real merge into a convincing "no files".
+    await runGit(dir, ['checkout', '-b', 'side'])
+    writeFileSync(join(dir, 'side.txt'), 'side\n')
+    await runGit(dir, ['add', '-A'])
+    await runGit(dir, ['commit', '-m', 'feat: side branch work'])
+
+    const back = await runGit(dir, ['checkout', 'trunk'])
+    assert.equal(back.code, 0)
+    writeFileSync(join(dir, 'trunk.txt'), 'trunk\n')
+    await runGit(dir, ['add', '-A'])
+    await runGit(dir, ['commit', '-m', 'feat: trunk work'])
+
+    const merge = await runGit(dir, ['merge', '--no-ff', '-m', 'merge: side into trunk', 'side'])
+    assert.equal(merge.code, 0, merge.stderr)
+
+    const run = await runGit(dir, [
+      'show',
+      '--name-status',
+      '-z',
+      '--no-color',
+      '--first-parent',
+      '--format=',
+      'HEAD',
+    ])
+    const files = parseCommitFiles(run.stdout)
+    assert.ok(
+      files.some((f) => f.path === 'side.txt'),
+      'the merge brings side.txt in, and --first-parent must show it',
+    )
   })
 } finally {
   rmSync(dir, { recursive: true, force: true })

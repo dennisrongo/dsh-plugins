@@ -6,14 +6,18 @@
 **source:** [dennisrongo/dsh-plugins](https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-git)
 
 A per-workspace **source-control tab** for the DeepSeek Harness web UI. It adds
-a **Changes** tab beside Chat, Trajectory, and Todo that shows everything that
-differs in the workspace's repository, and lets you stage, commit (with an
-AI-written message), initialize, and sync — without leaving the session.
+a **Source Control** tab beside Chat, Trajectory, and Todo that shows everything
+that differs in the workspace's repository, and lets you stage, commit (with an
+AI-written message), initialize, sync, and browse history — without leaving the
+session. The tab holds two panes, **Changes** and **History**.
 
 ## What it does
 
 - **View changes** — staged, unstaged, untracked, and conflicted files, each
   with a status letter and a click-to-open unified diff.
+- **Browse history** — the recent commits, newest first. Click one to see the
+  files it touched, then click a file for the patch that commit introduced, in
+  the same diff pane the Changes pane uses.
 - **Stage / unstage / discard** — per file or per section. Discard is the one
   destructive action and always confirms first.
 - **AI commit messages** — "✦ AI message" sends the diff to the model you
@@ -96,6 +100,22 @@ thinned strokes. The 20px button box (not 24px) and `.dshgit-row`'s pinned
 `line-height: 20px` are what keep file rows at 32px — in a flex row the tallest
 child sets the height.
 
+## History without a second fetch
+
+The commit list costs nothing extra: `status` already returns the 15 most recent
+commits, so the History pane renders what the tab has been fetching all along.
+Only expanding a commit talks to the host, and only for that one commit — a
+commit touching hundreds of files ships its file *names* (`--name-status`), not
+its entire patch, and the patch arrives only for the file you actually click.
+
+A commit sha arrives from the browser, so it is validated as plain hex before it
+reaches git. The risk isn't a shell — git is always invoked with an argument
+array — it's git's own argument grammar: a value starting with `-` is read as a
+flag, and revision syntax like `HEAD~3`, `main..dev` or `:/secret` would address
+commits the UI never offered. Merge commits are read with `--first-parent`,
+without which `git show` prints no file list at all and a merge would expand into
+a convincing but false "No files in this commit."
+
 ## Architecture
 
 The plugin ships **two halves** that never share a process:
@@ -106,7 +126,7 @@ The plugin ships **two halves** that never share a process:
 | `src/git.ts` | host | The git engine: `execFile` wrapper and porcelain parsers. |
 | `src/watch.ts` | host | Filesystem watchers behind the change token, so the tab stays live without polling git. |
 | `src/remote.ts` | both | Strict zod Typert descriptors — the wire contract. |
-| `src/client.tsx` | browser | The Changes tab, registered into the `conversation.view` slot at `order: 30`. |
+| `src/client.tsx` | browser | The Source Control tab (Changes + History), registered into the `conversation.view` slot at `order: 30`. |
 | `src/types.ts` | both | Shared, dependency-free vocabulary. |
 
 The browser never touches a repository: it calls `ctx.remote.dshGit.*` over the

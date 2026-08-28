@@ -55,6 +55,23 @@ var diffRequestSchema = z.object({
   staged: z.boolean().optional()
 });
 var diffResultSchema = z.object({ patch: z.string(), binary: z.boolean() });
+var shaSchema = z.string().regex(/^[0-9a-fA-F]{4,40}$/);
+var commitFileSchema = z.object({
+  path: z.string(),
+  origPath: z.string().optional(),
+  status: statusCodeSchema
+});
+var commitFilesRequestSchema = z.object({
+  workspaceId: z.string(),
+  sha: shaSchema
+});
+var commitFilesResultSchema = z.object({ files: z.array(commitFileSchema) });
+var commitDiffRequestSchema = z.object({
+  workspaceId: z.string(),
+  sha: shaSchema,
+  path: z.string().optional()
+});
+var commitDiffResultSchema = z.object({ patch: z.string(), binary: z.boolean() });
 var stageRequestSchema = z.object({
   workspaceId: z.string(),
   action: z.enum(["stage", "unstage", "discard"]),
@@ -116,6 +133,8 @@ var GIT_REMOTE = {
   descriptors: [
     descriptor("status", statusRequestSchema, statusResultSchema),
     descriptor("diff", diffRequestSchema, diffResultSchema),
+    descriptor("commitFiles", commitFilesRequestSchema, commitFilesResultSchema),
+    descriptor("commitDiff", commitDiffRequestSchema, commitDiffResultSchema),
     descriptor("stage", stageRequestSchema, commandResultSchema),
     descriptor("commit", commitRequestSchema, commandResultSchema),
     descriptor("init", initRequestSchema, commandResultSchema),
@@ -149,6 +168,8 @@ var TYPERT = {
         members: [
           method("status", "@Remote status(request: StatusRequest): Promise<StatusResult>", "Read one workspace's repository snapshot."),
           method("diff", "@Remote diff(request: DiffRequest): Promise<DiffResult>", "Read a unified patch for the workspace or one path."),
+          method("commitFiles", "@Remote commitFiles(request: CommitFilesRequest): Promise<CommitFilesResult>", "List the paths one commit touched."),
+          method("commitDiff", "@Remote commitDiff(request: CommitDiffRequest): Promise<CommitDiffResult>", "Read the patch one commit introduced."),
           method("stage", "@Remote stage(request: StageRequest): Promise<CommandResult>", "Stage, unstage or discard paths."),
           method("commit", "@Remote commit(request: CommitRequest): Promise<CommandResult>", "Commit the staged tree."),
           method("init", "@Remote init(request: InitRequest): Promise<CommandResult>", "Initialize a repository in the workspace."),
@@ -171,6 +192,10 @@ var TYPERT = {
           {
             name: "Commit",
             declaration: "export interface Commit {\n    sha: string;\n    subject: string;\n    author: string;\n    date: number;\n}"
+          },
+          {
+            name: "CommitFile",
+            declaration: "export interface CommitFile {\n    path: string;\n    origPath?: string;\n    status: StatusCode;\n}"
           },
           {
             name: "GitStatus",

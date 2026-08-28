@@ -212,6 +212,38 @@ async function recentCommits(root) {
   return out;
 }
 __name(recentCommits, "recentCommits");
+function assertSafeSha(sha) {
+  if (typeof sha !== "string" || !/^[0-9a-fA-F]{4,40}$/.test(sha)) {
+    throw new Error(`dsh-git: invalid commit sha ${String(sha)}`);
+  }
+  return sha;
+}
+__name(assertSafeSha, "assertSafeSha");
+function parseCommitFiles(raw) {
+  const out = [];
+  const fields = raw.split("\0");
+  for (let i = 0; i < fields.length; i += 1) {
+    const token = fields[i];
+    if (!token) continue;
+    const letter = token[0];
+    if (!/^[A-Z]/.test(token)) continue;
+    const status = code(letter);
+    if (status === "R" || status === "C") {
+      const from = fields[i + 1];
+      const to = fields[i + 2];
+      if (typeof from !== "string" || typeof to !== "string" || to.length === 0) break;
+      out.push({ path: to, origPath: from, status });
+      i += 2;
+      continue;
+    }
+    const path = fields[i + 1];
+    if (typeof path !== "string" || path.length === 0) break;
+    out.push({ path, status });
+    i += 1;
+  }
+  return out;
+}
+__name(parseCommitFiles, "parseCommitFiles");
 async function readStatus(dir) {
   const root = await repoRoot(dir);
   if (root === void 0) return { repo: false, root: dir };
@@ -395,7 +427,7 @@ var RepoWatcher = _RepoWatcher;
 
 // src/index.ts
 var NETWORK_TIMEOUT_MS = 12e4;
-var _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
+var _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _commitDiff_dec, _commitFiles_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
 var _GitService = class _GitService extends (_a = TypertRemoteService) {
   /**
    * @param ctx - host context carrying the workspace registry and LLM runtime.
@@ -470,6 +502,43 @@ var _GitService = class _GitService extends (_a = TypertRemoteService) {
     args.push("--");
     if (path !== void 0) args.push(path);
     const run = await runGit(root, args);
+    const text = run.stdout;
+    if (text.includes("Binary files")) {
+      return { patch: "Binary file \u2014 no textual diff.", binary: true };
+    }
+    return { patch: clamp(text), binary: false };
+  }
+  async commitFiles(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const sha = assertSafeSha(request?.sha);
+    const root = await repoRoot(dir);
+    if (root === void 0) return { files: [] };
+    const run = await runGit(root, [
+      "show",
+      "--name-status",
+      "-z",
+      "--no-color",
+      // Without this a MERGE commit prints no file list at all, so its row would
+      // expand into a convincing but false "no files changed".
+      "--first-parent",
+      "--format=",
+      sha
+    ]);
+    if (run.code !== 0) return { files: [] };
+    return { files: parseCommitFiles(run.stdout) };
+  }
+  async commitDiff(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const sha = assertSafeSha(request?.sha);
+    const root = await repoRoot(dir);
+    if (root === void 0) return { patch: "", binary: false };
+    const path = typeof request?.path === "string" && request.path.length > 0 ? assertSafePath(request.path) : void 0;
+    const args = ["show", "--no-color", "--no-ext-diff", "--first-parent", "--format=", sha];
+    if (path !== void 0) args.push("--", path);
+    const run = await runGit(root, args);
+    if (run.code !== 0) {
+      return { patch: combined(run) || "Could not read this commit.", binary: false };
+    }
     const text = run.stdout;
     if (text.includes("Binary files")) {
       return { patch: "Binary file \u2014 no textual diff.", binary: true };
@@ -671,7 +740,7 @@ ${body}` }],
    * `dispose` is not a member of its Events map. Getting this wrong leaks an OS
    * watch handle per repository on every plugin reload.
    */
-  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], Service.init)]() {
+  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _commitFiles_dec = [Remote], _commitDiff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], Service.init)]() {
     this.ctx.effect(() => () => {
       this.watcher.close();
     });
@@ -681,6 +750,8 @@ _init = __decoratorStart(_a);
 __decorateElement(_init, 1, "status", _status_dec, _GitService);
 __decorateElement(_init, 1, "changeToken", _changeToken_dec, _GitService);
 __decorateElement(_init, 1, "diff", _diff_dec, _GitService);
+__decorateElement(_init, 1, "commitFiles", _commitFiles_dec, _GitService);
+__decorateElement(_init, 1, "commitDiff", _commitDiff_dec, _GitService);
 __decorateElement(_init, 1, "stage", _stage_dec, _GitService);
 __decorateElement(_init, 1, "commit", _commit_dec, _GitService);
 __decorateElement(_init, 1, "init", _init_dec, _GitService);
