@@ -22,8 +22,12 @@ session. The tab holds two panes, **Changes** and **History**.
   destructive action and always confirms first.
 - **AI commit messages** — "✦ AI message" sends the diff to the model you
   already selected for new sessions and writes a Conventional Commits message.
-- **Commit** — with an empty index it commits everything (`-a`); with a staged
-  set it commits exactly that. `Ctrl`/`Cmd`+`Enter` commits from the box.
+  It describes **the staged changes** whenever anything is staged, and every
+  uncommitted change (including brand-new files) when the index is empty. The
+  log strip says which it used.
+- **Commit** — commits the index, and only the index. The button is live only
+  with something staged and a message written; when it is not, the row says
+  why. `Ctrl`/`Cmd`+`Enter` commits from the box.
 - **Initialize** — a directory that is not a repository shows an
   Initialize button with an editable initial branch name.
 - **Sync** — Fetch, Pull (fast-forward only), Push / Publish, and a combined

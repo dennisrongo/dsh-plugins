@@ -22,6 +22,11 @@ node_modules/
 # entry in package.json "files".
 **/lib/*.test.mjs
 
+# Throwaway diagnostic scripts. They routinely hardcode absolute machine paths,
+# and `git add -A` — which the dsh-git tab's own "stage all" runs — would
+# otherwise sweep them into a commit.
+scratch/
+
 # NOTE: every package commits its built lib/ on purpose. These plugins are
 # installed straight from GitHub subdirectories
 # (pnpm add "github:owner/repo#path:/plugins/<name>"), and a git install runs no

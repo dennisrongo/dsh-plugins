@@ -261,6 +261,52 @@ sha/when column, which inflates rows to 42px.
 
 `pnpm run test:commit` drives headless Chrome against a live harness, clicks the **first session row**, stages and commits, then asserts the repository on disk actually advanced. It provisions its own scratch tree at `%TEMP%\dsh-git-tree` (override with `DSH_REPO`), seeded from a template in the test itself. That path is stable rather than per-run because dsh-git acts on the workspace of the clicked session — add it as a workspace in dsh once, and make sure its session is the first row.
 
+## Commit gate and message scope
+
+Both halves answer the same question — *what would this commit record?* — and
+they have to agree, or the tab drafts a message about work it is not about to
+commit.
+
+- **The Commit button requires STAGED content plus a message.** It used to fall
+  back to `git commit -a` on an empty index, which silently widened the commit
+  past the selection the user had just made in that very list. `canCommit` now
+  returns false with an empty index, `GitStore.commit` no longer takes an `all`
+  flag, and `commitBlocker` supplies the reason. The host still accepts `all` on
+  the wire — it is an older client's contract, not dead code.
+- **`commitBlocker` must mirror `canCommit` clause for clause.** A dead button
+  with no stated reason is the failure mode here, and `title` alone does not fix
+  it: browsers suppress tooltips on disabled controls, which is why the reason is
+  also rendered as `.dshgit-hint` in the commit row. `smoke.mjs` pins the two
+  functions against the same fixtures so they cannot drift apart.
+- **The message scope is resolved on the HOST, from a fresh status read.**
+  `collectChangeDiff` picks `staged` when anything is staged and `all` when the
+  index is empty. The client deliberately omits `staged` from the request: its
+  snapshot can be a poll interval behind the disk, and a message describing files
+  the commit will not record is worse than a slow one. The reply carries `scope`
+  back so the log strip can say which was used.
+- **`git diff` alone is the wrong command for the `all` scope, twice over.** It
+  drops anything already staged (so the `all` scope uses `git diff HEAD`, except
+  on an unborn branch where there is no HEAD to name), and it shows untracked
+  files *nothing* — they are in no tree and no index, so a brand-new file
+  contributes zero bytes to the patch at any revision. `untrackedPatch` fills that
+  hole with `--no-index` against `/dev/null`, the same trick the `diff` endpoint
+  uses for a clicked new file. Note it exits **non-zero** whenever the sides
+  differ, which is always: read stdout, never the code.
+- The untracked sweep is budget-aware. Files that do not fit in
+  `MAX_AI_DIFF_BYTES` are listed by name under "New files, contents not shown"
+  rather than dropped, so the model never silently misses an addition.
+- **This change needs a PROFILE RESTART, not just a browser refresh.** The two
+  halves deploy at different speeds (see Dev loop), and the omitted `staged`
+  flag inverts against a stale host: the old code read `request?.staged === true`,
+  so a missing flag meant `false` and it diffed the UNSTAGED set. New client on
+  old host therefore drafts a message about exactly the files the commit will
+  not record. It self-corrects on restart, but it looks like the feature is
+  backwards until then.
+
+`host-ops.mjs` covers all of it against a real repository, including the unborn
+branch and the partial-staging case (stage one of two files, assert the other
+does NOT appear in the text).
+
 ## Verification
 
 ```bash

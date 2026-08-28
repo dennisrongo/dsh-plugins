@@ -13,6 +13,7 @@ import React from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GIT_REMOTE } from './remote.ts'
 import type {
+  ChangeScope,
   CommandResult,
   GitCommit,
   GitCommitFile,
@@ -137,6 +138,11 @@ export function dirName(path: string): string {
 /**
  * Whether a commit can be attempted right now.
  *
+ * STAGED CONTENT IS REQUIRED, and a written message with it. The button
+ * commits the index and only the index, so what the user staged is what gets
+ * recorded — no `-a` sweep that quietly widens the commit past the selection
+ * they just made in this very list.
+ *
  * Conflicts block unconditionally: git refuses the commit anyway, and failing
  * in the UI beforehand explains why instead of surfacing a raw git error.
  * @param status - the current snapshot.
@@ -148,9 +154,27 @@ export function canCommit(status: GitStatus, message: string): boolean {
   if (message.trim().length === 0) return false
   const counts = countChanges(status.files)
   if (counts.conflicted > 0) return false
-  // With nothing staged, the UI commits with `-a`, which still needs some
-  // tracked modification to pick up.
-  return counts.staged > 0 || counts.unstaged > 0
+  return counts.staged > 0
+}
+
+/**
+ * Why the Commit button is dead, as a short phrase — empty when it is live.
+ *
+ * Mirrors {@link canCommit} clause for clause, and orders its checks so the
+ * most actionable cause wins: a disabled button with no stated reason is the
+ * single most common way a commit box wastes someone's time, and `title` alone
+ * does not cover it because browsers suppress tooltips on disabled controls.
+ * @param status - the current snapshot.
+ * @param message - the message in the box.
+ * @returns the blocking reason, or an empty string.
+ */
+export function commitBlocker(status: GitStatus, message: string): string {
+  if (!status.repo) return 'This folder is not a git repository'
+  const counts = countChanges(status.files)
+  if (counts.conflicted > 0) return 'Resolve the conflicts before committing'
+  if (counts.staged === 0) return 'Stage a file to commit'
+  if (message.trim().length === 0) return 'Write a commit message'
+  return ''
 }
 
 /**
@@ -471,11 +495,14 @@ export class GitStore {
     )
   }
 
-  /** Commit, auto-staging tracked edits when the index is empty. */
-  commit(message: string, all: boolean): Promise<void> {
-    return this.run('commit', () =>
-      this.remote.commit({ workspaceId: this.workspaceId, message, all }),
-    )
+  /**
+   * Commit the index.
+   *
+   * No `all` flag: the button is live only with something staged, so the
+   * index IS the commit. See {@link canCommit}.
+   */
+  commit(message: string): Promise<void> {
+    return this.run('commit', () => this.remote.commit({ workspaceId: this.workspaceId, message }))
   }
 
   /** Create a repository in this workspace's directory. */
@@ -493,24 +520,29 @@ export class GitStore {
   /**
    * Ask the host's model for a commit message.
    *
+   * The scope is deliberately NOT passed: the host reads status itself and
+   * describes the index when anything is staged, the whole working tree when
+   * it is empty. Deciding here would bet the message on a snapshot that may be
+   * up to a poll interval behind the disk — and a message describing files the
+   * commit will not record is worse than a slow one.
+   *
    * Returns the text rather than storing it, because the message belongs to the
    * commit box's local editing state — the user must be able to edit or reject
    * it before anything is committed.
-   * @param staged - describe the staged diff rather than the whole tree.
-   * @returns the suggested message.
+   * @returns the suggested message, or an empty string on failure.
    */
-  async suggest(staged: boolean): Promise<string> {
+  async suggest(): Promise<string> {
     this.publish({ ...this.state, busy: 'suggest', error: null })
     try {
-      const reply = await this.remote.suggestMessage({
-        workspaceId: this.workspaceId,
-        staged,
-      })
+      const reply = await this.remote.suggestMessage({ workspaceId: this.workspaceId })
       if (!reply.ok) {
         this.publish({ ...this.state, busy: null, error: reply.error.message })
         return ''
       }
-      this.publish({ ...this.state, busy: null })
+      // An older host reports no scope; leave the strip alone rather than
+      // blanking whatever the last command put there.
+      const note = describeScope(reply.value.scope)
+      this.publish({ ...this.state, busy: null, ...(note ? { output: note } : {}) })
       return reply.value.message
     } catch (error) {
       this.publish({ ...this.state, busy: null, error: describe(error) })
@@ -646,7 +678,7 @@ export interface GitRemote {
   suggestMessage: (request: {
     workspaceId: string
     staged?: boolean
-  }) => Promise<RemoteReply<{ message: string }>>
+  }) => Promise<RemoteReply<{ message: string; scope?: ChangeScope }>>
   changeToken: (request: { workspaceId: string }) => Promise<RemoteReply<{ token: number }>>
 }
 
@@ -670,6 +702,21 @@ export type CommitFilesOutcome =
  */
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Say which changes a drafted message covers.
+ *
+ * Worth a line in the log strip because the two scopes read identically in the
+ * box: a message describing the whole tree looks exactly like one describing
+ * the three files you staged.
+ * @param scope - the host's reported scope, absent on an older host.
+ * @returns a short sentence, or an empty string when the host did not say.
+ */
+export function describeScope(scope: ChangeScope | undefined): string {
+  if (scope === 'staged') return 'Message written from the staged changes.'
+  if (scope === 'all') return 'Nothing staged — message written from all uncommitted changes.'
+  return ''
 }
 
 // ---------------------------------------------------------------------------
@@ -790,6 +837,12 @@ const VIEW_STYLES = `
 .dshgit-msg::placeholder { color: var(--g-caption); }
 .dshgit-msg:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
 .dshgit-commitrow { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+/* The reason the Commit button is dead. min-width: 0 with ellipsis so a narrow
+   tab truncates the hint instead of squeezing the button it explains. */
+.dshgit-hint {
+  color: var(--g-caption); font-size: 12px; line-height: 20px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* ---- panes ----
    The list and the diff share one flex container so a single direction switch
@@ -1658,20 +1711,19 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
   const conflicts = conflictedFiles(status.files)
   const busy = state.busy
   const commitEnabled = canCommit(status, message) && busy === null
+  const blocker = commitBlocker(status, message)
   const up = status.upstream
 
-  /** Commit, then clear the box only if the commit actually landed. */
+  /** Commit the index, then clear the box only if the commit actually landed. */
   const doCommit = async (): Promise<void> => {
     const text = message.trim()
-    if (!text) return
-    // With an empty index, commit -a so the obvious intent (commit what I see)
-    // works without a separate staging step.
-    await store.commit(text, counts.staged === 0)
+    if (!text || counts.staged === 0) return
+    await store.commit(text)
     setMessage('')
   }
 
   const doSuggest = async (): Promise<void> => {
-    const text = await store.suggest(counts.staged > 0)
+    const text = await store.suggest()
     if (text) setMessage(text)
   }
 
@@ -1769,7 +1821,7 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
           placeholder={
             counts.staged > 0
               ? `Commit ${counts.staged} staged file${counts.staged === 1 ? '' : 's'}…`
-              : 'Commit message — or let AI write one'
+              : 'Stage a file to commit — AI can draft the message first'
           }
           aria-label="Commit message"
           onChange={(e) => setMessage(e.target.value)}
@@ -1785,7 +1837,11 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
         <div className="dshgit-commitrow">
           <button
             className="dshgit-btn ai"
-            title="Generate a commit message from the diff"
+            title={
+              counts.staged > 0
+                ? 'Generate a commit message from the staged changes'
+                : 'Generate a commit message from all uncommitted changes'
+            }
             disabled={busy !== null || counts.total === 0}
             onClick={() => void doSuggest()}
           >
@@ -1799,12 +1855,18 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
             {busy === 'suggest' ? 'Writing…' : 'AI message'}
           </button>
           <span className="dshgit-spacer" />
-          <button className="dshgit-btn primary" disabled={!commitEnabled} onClick={() => void doCommit()}>
-            {busy === 'commit'
-              ? 'Committing…'
-              : counts.staged > 0
-                ? `Commit ${counts.staged}`
-                : 'Commit all'}
+          {/* Only the structural blockers are worth stating out loud; an empty
+              message box already explains itself. */}
+          {counts.conflicted > 0 || counts.staged === 0 ? (
+            <span className="dshgit-hint">{blocker}</span>
+          ) : null}
+          <button
+            className="dshgit-btn primary"
+            title={blocker || `Commit ${counts.staged} staged file${counts.staged === 1 ? '' : 's'}`}
+            disabled={!commitEnabled}
+            onClick={() => void doCommit()}
+          >
+            {busy === 'commit' ? 'Committing…' : counts.staged > 0 ? `Commit ${counts.staged}` : 'Commit'}
           </button>
         </div>
       </div>

@@ -86,7 +86,10 @@ var suggestRequestSchema = z.object({
   workspaceId: z.string(),
   staged: z.boolean().optional()
 });
-var suggestResultSchema = z.object({ message: z.string() });
+var suggestResultSchema = z.object({
+  message: z.string(),
+  scope: z.enum(["staged", "all"]).optional()
+});
 var syncRequestSchema = z.object({
   workspaceId: z.string(),
   action: z.enum(["pull", "push", "fetch", "sync", "publish"])

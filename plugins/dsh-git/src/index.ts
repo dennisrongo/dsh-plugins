@@ -45,11 +45,13 @@ import {
 import {
   assertSafePath,
   assertSafeSha,
+  collectChangeDiff,
   combined,
   parseCommitFiles,
   readStatus,
   repoRoot,
   runGit,
+  untrackedPatch,
 } from './git.ts'
 import { RepoWatcher } from './watch.ts'
 
@@ -171,15 +173,7 @@ export class GitService extends TypertRemoteService {
       // would print nothing at all, so diff it against the empty device.
       const tracked = await runGit(root, ['ls-files', '--error-unmatch', '--', path])
       if (tracked.code !== 0) {
-        const show = await runGit(root, [
-          'diff',
-          '--no-color',
-          '--no-index',
-          '--',
-          '/dev/null',
-          path,
-        ])
-        const text = show.stdout
+        const text = await untrackedPatch(root, path)
         if (text.includes('Binary files')) {
           return { patch: 'Binary file — no textual diff.', binary: true }
         }
@@ -313,6 +307,9 @@ export class GitService extends TypertRemoteService {
 
   /**
    * Commit the index.
+   *
+   * `all` survives for older clients only: the tab's Commit button now requires
+   * a non-empty index, so it never asks for the `-a` sweep.
    * @param request - workspace, message, and whether to auto-stage tracked edits.
    * @returns command output and the refreshed status.
    */
@@ -412,11 +409,16 @@ export class GitService extends TypertRemoteService {
   /**
    * Ask the model to write a commit message for the current changes.
    *
+   * The scope is the index whenever anything is staged, and the whole
+   * uncommitted tree otherwise — see {@link collectChangeDiff}. The caller may
+   * force one or the other, but the default is resolved HERE, from a fresh
+   * read, rather than from whatever snapshot the browser last painted.
+   *
    * The diff is truncated before it reaches the model: a large refactor would
    * otherwise blow past the context window and fail the whole call, when the
    * first few thousand lines already characterize the change.
-   * @param request - workspace and whether to describe the staged diff.
-   * @returns a conventional-commit style message.
+   * @param request - workspace and an optional explicit scope.
+   * @returns a conventional-commit style message and the scope it describes.
    */
   @Remote
   async suggestMessage(request: SuggestRequest): Promise<SuggestResult> {
@@ -424,29 +426,18 @@ export class GitService extends TypertRemoteService {
     const root = await repoRoot(dir)
     if (root === undefined) throw new Error('dsh-git: not a git repository')
 
-    const staged = request?.staged === true
-    const diffArgs = ['diff', '--no-color', '--no-ext-diff']
-    if (staged) diffArgs.push('--cached')
-    const diffRun = await runGit(root, diffArgs)
-    let diff = diffRun.stdout
-
-    // With nothing staged and nothing modified there may still be brand-new
-    // files, which never appear in `git diff`. Fall back to their names so the
-    // model can at least describe what is being added.
-    if (diff.trim().length === 0) {
-      const status = await readStatus(root)
-      const names =
-        status.repo && status.files.length > 0
-          ? status.files
-              .map((f) => `${f.untracked ? 'new file' : 'changed'}: ${f.path}`)
-              .join('\n')
-          : ''
-      if (names.length === 0) throw new Error('dsh-git: there are no changes to describe')
-      diff = `Files affected (no textual diff available):\n${names}`
+    const collected = await collectChangeDiff(root, {
+      staged: typeof request?.staged === 'boolean' ? request.staged : undefined,
+      maxBytes: MAX_AI_DIFF_BYTES,
+    })
+    if (collected.text.length === 0) {
+      throw new Error(
+        collected.scope === 'staged'
+          ? 'dsh-git: nothing is staged to describe'
+          : 'dsh-git: there are no changes to describe',
+      )
     }
-
-    const truncated = diff.length > MAX_AI_DIFF_BYTES
-    const body = truncated ? `${diff.slice(0, MAX_AI_DIFF_BYTES)}\n[diff truncated]` : diff
+    const body = collected.text
 
     const system = [
       'You write git commit messages for a software project.',
@@ -456,9 +447,23 @@ export class GitService extends TypertRemoteService {
       'Return ONLY the commit message. No quotes, no code fences, no preamble, no explanation.',
     ].join('\n')
 
+    // Naming the scope keeps the message honest about what the commit records:
+    // told only "this diff", a model handed a staged subset happily writes as
+    // if it were describing the whole working tree. Truncation is called out
+    // for the same reason — a partial diff read as complete produces a subject
+    // line confidently describing a third of the change.
+    const preamble = [
+      collected.scope === 'staged'
+        ? 'Write a commit message for the STAGED changes below. They are exactly what the commit will record; describe nothing else.'
+        : 'Write a commit message for all uncommitted changes below.',
+      ...(collected.truncated
+        ? ['The diff is TRUNCATED — summarize the overall change, do not claim to have seen every file.']
+        : []),
+    ].join('\n')
+
     const messages = [
       createUserMessage({
-        content: [{ type: 'text', text: `Write a commit message for this diff:\n\n${body}` }],
+        content: [{ type: 'text', text: `${preamble}\n\n${body}` }],
         source: { kind: 'plugin', plugin: 'dsh-git' },
       }),
     ]
@@ -500,7 +505,7 @@ export class GitService extends TypertRemoteService {
 
     const message = cleanMessage(text)
     if (message.length === 0) throw new Error('dsh-git: the model produced no commit message')
-    return { message }
+    return { message, scope: collected.scope }
   }
 
   /**

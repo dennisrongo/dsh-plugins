@@ -244,35 +244,108 @@ function parseCommitFiles(raw) {
   return out;
 }
 __name(parseCommitFiles, "parseCommitFiles");
-async function readStatus(dir) {
-  const root = await repoRoot(dir);
-  if (root === void 0) return { repo: false, root: dir };
-  const [statusRun, remotesRun, headRun] = await Promise.all([
-    runGit(root, ["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]),
-    runGit(root, ["remote"]),
-    runGit(root, ["rev-parse", "--short", "HEAD"])
+async function readPorcelain(root) {
+  const run = await runGit(root, [
+    "status",
+    "--porcelain=v1",
+    "-b",
+    "-z",
+    "--untracked-files=all"
   ]);
-  const raw = statusRun.stdout;
+  const raw = run.stdout;
   const firstNul = raw.indexOf("\0");
   const header = firstNul >= 0 ? raw.slice(0, firstNul) : raw;
   const rest = firstNul >= 0 ? raw.slice(firstNul + 1) : "";
-  const branchInfo = header.startsWith("## ") ? parseBranchHeader(header.slice(3)) : {};
-  const unborn = header.includes("No commits yet") || headRun.code !== 0;
-  const files = parseStatus(rest);
+  return {
+    ...header.startsWith("## ") ? parseBranchHeader(header.slice(3)) : {},
+    unborn: header.includes("No commits yet"),
+    files: parseStatus(rest)
+  };
+}
+__name(readPorcelain, "readPorcelain");
+async function readStatus(dir) {
+  const root = await repoRoot(dir);
+  if (root === void 0) return { repo: false, root: dir };
+  const [porcelain, remotesRun, headRun] = await Promise.all([
+    readPorcelain(root),
+    runGit(root, ["remote"]),
+    runGit(root, ["rev-parse", "--short", "HEAD"])
+  ]);
+  const unborn = porcelain.unborn || headRun.code !== 0;
   const recent = unborn ? [] : await recentCommits(root);
   return {
     repo: true,
     root,
-    ...branchInfo.branch !== void 0 ? { branch: branchInfo.branch } : {},
+    ...porcelain.branch !== void 0 ? { branch: porcelain.branch } : {},
     ...!unborn && headRun.code === 0 ? { head: headRun.stdout.trim() } : {},
     unborn,
-    ...branchInfo.upstream !== void 0 ? { upstream: branchInfo.upstream } : {},
+    ...porcelain.upstream !== void 0 ? { upstream: porcelain.upstream } : {},
     hasRemote: remotesRun.code === 0 && remotesRun.stdout.trim().length > 0,
-    files,
+    files: porcelain.files,
     recent
   };
 }
 __name(readStatus, "readStatus");
+async function untrackedPatch(root, path) {
+  const run = await runGit(root, ["diff", "--no-color", "--no-index", "--", "/dev/null", path]);
+  return run.stdout;
+}
+__name(untrackedPatch, "untrackedPatch");
+async function collectChangeDiff(root, options = {}) {
+  const maxBytes = options.maxBytes ?? MAX_AI_DIFF_BYTES;
+  const { files, unborn } = await readPorcelain(root);
+  const staged = options.staged ?? files.some((f) => f.staged);
+  const scope = staged ? "staged" : "all";
+  const args = ["diff", "--no-color", "--no-ext-diff"];
+  if (staged) {
+    args.push("--cached");
+  } else if (!unborn) {
+    args.push("HEAD");
+  }
+  const run = await runGit(root, args);
+  const parts = [];
+  let used = 0;
+  if (run.stdout.trim().length > 0) {
+    parts.push(run.stdout);
+    used += run.stdout.length;
+  }
+  const omitted = [];
+  if (!staged) {
+    for (const file of files) {
+      if (!file.untracked) continue;
+      if (used >= maxBytes) {
+        omitted.push(file.path);
+        continue;
+      }
+      const patch = await untrackedPatch(root, file.path);
+      if (patch.trim().length === 0) {
+        omitted.push(file.path);
+        continue;
+      }
+      parts.push(patch);
+      used += patch.length;
+    }
+  }
+  if (omitted.length > 0) {
+    parts.push(`New files, contents not shown:
+${omitted.map((p) => `- ${p}`).join("\n")}`);
+  }
+  let text = parts.join("\n").trim();
+  if (text.length === 0) {
+    const named = staged ? files.filter((f) => f.staged) : files;
+    if (named.length === 0) return { scope, text: "", truncated: false };
+    text = `Files affected (no textual diff available):
+${named.map((f) => `${f.untracked ? "new file" : "changed"}: ${f.path}`).join("\n")}`;
+  }
+  const truncated = text.length > maxBytes;
+  return {
+    scope,
+    text: truncated ? `${text.slice(0, maxBytes)}
+[diff truncated]` : text,
+    truncated
+  };
+}
+__name(collectChangeDiff, "collectChangeDiff");
 function assertSafePath(path) {
   if (typeof path !== "string" || path.length === 0) {
     throw new Error("dsh-git: path must be a non-empty string");
@@ -482,15 +555,7 @@ var _GitService = class _GitService extends (_a = TypertRemoteService) {
     if (path !== void 0) {
       const tracked = await runGit(root, ["ls-files", "--error-unmatch", "--", path]);
       if (tracked.code !== 0) {
-        const show = await runGit(root, [
-          "diff",
-          "--no-color",
-          "--no-index",
-          "--",
-          "/dev/null",
-          path
-        ]);
-        const text2 = show.stdout;
+        const text2 = await untrackedPatch(root, path);
         if (text2.includes("Binary files")) {
           return { patch: "Binary file \u2014 no textual diff.", binary: true };
         }
@@ -634,21 +699,16 @@ var _GitService = class _GitService extends (_a = TypertRemoteService) {
     const dir = this.workspaceDir(request?.workspaceId);
     const root = await repoRoot(dir);
     if (root === void 0) throw new Error("dsh-git: not a git repository");
-    const staged = request?.staged === true;
-    const diffArgs = ["diff", "--no-color", "--no-ext-diff"];
-    if (staged) diffArgs.push("--cached");
-    const diffRun = await runGit(root, diffArgs);
-    let diff = diffRun.stdout;
-    if (diff.trim().length === 0) {
-      const status = await readStatus(root);
-      const names = status.repo && status.files.length > 0 ? status.files.map((f) => `${f.untracked ? "new file" : "changed"}: ${f.path}`).join("\n") : "";
-      if (names.length === 0) throw new Error("dsh-git: there are no changes to describe");
-      diff = `Files affected (no textual diff available):
-${names}`;
+    const collected = await collectChangeDiff(root, {
+      staged: typeof request?.staged === "boolean" ? request.staged : void 0,
+      maxBytes: MAX_AI_DIFF_BYTES
+    });
+    if (collected.text.length === 0) {
+      throw new Error(
+        collected.scope === "staged" ? "dsh-git: nothing is staged to describe" : "dsh-git: there are no changes to describe"
+      );
     }
-    const truncated = diff.length > MAX_AI_DIFF_BYTES;
-    const body = truncated ? `${diff.slice(0, MAX_AI_DIFF_BYTES)}
-[diff truncated]` : diff;
+    const body = collected.text;
     const system = [
       "You write git commit messages for a software project.",
       "Follow Conventional Commits: a `type(scope): subject` line, where type is one of feat, fix, docs, style, refactor, perf, test, build, ci, chore.",
@@ -656,9 +716,13 @@ ${names}`;
       'If the change is not trivial, add a blank line and 1-3 short bullet points starting with "- " explaining what changed and why.',
       "Return ONLY the commit message. No quotes, no code fences, no preamble, no explanation."
     ].join("\n");
+    const preamble = [
+      collected.scope === "staged" ? "Write a commit message for the STAGED changes below. They are exactly what the commit will record; describe nothing else." : "Write a commit message for all uncommitted changes below.",
+      ...collected.truncated ? ["The diff is TRUNCATED \u2014 summarize the overall change, do not claim to have seen every file."] : []
+    ].join("\n");
     const messages = [
       createUserMessage({
-        content: [{ type: "text", text: `Write a commit message for this diff:
+        content: [{ type: "text", text: `${preamble}
 
 ${body}` }],
         source: { kind: "plugin", plugin: "dsh-git" }
@@ -685,7 +749,7 @@ ${body}` }],
     const text = assembler.blocks().filter((b) => b.type === "text").map((b) => b.text).join("");
     const message = cleanMessage(text);
     if (message.length === 0) throw new Error("dsh-git: the model produced no commit message");
-    return { message };
+    return { message, scope: collected.scope };
   }
   /**
    * Run one repository mutation on the repo's write chain and report the result.

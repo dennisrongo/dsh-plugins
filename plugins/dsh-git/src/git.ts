@@ -11,7 +11,9 @@
  */
 import { execFile } from 'node:child_process'
 import {
+  MAX_AI_DIFF_BYTES,
   RECENT_COMMITS,
+  type ChangeScope,
   type GitCommit,
   type GitCommitFile,
   type GitFileChange,
@@ -309,6 +311,45 @@ export function parseCommitFiles(raw: string): GitCommitFile[] {
   return out
 }
 
+/** One porcelain status read, already split into header facts and files. */
+interface Porcelain {
+  branch?: string
+  upstream?: GitUpstream
+  /** As reported by the branch header alone; {@link readStatus} corroborates it. */
+  unborn: boolean
+  files: GitFileChange[]
+}
+
+/**
+ * Run one `git status` and parse it.
+ *
+ * Split out because the working set is all most callers need, and the rest of
+ * {@link readStatus} — the remote probe, the HEAD probe, the commit log — is
+ * four more git processes they would pay for and discard.
+ * @param root - repository working-tree root.
+ * @returns the branch facts and the changed files.
+ */
+async function readPorcelain(root: string): Promise<Porcelain> {
+  const run = await runGit(root, [
+    'status',
+    '--porcelain=v1',
+    '-b',
+    '-z',
+    '--untracked-files=all',
+  ])
+  const raw = run.stdout
+  // With -z the branch header is itself NUL-terminated, so split it off first.
+  const firstNul = raw.indexOf('\0')
+  const header = firstNul >= 0 ? raw.slice(0, firstNul) : raw
+  const rest = firstNul >= 0 ? raw.slice(firstNul + 1) : ''
+
+  return {
+    ...(header.startsWith('## ') ? parseBranchHeader(header.slice(3)) : {}),
+    unborn: header.includes('No commits yet'),
+    files: parseStatus(rest),
+  }
+}
+
 /**
  * Build the whole repository snapshot for one directory.
  * @param dir - the workspace directory to probe.
@@ -318,36 +359,138 @@ export async function readStatus(dir: string): Promise<GitStatus> {
   const root = await repoRoot(dir)
   if (root === undefined) return { repo: false, root: dir }
 
-  const [statusRun, remotesRun, headRun] = await Promise.all([
-    runGit(root, ['status', '--porcelain=v1', '-b', '-z', '--untracked-files=all']),
+  const [porcelain, remotesRun, headRun] = await Promise.all([
+    readPorcelain(root),
     runGit(root, ['remote']),
     runGit(root, ['rev-parse', '--short', 'HEAD']),
   ])
 
-  const raw = statusRun.stdout
-  // With -z the branch header is itself NUL-terminated, so split it off first.
-  const firstNul = raw.indexOf('\0')
-  const header = firstNul >= 0 ? raw.slice(0, firstNul) : raw
-  const rest = firstNul >= 0 ? raw.slice(firstNul + 1) : ''
-
-  const branchInfo = header.startsWith('## ')
-    ? parseBranchHeader(header.slice(3))
-    : {}
-
-  const unborn = header.includes('No commits yet') || headRun.code !== 0
-  const files = parseStatus(rest)
+  const unborn = porcelain.unborn || headRun.code !== 0
   const recent = unborn ? [] : await recentCommits(root)
 
   return {
     repo: true,
     root,
-    ...(branchInfo.branch !== undefined ? { branch: branchInfo.branch } : {}),
+    ...(porcelain.branch !== undefined ? { branch: porcelain.branch } : {}),
     ...(!unborn && headRun.code === 0 ? { head: headRun.stdout.trim() } : {}),
     unborn,
-    ...(branchInfo.upstream !== undefined ? { upstream: branchInfo.upstream } : {}),
+    ...(porcelain.upstream !== undefined ? { upstream: porcelain.upstream } : {}),
     hasRemote: remotesRun.code === 0 && remotesRun.stdout.trim().length > 0,
-    files,
+    files: porcelain.files,
     recent,
+  }
+}
+
+/**
+ * Diff an untracked file against the empty device.
+ *
+ * A file that is in neither the index nor any tree is invisible to every form
+ * of `git diff` — including `git diff HEAD` — so without this a brand-new file
+ * contributes nothing at all to a patch. `--no-index` exits non-zero whenever
+ * the two sides differ, which is the normal case here, so the exit code is
+ * deliberately ignored and only stdout is read.
+ *
+ * @param root - repository working-tree root.
+ * @param path - repo-relative path, already validated by the caller.
+ * @returns the synthesized patch, or an empty string when git produced none.
+ */
+export async function untrackedPatch(root: string, path: string): Promise<string> {
+  const run = await runGit(root, ['diff', '--no-color', '--no-index', '--', '/dev/null', path])
+  return run.stdout
+}
+
+/** The patch handed to the model, plus what it actually covers. */
+export interface ChangeDiff {
+  /** `staged` when the index alone was described, `all` for every uncommitted change. */
+  scope: ChangeScope
+  /** Unified diff text, already capped. Empty means there was nothing to describe. */
+  text: string
+  /** Whether the byte budget cut the text short. */
+  truncated: boolean
+}
+
+/**
+ * Assemble the diff that describes what a commit would record.
+ *
+ * The scope is chosen the way the commit button behaves: with anything staged,
+ * only the index matters, because that is exactly what `git commit` would
+ * write. With an empty index there is no commit to describe yet, so the whole
+ * uncommitted picture is used instead — which is what someone reaching for a
+ * drafted message before staging expects to see summarized.
+ *
+ * @param root - repository working-tree root.
+ * @param options - explicit scope override and byte budget.
+ * @returns the patch text and the scope it covers.
+ */
+export async function collectChangeDiff(
+  root: string,
+  options: { staged?: boolean | undefined; maxBytes?: number } = {},
+): Promise<ChangeDiff> {
+  const maxBytes = options.maxBytes ?? MAX_AI_DIFF_BYTES
+  const { files, unborn } = await readPorcelain(root)
+  const staged = options.staged ?? files.some((f) => f.staged)
+  const scope: ChangeScope = staged ? 'staged' : 'all'
+
+  const args = ['diff', '--no-color', '--no-ext-diff']
+  if (staged) {
+    args.push('--cached')
+  } else if (!unborn) {
+    // `git diff HEAD` is the whole uncommitted picture — index AND worktree —
+    // where a bare `git diff` silently drops anything already staged. An
+    // unborn branch has no HEAD to name, and the bare form is the only one
+    // that runs there at all.
+    args.push('HEAD')
+  }
+
+  const run = await runGit(root, args)
+  const parts: string[] = []
+  let used = 0
+  if (run.stdout.trim().length > 0) {
+    parts.push(run.stdout)
+    used += run.stdout.length
+  }
+
+  // Untracked files need synthesizing in the `all` scope only: once staged, a
+  // new file is an ordinary addition that `--cached` already carries.
+  const omitted: string[] = []
+  if (!staged) {
+    for (const file of files) {
+      if (!file.untracked) continue
+      if (used >= maxBytes) {
+        omitted.push(file.path)
+        continue
+      }
+      const patch = await untrackedPatch(root, file.path)
+      if (patch.trim().length === 0) {
+        omitted.push(file.path)
+        continue
+      }
+      parts.push(patch)
+      used += patch.length
+    }
+  }
+  if (omitted.length > 0) {
+    parts.push(`New files, contents not shown:\n${omitted.map((p) => `- ${p}`).join('\n')}`)
+  }
+
+  let text = parts.join('\n').trim()
+
+  // Binary edits, mode changes and permission-only churn all produce a status
+  // entry with no textual diff. Naming them still lets the model say what the
+  // change touched, where an empty patch would only produce a refusal.
+  if (text.length === 0) {
+    const named = staged ? files.filter((f) => f.staged) : files
+    if (named.length === 0) return { scope, text: '', truncated: false }
+    text = `Files affected (no textual diff available):\n${named
+      .map((f) => `${f.untracked ? 'new file' : 'changed'}: ${f.path}`)
+      .join('\n')}`
+  }
+
+  const truncated = text.length > maxBytes
+  return {
+    scope,
+    text: truncated ? `${text.slice(0, maxBytes)}\n[diff truncated]` : text,
+    truncated,
   }
 }
 

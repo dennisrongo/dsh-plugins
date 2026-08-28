@@ -200,25 +200,38 @@ export interface StageRequest {
 export interface CommitRequest {
   workspaceId: string
   message: string
-  /** Stage every tracked modification first (`git commit -a` semantics). */
+  /**
+   * Stage every tracked modification first (`git commit -a` semantics).
+   *
+   * The tab no longer sends this — its Commit button requires a non-empty
+   * index — but the host still honours it for older clients.
+   */
   all?: boolean
 }
 
-/** `suggestMessage` request: ask the model to describe the staged work. */
+/** `suggestMessage` request: ask the model to describe the pending work. */
 export interface SuggestRequest {
   workspaceId: string
   /**
-   * Describe the staged diff when true, otherwise everything that differs.
-   * The UI passes true whenever anything is staged, so the message matches
-   * exactly what a commit would record.
+   * Force the scope: the index when true, every uncommitted change when false.
+   *
+   * OMIT IT to get the right answer. The host then resolves the scope from a
+   * fresh status read — staged when anything is staged, the whole tree when
+   * the index is empty — which the browser cannot do without racing its own
+   * snapshot against the disk.
    */
   staged?: boolean
 }
+
+/** Which set of changes a drafted commit message describes. */
+export type ChangeScope = 'staged' | 'all'
 
 /** `suggestMessage` reply. */
 export interface SuggestResult {
   /** Conventional-commit style message: subject line, optional body. */
   message: string
+  /** Which set of changes the message actually describes. */
+  scope?: ChangeScope
 }
 
 /** Which sync operation to run against the remote. */

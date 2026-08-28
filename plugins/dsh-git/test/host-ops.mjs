@@ -15,10 +15,12 @@ import { join } from 'node:path'
 
 import {
   assertSafeSha,
+  collectChangeDiff,
   parseCommitFiles,
   readStatus,
   runGit,
   repoRoot,
+  untrackedPatch,
 } from '../src/git.ts'
 
 let passed = 0
@@ -250,6 +252,93 @@ try {
   })
 } finally {
   rmSync(dir, { recursive: true, force: true })
+}
+
+// --- the diff handed to the commit-message model ----------------------------
+//
+// The scope rule is the whole feature: staged content alone when the index has
+// any, every uncommitted change when it does not. Both halves are easy to get
+// subtly wrong in ways no type catches — a bare `git diff` silently drops the
+// index, and untracked files are invisible to every revision git can name.
+
+const ai = mkdtempSync(join(tmpdir(), 'dsh-git-ai-'))
+try {
+  await runGit(ai, ['init', '-b', 'trunk'])
+  execFileSync('git', ['config', 'user.email', 'ai@example.com'], { cwd: ai })
+  execFileSync('git', ['config', 'user.name', 'AI Test'], { cwd: ai })
+
+  await test('an unborn branch with only new files still gets a diff', async () => {
+    writeFileSync(join(ai, 'first.txt'), 'hello\n')
+    const got = await collectChangeDiff(ai)
+    assert.equal(got.scope, 'all', 'nothing staged means the whole tree')
+    // `git diff HEAD` cannot run here at all, and a bare `git diff` shows an
+    // untracked file nothing — so this is entirely the synthesized patch.
+    assert.match(got.text, /first\.txt/)
+    assert.match(got.text, /\+hello/)
+  })
+
+  await test('a clean tree yields nothing to describe', async () => {
+    await runGit(ai, ['add', '-A'])
+    await runGit(ai, ['commit', '-m', 'chore: seed'])
+    const got = await collectChangeDiff(ai)
+    assert.equal(got.text, '', 'the caller decides how to report "no changes"')
+    assert.equal(got.truncated, false)
+  })
+
+  await test('with nothing staged, the diff covers modified AND untracked files', async () => {
+    writeFileSync(join(ai, 'first.txt'), 'hello\nworld\n')
+    writeFileSync(join(ai, 'brand-new.txt'), 'fresh content\n')
+    const got = await collectChangeDiff(ai)
+    assert.equal(got.scope, 'all')
+    assert.match(got.text, /\+world/, 'the tracked modification is in')
+    assert.match(got.text, /brand-new\.txt/, 'the untracked file is in')
+    assert.match(got.text, /\+fresh content/, 'with its contents, not just its name')
+  })
+
+  await test('with something staged, the diff covers ONLY the index', async () => {
+    await runGit(ai, ['add', '--', 'first.txt'])
+    const got = await collectChangeDiff(ai)
+    assert.equal(got.scope, 'staged', 'a non-empty index picks the scope')
+    assert.match(got.text, /\+world/, 'the staged change is described')
+    assert.doesNotMatch(
+      got.text,
+      /brand-new\.txt/,
+      'the untracked file is NOT part of what this commit would record',
+    )
+  })
+
+  await test('an explicit scope overrides the default, and sees past the index', async () => {
+    const all = await collectChangeDiff(ai, { staged: false })
+    assert.equal(all.scope, 'all')
+    // `git diff` alone would show nothing for first.txt now that it is staged;
+    // only `git diff HEAD` keeps it visible.
+    assert.match(all.text, /\+world/, 'staged work stays visible in the all scope')
+    assert.match(all.text, /brand-new\.txt/, 'and so does the untracked file')
+
+    // Forcing the staged scope over an empty index describes nothing, rather
+    // than quietly widening to the working tree — that silent widening is the
+    // bug the scope rule exists to prevent.
+    await runGit(ai, ['restore', '--staged', '--', 'first.txt'])
+    const staged = await collectChangeDiff(ai, { staged: true })
+    assert.equal(staged.scope, 'staged')
+    assert.equal(staged.text, '')
+  })
+
+  await test('the byte budget truncates rather than failing the call', async () => {
+    const got = await collectChangeDiff(ai, { maxBytes: 200 })
+    assert.equal(got.truncated, true)
+    assert.match(got.text, /\[diff truncated\]/)
+    assert.ok(got.text.length < 300, `capped, got ${got.text.length} bytes`)
+  })
+
+  await test('untrackedPatch reports a real patch despite a non-zero exit', async () => {
+    // --no-index exits 1 whenever the sides differ, which is always the case
+    // here; reading the exit code instead of stdout would drop every new file.
+    const patch = await untrackedPatch(ai, 'brand-new.txt')
+    assert.match(patch, /\+fresh content/)
+  })
+} finally {
+  rmSync(ai, { recursive: true, force: true })
 }
 
 console.log(`\n${passed} host checks passed`)

@@ -20,6 +20,8 @@ import {
   countChanges,
   badgeFor,
   canCommit,
+  commitBlocker,
+  describeScope,
   branchSummary,
   baseName,
   dirName,
@@ -212,21 +214,49 @@ await test('badgeFor reads the column its section shows', () => {
   assert.equal(badgeFor({ ...f, untracked: true }, 'unstaged'), 'U')
 })
 
-await test('canCommit blocks on conflicts and empty messages', () => {
+await test('canCommit demands staged content AND a message', () => {
   const clean = { repo: true, root: '/r', unborn: false, hasRemote: false, files: [], recent: [] }
-  const changed = {
+  const staged = {
     ...clean,
     files: [{ path: 'a', index: 'M', worktree: ' ', staged: true, conflicted: false, untracked: false }],
   }
+  // The case the -a sweep used to allow: real work, none of it staged.
+  const unstagedOnly = {
+    ...clean,
+    files: [{ path: 'a', index: ' ', worktree: 'M', staged: false, conflicted: false, untracked: false }],
+  }
+  const untrackedOnly = {
+    ...clean,
+    files: [{ path: 'a', index: '?', worktree: '?', staged: false, conflicted: false, untracked: true }],
+  }
   const conflicted = {
     ...clean,
-    files: [{ path: 'a', index: 'U', worktree: 'U', staged: false, conflicted: true, untracked: false }],
+    files: [
+      { path: 'a', index: 'M', worktree: ' ', staged: true, conflicted: false, untracked: false },
+      { path: 'b', index: 'U', worktree: 'U', staged: false, conflicted: true, untracked: false },
+    ],
   }
-  assert.equal(canCommit(changed, 'feat: x'), true)
-  assert.equal(canCommit(changed, '   '), false, 'blank message blocks')
+  assert.equal(canCommit(staged, 'feat: x'), true)
+  assert.equal(canCommit(staged, '   '), false, 'blank message blocks')
   assert.equal(canCommit(clean, 'feat: x'), false, 'nothing to commit blocks')
-  assert.equal(canCommit(conflicted, 'feat: x'), false, 'conflicts block')
+  assert.equal(canCommit(unstagedOnly, 'feat: x'), false, 'unstaged edits alone block')
+  assert.equal(canCommit(untrackedOnly, 'feat: x'), false, 'untracked files alone block')
+  assert.equal(canCommit(conflicted, 'feat: x'), false, 'conflicts block even with staged work')
   assert.equal(canCommit({ repo: false, root: '/r' }, 'feat: x'), false)
+
+  // The hint must mirror canCommit, or the button goes dead with no reason.
+  assert.equal(commitBlocker(staged, 'feat: x'), '')
+  assert.equal(commitBlocker(staged, ''), 'Write a commit message')
+  assert.equal(commitBlocker(unstagedOnly, 'feat: x'), 'Stage a file to commit')
+  assert.equal(commitBlocker(untrackedOnly, ''), 'Stage a file to commit', 'staging outranks the message')
+  assert.equal(commitBlocker(conflicted, 'feat: x'), 'Resolve the conflicts before committing')
+})
+
+await test('describeScope names what the AI message covered', () => {
+  assert.match(describeScope('staged'), /staged/)
+  assert.match(describeScope('all'), /all uncommitted/)
+  // An older host omits the field; the strip must stay silent, not guess.
+  assert.equal(describeScope(undefined), '')
 })
 
 await test('branchSummary reports divergence', () => {

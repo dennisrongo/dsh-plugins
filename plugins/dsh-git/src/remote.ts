@@ -130,7 +130,13 @@ const suggestRequestSchema = z.object({
   workspaceId: z.string(),
   staged: z.boolean().optional(),
 })
-const suggestResultSchema = z.object({ message: z.string() })
+// `scope` is optional so a host booted before it existed still validates —
+// the browser's codec is strict, and a missing field would otherwise turn a
+// working suggestion into a decode error.
+const suggestResultSchema = z.object({
+  message: z.string(),
+  scope: z.enum(['staged', 'all']).optional(),
+})
 
 const syncRequestSchema = z.object({
   workspaceId: z.string(),
