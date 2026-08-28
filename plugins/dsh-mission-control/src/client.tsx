@@ -1519,7 +1519,6 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   transform: translateY(-1px);
 }
 .dshmc-pomo-btn:active { transform: translateY(0) scale(0.92); }
-.dshmc-pomo-btn.on { background: var(--mc-surface-active); color: var(--mc-text); }
 .dshmc-pomo-btn.is-primary {
   color: var(--mc-text-2);
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease),
@@ -5130,18 +5129,8 @@ function notifyPhaseEnd(elapsed: PomodoroPhase, upcoming: PomodoroPhase): void {
  * the panel's pure-consumer posture is untouched.
  *
  * @param config - configured phase lengths from panel settings.
- * @param settingsOpen - whether the settings drawer is currently open.
- * @param onConfigure - toggles the settings drawer holding the pomodoro controls.
  */
-function PomodoroBar({
-  config,
-  settingsOpen,
-  onConfigure,
-}: {
-  config: PomodoroConfig
-  settingsOpen: boolean
-  onConfigure: () => void
-}): React.JSX.Element {
+function PomodoroBar({ config }: { config: PomodoroConfig }): React.JSX.Element {
   const [state, setState] = React.useState<PomodoroState>(() => initialPomodoro(config))
   const now = useTicker(state.running, 1000)
 
@@ -5238,15 +5227,6 @@ function PomodoroBar({
           title="Skip"
         >
           <IconSkip />
-        </button>
-        <button
-          className={`dshmc-pomo-btn${settingsOpen ? ' on' : ''}`}
-          onClick={onConfigure}
-          aria-label="Configure pomodoro durations"
-          aria-expanded={settingsOpen}
-          title="Durations"
-        >
-          <IconSettings />
         </button>
       </div>
     </div>
@@ -5760,11 +5740,7 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
         </div>
         )}
         {settings.pomodoroEnabled ? (
-          <PomodoroBar
-            config={pomodoroConfig}
-            settingsOpen={settingsOpen}
-            onConfigure={() => setSettingsOpen((v) => !v)}
-          />
+          <PomodoroBar config={pomodoroConfig} />
         ) : null}
       </div>
       {!open ? (

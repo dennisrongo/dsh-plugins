@@ -991,7 +991,6 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   transform: translateY(-1px);
 }
 .dshmc-pomo-btn:active { transform: translateY(0) scale(0.92); }
-.dshmc-pomo-btn.on { background: var(--mc-surface-active); color: var(--mc-text); }
 .dshmc-pomo-btn.is-primary {
   color: var(--mc-text-2);
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease),
@@ -3764,11 +3763,7 @@ function notifyPhaseEnd(elapsed, upcoming) {
     });
   }
 }
-function PomodoroBar({
-  config,
-  settingsOpen,
-  onConfigure
-}) {
+function PomodoroBar({ config }) {
   const [state, setState] = import_react.default.useState(() => initialPomodoro(config));
   const now = useTicker(state.running, 1e3);
   import_react.default.useEffect(() => {
@@ -3852,17 +3847,6 @@ function PomodoroBar({
           "aria-label": `Skip to ${phaseLabel(nextPhase(state.phase, state.phase === "work" ? state.completed + 1 : state.completed))}`,
           title: "Skip",
           children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconSkip, {})
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "button",
-        {
-          className: `dshmc-pomo-btn${settingsOpen ? " on" : ""}`,
-          onClick: onConfigure,
-          "aria-label": "Configure pomodoro durations",
-          "aria-expanded": settingsOpen,
-          title: "Durations",
-          children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconSettings, {})
         }
       )
     ] })
@@ -4237,14 +4221,7 @@ function MissionControl({ ctx }) {
           group.key
         ))
       ] }),
-      settings.pomodoroEnabled ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        PomodoroBar,
-        {
-          config: pomodoroConfig,
-          settingsOpen,
-          onConfigure: () => setSettingsOpen((v) => !v)
-        }
-      ) : null
+      settings.pomodoroEnabled ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PomodoroBar, { config: pomodoroConfig }) : null
     ] }),
     !open ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
       "button",
