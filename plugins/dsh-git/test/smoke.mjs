@@ -31,6 +31,7 @@ import {
   branchTrack,
   menuLeft,
   workspaceIdOf,
+  findWorkspaceForPath,
   baseName,
   dirName,
   GitStore,
@@ -460,6 +461,34 @@ await test('the suggestion resolves to an actual sibling of the project', () => 
   const target = resolveWorktreeTarget(root, suggested)
   assert.equal(target.path, 'C:/Users/me/GitHub/myproj-feature-login')
   assert.equal(target.inside, false, 'a suggestion the host would refuse is a broken suggestion')
+})
+
+await test('findWorkspaceForPath matches a worktree to its workspace', () => {
+  // Removing a worktree used to strand its workspace pointing at a deleted
+  // directory. This lookup is what lets the tab offer to clean up after itself.
+  const items = [
+    { workspaceId: 'w1', path: 'C:\\Users\\me\\GitHub\\myproj', title: 'myproj' },
+    { workspaceId: 'w2', path: 'C:\\Users\\me\\GitHub\\myproj-feature', title: 'myproj-feature' },
+    { workspaceId: 'w3', path: 'C:\\Users\\me\\GitHub\\myproj-two', title: 'myproj-two' },
+  ]
+  // Git reports forward slashes; the registry stores a realpath canon with
+  // backslashes. Both must resolve to the same workspace.
+  assert.equal(findWorkspaceForPath(items, 'C:/Users/me/GitHub/myproj-feature').workspaceId, 'w2')
+  assert.equal(findWorkspaceForPath(items, 'C:\\Users\\me\\GitHub\\myproj-feature').workspaceId, 'w2')
+  // Windows paths differ in case constantly.
+  assert.equal(findWorkspaceForPath(items, 'c:/users/ME/github/MyProj-Feature').workspaceId, 'w2')
+  // A trailing separator is the same directory.
+  assert.equal(findWorkspaceForPath(items, 'C:/Users/me/GitHub/myproj-feature/').workspaceId, 'w2')
+  assert.equal(findWorkspaceForPath(items, 'C:/Users/me/GitHub/myproj-feature').title, 'myproj-feature')
+
+  // A PREFIX must not match: deleting the wrong workspace is unrecoverable here.
+  assert.equal(findWorkspaceForPath(items, 'C:/Users/me/GitHub/myproj-feat'), undefined)
+  assert.equal(findWorkspaceForPath(items, 'C:/Users/me/GitHub/myproj-featureX'), undefined)
+  // Nothing registered there: no offer, rather than a near-enough guess.
+  assert.equal(findWorkspaceForPath(items, 'C:/elsewhere/wt'), undefined)
+  assert.equal(findWorkspaceForPath(items, ''), undefined)
+  // Malformed rows are skipped, not crashed on.
+  assert.equal(findWorkspaceForPath([{}, { path: 5 }, null], 'C:/x'), undefined)
 })
 
 await test('workspaceIdOf accepts the shapes the shell actually returns', () => {

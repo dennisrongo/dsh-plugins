@@ -1847,6 +1847,45 @@ function confirmAction(message: string): boolean {
 }
 
 /**
+ * Find the workspace registered at a directory, if any.
+ *
+ * Removing a worktree used to leave its workspace behind, pointing at a
+ * directory that no longer exists — registration was one-way. This is the
+ * lookup that lets the tab offer to clean up after itself.
+ *
+ * Comparison is normalized on separators, trailing slash and CASE, because the
+ * registry stores a host-side realpath canon while git reports its own spelling
+ * and Windows differs in case constantly. A prefix must NOT count as a match:
+ * `myproj-two` beside `myproj` is a different workspace, and deleting the wrong
+ * one is unrecoverable from here.
+ *
+ * Returns undefined rather than guessing when nothing matches — a realpath that
+ * resolved a symlink differently should mean 'no offer', never 'delete something
+ * that looked close'.
+ *
+ * @param items - the workspace list projection.
+ * @param path - directory to look up.
+ * @returns the matching workspace, or undefined.
+ */
+export function findWorkspaceForPath(
+  items: readonly { workspaceId?: unknown; path?: unknown; title?: unknown }[],
+  path: string,
+): { workspaceId: string; title: string } | undefined {
+  const norm = (value: string): string =>
+    value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const target = norm(path)
+  if (target.length === 0) return undefined
+  for (const item of items) {
+    if (typeof item?.path !== 'string' || typeof item?.workspaceId !== 'string') continue
+    if (norm(item.path) !== target) continue
+    return {
+      workspaceId: item.workspaceId,
+      title: typeof item.title === 'string' ? item.title : item.path,
+    }
+  }
+  return undefined
+}
+/**
  * Pull a workspace id out of whatever shape the shell's create call returned.
  *
  * The id is spelled differently across the shell's own projections (the list
@@ -2264,10 +2303,23 @@ function RepoPane({
 export function GitView({
   store,
   openWorktree,
+  workspaceLink,
 }: {
   store: GitStore | null
   /** Supplied by apply() from ctx.workspaces; absent in tests and in a shell without it. */
   openWorktree?: ((path: string) => void) | undefined
+  /**
+   * Registry access for the worktree rows, supplied by apply().
+   *
+   * Absent means the tab simply does not offer to clean up the workspace, which
+   * is the old behaviour — never a dead button.
+   */
+  workspaceLink?:
+    | {
+        find: (path: string) => { workspaceId: string; title: string } | undefined
+        remove: (workspaceId: string) => Promise<void>
+      }
+    | undefined
 }): React.JSX.Element {
   const [message, setMessage] = React.useState('')
   const [branch, setBranch] = React.useState('main')
@@ -2979,13 +3031,37 @@ export function GitView({
                 })
               }}
               onWorktree={(action, path) => {
+                if (action !== 'remove') {
+                  void store.worktree(action, { ...(path !== undefined ? { path } : {}) })
+                  return
+                }
+                if (path === undefined) return
                 if (
-                  action === 'remove' &&
                   !confirmAction('Remove this worktree? Uncommitted changes inside it are lost.')
                 ) {
                   return
                 }
-                void store.worktree(action, { ...(path !== undefined ? { path } : {}) })
+                // Look the workspace up BEFORE removing anything, and ask now —
+                // a second prompt after the directory is already gone reads as an
+                // afterthought, and the user is deciding about one thing.
+                const linked = workspaceLink?.find(path)
+                const alsoUnregister =
+                  linked !== undefined &&
+                  confirmAction(
+                    'Also remove the workspace "' +
+                      linked.title +
+                      '"? Otherwise it stays in your workspace list pointing at a directory ' +
+                      'that no longer exists. Its sessions are kept.',
+                  )
+                void store.worktree('remove', { path }).then((result) => {
+                  // ONLY unregister when the worktree actually went away. Git
+                  // refuses removal of a dirty worktree, and unregistering one
+                  // that still exists on disk is the opposite of the bug this
+                  // fixes -- it would hide a live worktree from the list.
+                  if (!alsoUnregister || linked === undefined) return
+                  if (result === null || !result.ok) return
+                  void workspaceLink?.remove(linked.workspaceId)
+                })
               }}
               onAddWorktree={() =>
                 setWorktreeForm({ path: '', branch: '', register: true, pathTouched: false })
@@ -3244,6 +3320,8 @@ export function apply(ctx: ClientContext): void {
           create(input: { path: string }): Promise<unknown>
           /** Connect a workspace and OPEN its session; this is what switches the UI. */
           startSession(workspaceId: string): void
+          /** Remove a workspace from the registry; its sessions are kept. */
+          delete(workspaceId: string): Promise<void>
         }
         remote: Record<string, GitRemote>
       }
@@ -3276,6 +3354,31 @@ export function apply(ctx: ClientContext): void {
         })()
       }
 
+      /**
+       * Registry access for worktree rows: find the workspace at a path, and
+       * remove it. Read fresh from the list on every call rather than captured,
+       * because the list changes as worktrees are opened and removed.
+       */
+      const workspaceLink = {
+        find: (path: string) =>
+          findWorkspaceForPath(
+            readyCtx.workspaces.list.getSnapshot().items as readonly {
+              workspaceId?: unknown
+              path?: unknown
+              title?: unknown
+            }[],
+            path,
+          ),
+        remove: async (workspaceId: string): Promise<void> => {
+          try {
+            await readyCtx.workspaces.delete(workspaceId)
+          } catch (error) {
+            // The worktree is already gone by this point, so a failed
+            // unregister must not read as a failed removal.
+            console.error('dsh-git: could not remove the workspace', error)
+          }
+        },
+      }
       readyCtx.slots.inject('conversation.view', () =>
         readyCtx.slots.register(
           {
@@ -3289,13 +3392,13 @@ export function apply(ctx: ClientContext): void {
                 sessionIds: readonly string[]
               }[]
               const workspaceId = workspaceIdForSession(workspaces, sessionId)
-              if (workspaceId === undefined) return { store: null, openWorktree }
+              if (workspaceId === undefined) return { store: null, openWorktree, workspaceLink }
               let store = stores.get(workspaceId)
               if (store === undefined) {
                 store = new GitStore(readyCtx.remote.dshGit, workspaceId)
                 stores.set(workspaceId, store)
               }
-              return { store, openWorktree }
+              return { store, openWorktree, workspaceLink }
             },
           },
           GitView,

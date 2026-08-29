@@ -502,6 +502,31 @@ coherent by construction. The id is read through `workspaceIdOf`, which accepts
 differently across its own projections, and guessing wrong fails silently: the worktree
 registers, nothing opens, and the button reads as dead.
 
+**Removing a worktree offers to remove its workspace too, because registration was
+one-way.** Opening a worktree registers a workspace; removing the worktree used to leave
+that workspace pointing at a deleted directory. Found in a real registry, not by
+reasoning about it.
+
+Three details are load-bearing:
+
+- **The workspace is looked up and the question asked BEFORE anything is removed.** A
+  second prompt after the directory is already gone reads as an afterthought, and the
+  user is deciding about one thing.
+- **Unregistering happens only if the removal actually SUCCEEDED.** Git refuses to remove
+  a worktree with uncommitted changes, and unregistering one that still exists on disk is
+  the inverse of the bug being fixed — it would hide a live worktree from the list.
+- **`findWorkspaceForPath` matches exactly, never by prefix.** The registry stores a
+  host-side realpath canon while git reports its own spelling, so comparison normalizes
+  separators, trailing slash and case. A prefix match would resolve
+  `myproj-feature` to `myproj` and delete the PARENT PROJECT's workspace — verified by
+  sabotage, which returned `w1` where `w2` was expected. It returns undefined rather than
+  guessing when nothing matches: a realpath that resolved a symlink differently should
+  mean "no offer", never "delete something that looked close".
+
+The removal is best-effort and logged: the worktree is already gone by then, so a failed
+unregister must not read as a failed removal. Sessions are kept — `workspaces.delete`
+drops them to the unaccounted group rather than deleting them, which the prompt says.
+
 **`refs` returns a discriminated outcome, never bare arrays** — the `commitFiles` lesson,
 and it is not hypothetical here. Measured against the running Desktop with an old host
 half and a fresh client bundle: `dshGit/status` answers 200 while `dshGit/refs` 404s.
