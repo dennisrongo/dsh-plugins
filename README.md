@@ -24,6 +24,9 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | [`dsh-skills`](plugins/dsh-skills) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-skills) | the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library as an installable skill catalog | host | — |
 | [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox, pomodoro timer | host + client | `dshMissionControl/load`, `save` |
 | [`dsh-theme`](plugins/dsh-theme) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-theme) | twelve themes, eight accents, contrast and scale sliders, and three fonts with two bundled, live preview | client + tiny host | — |
+| [`dsh-hooks`](plugins/dsh-hooks) | *unpublished* | Claude Code-compatible hook lifecycle — shell commands at eight lifecycle points | host | `dshHooks/describe`, `recent` |
+| [`dsh-plan-board`](plugins/dsh-plan-board) | *unpublished* | durable plans — captures every `exit_plan_mode` plan to disk, opens a review window, keeps the history | host + client | `dshPlans/list`, `get`, `changeToken`, `remove` |
+| [`dsh-memory`](plugins/dsh-memory) | *unpublished* | `/remember` into the AGENTS.md hierarchy, plus a tab showing which instruction files the loader kept | host + client | `dshMemory/inspect`, `remember`, `read` |
 
 ---
 
@@ -198,12 +201,75 @@ Selection rides a **cookie**, deliberately. DSH Desktop serves the UI from a new
 
 ---
 
+### `dsh-hooks`
+
+**npm:** [`@dennisrongo/dsh-hooks`](https://www.npmjs.com/package/@dennisrongo/dsh-hooks)
+
+Attach a shell command to a lifecycle point. Block a tool call, feed the model context, format a file after an edit, or get told when the agent stops — configured, not coded.
+
+dsh already had the lifecycle. `tools/pre-execute` is a waterfall returning `allow | deny | ask`; `tools/post-execute` can block a settled result or attach model-facing context; `agent/pre-step` can reject or rewrite the messages entering a step; `agent/turn-stopping` can steer an agent back into work. What it had no way to do was attach a **command** to any of that from configuration. This plugin is that runner and nothing more — it owns no policy, and with an empty config it is inert.
+
+**Eight events, Claude Code's names.** `PreToolUse` · `PostToolUse` · `UserPromptSubmit` · `SessionStart` · `SessionEnd` · `Stop` · `SubagentStop` · `Notification`. `UserPromptSubmit` is gated to steps that actually claimed a user-sourced message, because `agent/pre-step` fires on *every* step — without the gate a prompt hook would run once per tool round-trip.
+
+**The protocol is Claude Code's, so your existing hook scripts run unchanged.** JSON payload on stdin, exit 0 allows, exit 2 blocks with stderr as the reason, structured `hookSpecificOutput` on stdout for `permissionDecision` and `additionalContext`. Hooks are handed `DSH_PROJECT_DIR`, `DSH_SESSION_ID` and `DSH_HOOK_EVENT` — plus `CLAUDE_PROJECT_DIR` as the same value, so a ported script finds its project without edits. Those names have to be passed explicitly: the subprocess seam scrubs *all* `DSH_*` and credential-shaped variables out of a child's ambient environment, and the spec's explicit `env` is the documented opt-in.
+
+**Two configuration layers, and they are additive.** A `dsh-hooks` settings namespace (so `$DSH_HOME/settings.yaml`, schema-validated, live-reloading) plus `<workspace>/.dsh/hooks.json` that a repo can commit. Every matching hook from both runs — a checked-out repository cannot silently disable your global guard by declaring an empty list for the same event. The project document is read per dispatch and cached against `mtime+size`, so an edit takes effect with no restart and no watcher handle held open per workspace. `matcher` is a real regex over the tool name; an invalid one matches **nothing** and warns once, because one typo must not become a hook that fires on every call in the session.
+
+**Failure is fail-open, deliberately.** `tools/pre-execute` is awaited before every dispatch, so a hanging hook would stall the session: the deadline is owned by the runner (never the hook), expiry escalates through the seam's tree-scoped `terminate`, and a crash or timeout is not a denial unless the entry sets `failClosed: true`. One broken hook bricking every tool call is the failure mode that makes people delete their hooks entirely — a security gate opts into `failClosed` and accepts that breaking it stops the work; a formatter does not. `Stop` gets a second guard: it passes `stop_hook_active` faithfully, and caps consecutive hook-driven continuations at five for the hook that ignores it.
+
+**Two Claude Code capabilities dsh cannot express, both reported rather than dropped.** Tool arguments cannot be rewritten — `PreToolDecision` is `allow | deny | ask`, and the registry's own docs say input rewriting is excluded because arguments are already logged and presented; a hook returning `updatedInput` gets a warning naming the alternative. And `SessionEnd` cannot block teardown, because `agent/disposed` is emit-mode. A hook that believes it sanitized an argument it never changed is worse than one that cannot try.
+
+**Endpoints.** `POST /api/dshHooks/describe` → every hook in force across both layers with the document each came from; `POST /api/dshHooks/recent` → the last 200 settled runs with exit codes, durations and output tails. Both take a single parameter named `request`.
+
+**Requires.** `ctx.tools` and `ctx.subprocess`. `ctx.settings` and `ctx.workspaceRegistry` are used when present and deliberately not injected — this cordis has no optional-inject form, so listing them would make the plugin never mount in a deployment that composes neither.
+
+---
+
+### `dsh-plan-board`
+
+**npm:** [`@dennisrongo/dsh-plan-board`](plugins/dsh-plan-board) — *unpublished*
+
+Plans that outlive the scrollback. Every plan the agent presents through `exit_plan_mode` is written to `<workspace>/.dsh/plans/` as markdown, a window opens so you can read it at full size, and a **Plans** tab keeps the history with each plan's outcome.
+
+dsh already has plan mode, and it is good: `dsh-plan-mode` logs a `plan/mode` event that survives resume and fork, registers `/plan`, and presents the complete markdown for Approve / Keep planning. What it does not do is **keep** the plan. The markdown exists only inside the tool-call event in the session log — scroll past it and it is gone, it is not a file you can diff or commit, and the reviewer's feedback exists only as the text of a thrown error. The most reviewed artefact in the session was the least durable one.
+
+**Files, not rows.** `<workspace>/.dsh/plans/20260829T121500123-add-a-hook-lifecycle.md`, markdown with a small metadata block, so a plan can be opened in an editor, diffed, committed, or handed to someone who is not running the harness. `dsh-todo` keeps a database because a task list is rows; this is the other case. The metadata is JSON-per-line rather than YAML: it reads the same, but it has to survive a model-written title and free-form human feedback full of quotes and newlines, which is exactly where a hand-rolled YAML subset eventually breaks.
+
+**The capture point is `tools/execute`, not `tools/pre-execute`.** `next()` runs the tool body — the call that blocks on the human — so wrapping it is what makes the *outcome* observable: the plan is written `pending` before, and settled to `approved` or `rejected` after, with the rejection feedback lifted out of the error the tool threw. `pre-execute` sees the plan but never the answer.
+
+**The window is a `shell.overlay`, and that is not a style choice.** Views are rendered one-at-a-time by the session body (`only: <active id>`), so an inactive tab is not mounted and cannot open itself when a plan appears. An overlay is shell-scoped and always mounted, so "a window opens when a plan is created" is something the plugin can actually guarantee. The tab exists too — it is the history browser.
+
+**It does not approve plans, and it says so.** `exit_plan_mode` presents through `ctx.userQuestions.ask()`, and that service documents **one active provider per context** — the shipped question UI already holds it. Putting Approve buttons in the window would mean hijacking every question in the harness, not just plan reviews. So the window is a reading surface with a line pointing at the real control. A reading window with no approve button reads like a broken approve button unless it explains itself.
+
+Freshness rides a **change token** like `dsh-git`'s, but here it is a plain in-memory counter — this process is the only writer, so there is no `fs.watch` and no handle per workspace. Polling stops while the document is hidden. Plan bodies never ride the list: `list` returns metadata only, so 200 plans do not ship a megabyte of markdown to draw a sidebar. Markdown renders to **React elements**, never `dangerouslySetInnerHTML` — a plan is model-written text that may quote something off the internet — and links render as `label (url)` rather than as anchors, so a model-authored destination stays inspectable and inert. Writes go through a temp file and `rename`: the plan you are about to approve is exactly the file that must not be half-written.
+
+---
+
+### `dsh-memory`
+
+**npm:** [`@dennisrongo/dsh-memory`](plugins/dsh-memory) — *unpublished*
+
+A `/remember` command that writes a fact into the instruction hierarchy dsh already reads, and a **Memory** tab that shows which of those files the loader actually kept.
+
+This one is deliberately small, because dsh already has the read half and it is more capable than it looks. `dsh-agent-instructions` loads the user-global `$DSH_HOME/AGENTS.md`, then every `AGENTS.md` and `CLAUDE.md` from the project root down to the session's directory, plus `.local` overlays, deduplicated per directory, budgeted by bytes, pulling in nested files as the agent touches them — and sessions are already bound to workspaces by canonical path.
+
+**What was missing was writing and seeing.** There is no `#`-style capture, so a fact learned mid-session is one you retype by hand later. And the byte budget silently omits files: a file that exists, is discovered, and is dropped for budget looks exactly like a file the agent is ignoring for no reason — with the shipped `code` preset's 64 KiB budget, which a real monorepo reaches.
+
+**Capture.** `/remember <fact>` files it under a `## Memories` heading in `<projectRoot>/AGENTS.md`; `--local` targets the gitignored `AGENTS.local.md` overlay and `--user` the machine-wide `$DSH_HOME/AGENTS.md`. The reply always names the exact path — "saved" would leave you guessing which of four candidate files it landed in. A second fact joins the existing list rather than starting a new one, and nothing a human wrote is ever moved: the new item goes at the end of *that section*, not after whatever heading happens to be last.
+
+**Inspection.** The tab lists every discovered file in model precedence order with its size, `not loaded` when the budget dropped it, and `cut to 96 B` when it survived truncated. Both facts come from the loader's own `discoverBaselineInstructionFiles` and `loadBaselineInstructions` — nothing here reimplements the walk, because an inspector that drifts from the loader is worse than none: it is trusted precisely when it contradicts you.
+
+**Not a second memory store.** A parallel fact database beside the instruction files would mean two things to keep in sync, two precedence orders, and a place for facts to hide from a loader that already works.
+
+---
+
 Every package carries an `AGENTS.md` with its endpoints, mount row, dev loop and a verification recipe. See [AGENTS.md](AGENTS.md) for the repo as a whole.
 
 ## Install a plugin
 
-All eight are on npm, and each declares `dsh.bundle` — so one command installs **and**
-mounts it. `dsh plugin` forwards to pnpm inside the profile directory:
+The first eight are on npm (`dsh-hooks` is not published yet), and each declares
+`dsh.bundle` — so one command installs **and** mounts it. `dsh plugin` forwards to pnpm
+inside the profile directory:
 
 > **Profile names carry templates.** `dsh plugin --profile <name> add ...` scaffolds a new
 > profile if `<name>` doesn't exist — but only `web` and `headless` get a full template.

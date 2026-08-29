@@ -1,6 +1,6 @@
 # AGENTS.md — dsh-plugins
 
-Eight plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under `plugins/`
+Eleven plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under `plugins/`
 is self-contained: its own `package.json`, exports map, build and tests. Per-package
 `AGENTS.md` files cover endpoints and verification; this file covers the repo.
 
@@ -28,6 +28,17 @@ plugins/dsh-skills       host          — skill provider over @dennisrongo/skil
 plugins/dsh-theme        client + host — Themes settings page; four ctx.theme override
                          layers (palette/accent/font/scale) + an inlined first-paint
                          script. Bundles two OFL fonts as data URLs.
+plugins/dsh-hooks        host          — Claude Code-compatible hook lifecycle, service
+                         key dshHooks. Eight listeners over tools/*, agent/*,
+                         subagent/end and approval/request; runs shell commands
+                         through ctx.subprocess with an owned deadline.
+plugins/dsh-plan-board   host + client — durable plans, service key dshPlans. Wraps the
+                         exit_plan_mode dispatch; markdown files under
+                         <workspace>/.dsh/plans + a shell.overlay review window
+                         and a Plans history tab.
+plugins/dsh-memory       host + client — /remember + instruction inspector, service key
+                         dshMemory. Writes into the AGENTS.md hierarchy and
+                         reports what dsh-agent-instructions' byte budget kept.
 scripts/                 verify.mjs, anchor.mjs, check-type-scale.mjs, check-tokens.mjs,
                          link-superpowers-skills.mjs (all portable)
                          dev-link.ps1 (Windows: anchors + junctions into profiles)
@@ -35,7 +46,8 @@ scripts/                 verify.mjs, anchor.mjs, check-type-scale.mjs, check-tok
 
 Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package.
 
-All eight are scoped `@dennisrongo/` and published. The folder name is not the package name: a
+All are scoped `@dennisrongo/`; the first eight are published, and `dsh-hooks`,
+`dsh-plan-board` and `dsh-memory` are not yet. The folder name is not the package name: a
 `cordis.patch.yml` row takes the **package** name (`@dennisrongo/dsh-superpowers`), while the
 folder stays `plugins/dsh-superpowers`. Keep the scope: the bare `dsh-superpowers` on npm is
 an unrelated plugin by another author, and unscoped generic names in this space get taken.
