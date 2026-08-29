@@ -1132,10 +1132,14 @@ const VIEW_STYLES = `
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; line-height: 18px; color: var(--g-caption); white-space: nowrap;
 }
-/* The preview and the action row span every column. */
-.dshgit-form.wtform .dshgit-hint,
-.dshgit-form.wtform .dshgit-factions { grid-column: 1 / -1; }
-.dshgit-factions { display: flex; align-items: center; gap: 8px; }
+/* The resolved-path preview spans every column.
+
+   It must, and the class name matters: this rule named .dshgit-hint while the
+   element is .dshgit-preview, so the path landed in the AUTO-sized first column
+   and stretched it to the width of the whole path. Both inputs collapsed to
+   slivers a few pixels wide. Nothing errored — a grid just sized itself around
+   the longest thing in the column, which happened to be a filesystem path. */
+.dshgit-form.wtform .dshgit-preview { grid-column: 1 / -1; min-width: 0; }
 @container dshgit (max-width: 719px) {
   /* Narrow: labels sit above their field rather than stealing its width. */
   .dshgit-form.wtform { grid-template-columns: minmax(0, 1fr); }

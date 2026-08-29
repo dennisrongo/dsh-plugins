@@ -925,6 +925,22 @@ One sabotage was retired rather than fixed: widening the panel past the viewport
 item shrinks to fit its container, so `width: 2400px` collapses harmlessly — it was never
 a bug to catch.
 
+**The full-width rule must name the class the markup ACTUALLY uses.** It named
+`.dshgit-hint` while the element is `.dshgit-preview`, so the resolved path landed in the
+AUTO-sized first column and stretched it to the width of a whole filesystem path. Both
+inputs collapsed to 43px. Nothing errored: a grid simply sized itself around the longest
+thing in that column.
+
+**The probe missed it twice.** First because it measured only the panel, never the fields;
+then, once it measured them, because the fixture's preview said `C:/x/y` — too short to
+stretch anything. A fixture that does not carry realistic DATA cannot show a defect that is
+about size. It now uses a real path and fails with `an input is only 43px wide`.
+
+That is the third fixture in this package too weak to prove its own point (the menu probe's
+missing competitor, the modal's short panel, this). The pattern is always the same: the
+fixture is built from what the test is *about* rather than from what the app actually
+renders.
+
 **The add-worktree form is a GRID.** Seven controls on one flex line left every field too
 narrow to read a path in, which is the one thing that form exists to show. Branch comes
 first because the branch drives the path, so the order matches the causality; below the

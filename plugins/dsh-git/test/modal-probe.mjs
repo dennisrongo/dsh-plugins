@@ -46,7 +46,10 @@ const html = [
   '<button class="dshgit-btn ai">AI name</button>',
   '<label class="dshgit-flabel">Folder</label><input class="dshgit-fgrow">',
   '<label class="dshgit-fromsel">from<select><option>main</option></select></label>',
-  '<div class="dshgit-preview">C:/x/y</div>',
+  // A REAL path, not a token. The preview's job is to show where a worktree
+  // will land, and a grid column sizes itself to the longest thing in it — so a
+  // short placeholder here hides the exact defect this fixture exists to catch.
+  '<div class="dshgit-preview">C:/Users/denni/Documents/GitHub/dsh-plugins-swift-falcon</div>',
   // A TALL body on purpose. With a short panel the backdrop's align-items:center
   // keeps it clear of the drag strip by accident, so deleting the top padding
   // changes nothing and the probe proves nothing. Only a panel driven to
@@ -82,6 +85,10 @@ const script = `
     primaryColor: getComputedStyle(document.getElementById('primary')).color,
     cancelBorder: getComputedStyle(document.querySelector('.dshgit-modal-foot .dshgit-btn')).borderTopColor,
     inputColor: getComputedStyle(document.getElementById('first')).color,
+    inputW: document.getElementById('first').getBoundingClientRect().width,
+    inputs: Array.from(document.querySelectorAll('.dshgit-modal input[type=text], .dshgit-modal input:not([type])'))
+      .map((el) => Math.round(el.getBoundingClientRect().width)),
+    labelW: document.querySelector('.dshgit-flabel').getBoundingClientRect().width,
   })
 `
 
@@ -154,6 +161,17 @@ check('the palette reaches CONTROLS inside the portal, not just the panel', () =
   assert.notEqual(m.primaryBg, m.primaryColor, 'primary button is text-on-itself')
   assert.notEqual(m.cancelBorder, 'rgba(0, 0, 0, 0)', 'secondary button has no border')
   assert.notEqual(m.inputColor, 'rgba(0, 0, 0, 0)', 'input text is invisible')
+})
+
+check('the fields are wide enough to read a path in', () => {
+  // The whole reason this form became a grid. A rule that spans the preview
+  // across all columns is what keeps it from stretching the AUTO-sized label
+  // column to the width of a full filesystem path — which collapsed both
+  // inputs to a few pixels and shipped that way.
+  assert.ok(m.labelW < 140, 'the label column is ' + m.labelW + 'px: something is stretching it')
+  for (const w of m.inputs) {
+    assert.ok(w > 200, 'an input is only ' + w + 'px wide; fields: ' + JSON.stringify(m.inputs))
+  }
 })
 
 console.log('\n' + passed + ' modal checks passed')
