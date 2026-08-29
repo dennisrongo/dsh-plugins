@@ -10,14 +10,14 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 
 > **Status:** developed against dsh `0.1.1-rc.2`. dsh is a fast-moving `0.1.x` dev preview that promises breaking changes — re-verify against your installed version.
 >
-> **Platforms:** the plugins are plain Node and platform-agnostic, and DSH Desktop ships for Windows and macOS, so they should run on either. Most tooling is portable Node — `verify.mjs`, `anchor.mjs`, `link-superpowers-skills.mjs`. Only `dev-link.ps1`'s profile-junction half is **Windows-only**. Everything here has been exercised on Windows against both the CLI and DSH Desktop; macOS and Linux are untested.
+> **Platforms:** the plugins are plain Node and platform-agnostic, and DSH Desktop ships for Windows and macOS, so they should run on either. The tooling is portable — `verify.mjs`, `anchor.mjs`, `link-superpowers-skills.mjs` are plain Node, and profile live-linking has a script per platform (`dev-link.ps1` on Windows, `dev-link.sh` on macOS/Linux) behind one `dev-link.mjs` entry point. Everything here has been exercised on Windows against both the CLI and DSH Desktop; macOS and Linux are untested.
 
 ## Plugins
 
 | Package | npm | Adds | Halves | Endpoints |
 |---|---|---|---|---|
 | [`dsh-todo`](plugins/dsh-todo) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-todo) | per-workspace sprint/roadmap task list, plus a `dsh-todo` CLI | host + client + CLI | `dshTodo/list`, `replace` |
-| [`dsh-git`](plugins/dsh-git) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-git) | source-control tab — changes, history, branches, stash, worktrees | host + client | `dshGit/status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken`, `refs`, `branch`, `merge`, `stash`, `worktree`, `suggestBranch` |
+| [`dsh-git`](plugins/dsh-git) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-git) | source-control tab — changes, history, branches, stash, worktrees | host + client | `dshGit/status`, `diff`, `commitFiles`, `commitDiff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken`, `refs`, `branch`, `merge`, `stash`, `worktree`, `suggestBranch` |
 | [`dsh-weather`](plugins/dsh-weather) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-weather) | weather bar in the shell overlay | client only | — |
 | [`dsh-headless-plus`](plugins/dsh-headless-plus) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
 | [`dsh-superpowers`](plugins/dsh-superpowers) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
@@ -70,6 +70,8 @@ already looking at, against the same repository your agent is editing.
 
 **The model names the branch, not the path.** Type a rough description in the branch box — "fix login retry" — hit ✦, and it becomes `fix/login-retry`, with the path following as `../myproj-fix-login-retry`. Naming is a judgement call worth a model; deriving a path from a branch is arithmetic with one right answer, so a regex does that. It fails soft in exactly the way you'd want: no provider configured, or any error, leaves your text untouched with the reason in the log strip — typing the name yourself is always the shortest path.
 
+**A worktree can fork from a branch other than the one you're on.** The form carries a **from** select over the local branches, defaulting to the current one — git's own default, and the common case, but it means a worktree created while sitting on `feature-test` forks from `feature-test`, which is occasionally not what you wanted. The path is prefilled with a readable `adjective-noun` name (`../myproj-brave-otter`), so "just give me a worktree" needs no typing at all, and an empty branch box creates a new branch from that generated name — a worktree cannot check out a branch that is already checked out somewhere else, so reusing the current one is not an option git would allow. Rows for the **main** worktree and the one you are currently in carry no Remove button: git refuses both, and on Windows it refuses the second with a file-lock `Permission denied` that reads like a bug in the tab. Removing a worktree that dsh has registered as a workspace offers to remove that workspace too.
+
 Paths resolve **like a terminal opened at the repository root** — `../worktree-test` creates `GitHub/worktree-test`, exactly where `git worktree add ../worktree-test` would put it. A path landing *inside* the repository is refused: a checkout doesn't belong in the project, and whether it would even be clean depends on that project's `.gitignore`. The form shows the resolved absolute path live as you type, so "where is this going to go?" is not a question you answer by trying it.
 
 Two behaviours are deliberate. **A merge is allowed to conflict.** Rather than refusing anything non-fast-forward, the tab leaves the repository mid-merge and shows a banner with Abort and Continue; the conflicts appear in the Changes list you already use, and staging a file marks it resolved — git's own model. The banner keys off a `merging` flag rather than off "are there conflicts", because a merge whose conflicts are all resolved has none left and is still unfinished. And **nothing is ever auto-stashed.** Switching branches with uncommitted work lets git refuse, then offers a "Stash changes and switch" button; an auto-stash whose later pop conflicts strands work behind a state you never chose to enter.
@@ -98,7 +100,7 @@ so a dependency install doesn't spam the watcher. And the debounce has a **maxim
 because a pure trailing-edge debounce is a starvation bug: a watch-mode build re-arms it
 forever and the list would stay stale for exactly as long as work is happening.
 
-**Endpoints.** `status`, `diff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken` under `POST /api/dshGit/<method>`, each taking one parameter named `request`.
+**Endpoints.** `status`, `diff`, `commitFiles`, `commitDiff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken`, `refs`, `branch`, `merge`, `stash`, `worktree`, `suggestBranch` under `POST /api/dshGit/<method>`, each taking one parameter named `request`.
 
 **Requires.** `workspaceRegistry` and `llm` (both composed by `dsh-base`) and `agentDefaultModel` for message drafting.
 
@@ -216,6 +218,7 @@ dsh plugin --profile web add @dennisrongo/dsh-todo
 dsh plugin --profile web add @dennisrongo/dsh-git
 dsh plugin --profile web add @dennisrongo/dsh-weather
 dsh plugin --profile web add @dennisrongo/dsh-mission-control
+dsh plugin --profile web add @dennisrongo/dsh-theme
 dsh plugin --profile web add @dennisrongo/dsh-skills
 
 # CLI-app and prompt plugins, in a headless-style profile
@@ -263,8 +266,9 @@ bundles reconcile by **installed state**, not by dependency diff — a version t
 gains a `dsh.bundle` activates on its own, with no `cordis.patch.yml` edit.
 
 From a clone rather than npm, the equivalent is `git pull` then a root `pnpm install` and
-`pnpm run build`, followed by `scripts/dev-link.ps1` — pnpm replaces junctions with copies
-on every install, so skipping the relink leaves the profile on a frozen copy.
+`pnpm run build`. pnpm replaces the profile links with frozen copies on every install, so the
+root `postinstall` re-links them for you — check its output, since it warns rather than fails
+(see [step 5](#5-optional-link-for-live-editing)).
 
 ### Updating the skills catalog
 
@@ -437,36 +441,62 @@ disk. To keep its skills catalog current on a `git pull` rather than drifting as
 `dsh-headless-plus` replaces the stock headless app, so its bundle disables the two stock rows
 for you — it needs a profile built on `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless`.
 
-### 5. Optional: link for live editing (Windows)
+### 5. Optional: link for live editing
 
 **Installing is done — the plugins work at this point.** A plain install resolves the harness
 packages through the profile, so you can skip straight to step 6. This step is for editing
 *this repo* and seeing the change without reinstalling, plus it's what makes this repo's own
 `pnpm run test` and `pnpm run typecheck` resolve.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-link.ps1 -Profiles web -DesktopProfiles web
-node scripts/anchor.mjs        # the portable half on its own, any platform
+**Most of the time you do not run anything here.** `pnpm install` at the root ends in a
+`postinstall` that runs `scripts/dev-link.mjs`, which does this for you on the platform you
+are on. Run it by hand only to re-link without installing, or to pass targets:
+
+```bash
+node scripts/dev-link.mjs       # what postinstall runs: junctions on Windows, symlinks elsewhere
+node scripts/anchor.mjs         # the anchoring half on its own, any platform
 ```
 
-Two jobs, and **both are undone by any `pnpm install`**, so re-run afterwards:
+Two jobs, and **both are undone by any `pnpm install`** — which is exactly why the postinstall
+exists, so the rule is enforced mechanically rather than from memory:
 
-- **Profile junctions.** Points each profile's installed plugin at this repo so a rebuild
+- **Profile links.** Points each profile's installed plugin at this repo so a rebuild
   self-deploys; pnpm otherwise materialises `file:` deps as copies frozen at install time.
-- **Dependency anchoring.** Points each package's `node_modules\@deepseek-ai\*` at your
-  global `dsh` install. Once a plugin is junctioned it resolves through its **real** path, so
+- **Dependency anchoring.** Points each package's `node_modules/@deepseek-ai/*` at your
+  global `dsh` install. Once a plugin is linked it resolves through its **real** path, so
   Node looks for dependencies here rather than in the profile — without anchoring a
-  *junctioned* plugin dies at boot with `ERR_MODULE_NOT_FOUND`. `-IdentityOnly` does this
-  half alone.
+  *linked* plugin dies at boot with `ERR_MODULE_NOT_FOUND`. `node scripts/anchor.mjs` does
+  this half alone on any platform (`-IdentityOnly` on the PowerShell script); the shell
+  script's `--no-anchor` is the inverse — link the profiles, skip the anchoring.
 
 It only touches plugins a profile actually declares, follows the package name (so unscoped
-packages work), and prints what it skipped.
+packages work), and prints what it skipped. It is deliberately **non-fatal**: a machine with
+no dsh installed, or without one of the profiles, gets a warning rather than a failed install
+— so check its output rather than assuming it ran. `node scripts/verify.mjs` is the gate that
+catches a genuinely unwired workspace.
 
-> **macOS / Linux:** only the profile-junction half is Windows-only. The anchoring half is
-> portable — run `node scripts/anchor.mjs`, which is what makes `pnpm run test` and
-> `typecheck` resolve. Install and run (steps 1–4, 6) work fine anywhere; verified that a
-> plain install boots and serves `/api` with no linking at all. What you lose is the
-> live-edit loop (re-run step 3 after a build, or symlink by hand).
+`dev-link.mjs` dispatches by platform — `scripts/dev-link.ps1` (junctions) on Windows,
+`scripts/dev-link.sh` (symlinks) on macOS and Linux — and either can be run directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-link.ps1 -Profiles web -DesktopProfiles web
+```
+
+```bash
+scripts/dev-link.sh --profiles web --desktop-profiles web
+```
+
+**Both default to a profile named `web` on both surfaces**, which is why the postinstall
+usually needs no configuration. If your profiles are named something else, put them in a
+`.dev-link.json` at the repo root — it is gitignored, so per-machine profile names stay out
+of the shared manifest:
+
+```json
+{ "profiles": "web,mission-control", "desktopProfiles": "web" }
+```
+
+`plugins` is accepted too, to link just one package. An absent file means the underlying
+script's own defaults.
 
 ### 6. Verify
 
@@ -483,6 +513,19 @@ Cross-platform, exits non-zero on failure. It reports the dsh version on each su
 **Run this after upgrading dsh.** A harness upgrade doesn't break `pnpm test` — that only proves this repo is self-consistent. What it breaks is resolution and the wire contract, which is what this checks.
 
 When something is wrong at the harness level rather than the plugin level — a session that won't load, a workspace showing no history, a hand-edited registry that reverts — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). Most of those failures are silent.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request: install,
+anchor the peers against a real dsh, build, typecheck, `pnpm run test`, and then a
+`git diff --exit-code` that fails if the **committed `lib/` bundles no longer match their
+sources**. The harness loads `lib/`, not `src/`, and those bundles are committed — so a stale
+one ships code that was never reviewed.
+
+Until it existed the suites ran only inside `publish.yml`, which is to say at release time,
+after the code was already merged. The `.githooks/pre-commit` hook runs the same checks
+locally, but it validates the working tree and `--no-verify` skips it; this runs against the
+real commit on a clean machine.
 
 ## Publishing
 
@@ -507,9 +550,25 @@ pnpm run test         # pnpm -r --if-present run test
 
 Client-half edits deploy on a **browser refresh**; host-half edits need a **profile restart**. Registering a *new* `./typert` export needs a full restart either way — the loader caches its per-package verdict for the process lifetime.
 
+`pnpm run test` also runs `check-type-scale.mjs` and `check-tokens.mjs` across every plugin —
+one type scale (11/12/13/14/16/20/24 px) and no `var(--dsw-*)` naming a token the harness does
+not define. A misspelt token never errors: CSS falls back to the second argument and silently
+stops following the theme. The `.githooks/pre-commit` hook runs the same two.
+
+Each package also ships **opt-in probes that are not part of `pnpm test`** — mostly headless
+Chrome against the *built* bundle, asserting things a unit test cannot see: that opening a diff
+does not move a row, that the branch menu stacks above the panes, that the todo modal clears
+DSH Desktop's window-drag strip, that the git watcher wakes on a real commit. They are listed
+in each package's `AGENTS.md`. Two are worth knowing about before you run them:
+`dsh-todo`'s `test:agent` drives a **real model** (needs credentials, runs in a throwaway
+`DSH_HOME`), and `dsh-mission-control`'s `test:installed` reads **machine state** — the copies
+a profile actually serves — rather than anything the repo owns.
+
+The root `postinstall` re-links profiles after every install (see [step 5](#5-optional-link-for-live-editing)).
+
 Workspace configuration lives in `pnpm-workspace.yaml`: pnpm 11 ignores `pnpm` blocks in `package.json`, build permissions are `allowBuilds` (a map, not the older `onlyBuiltDependencies` list), and `autoInstallPeers` is off because the `@deepseek-ai/*` peers are dev-preview and partly unpublished.
 
-One trap worth knowing: DSH Desktop runs a **profile-repair install** on startup that prunes this repo's per-package `node_modules` — which takes `zod` with it and makes the harness refuse to boot (`Cannot find package 'zod'`). Recovery is `pnpm install` at the root, then `scripts\dev-link.ps1`.
+One trap worth knowing: DSH Desktop runs a **profile-repair install** on startup that prunes this repo's per-package `node_modules` — which takes `zod` with it and makes the harness refuse to boot (`Cannot find package 'zod'`). Recovery is `pnpm install` at the root, whose `postinstall` re-links the profiles.
 
 The other trap has no recovery that cheap: **never point `DSH_HOME` at a home another harness is already using.** Testing against DSH Desktop's home while the app is open corrupts the sessions the app has open — silently, across workspaces, and you only find out at a later restart when the history refuses to load. A different `--profile` does not help: `sessions/` is a sibling of `profiles/`, so every profile shares one session store. Use a throwaway `DSH_HOME`, or query the running app's own `/api` endpoint instead of starting a second harness. Repair is possible but manual — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#never-run-two-harnesses-against-one-home).
 
@@ -519,7 +578,12 @@ The other trap has no recovery that cheap: **never point `DSH_HOME` at a home an
 plugins/     one self-contained package each (pnpm workspace members)
 scripts/     verify.mjs                    — check the plugins against your installed dsh
              anchor.mjs                    — point each package's @deepseek-ai at that dsh
+             host-deps.mjs                 — locate the installed dsh (shared by the two above)
+             dev-link.mjs                  — postinstall entry; dispatches to .ps1 / .sh
              dev-link.ps1                  — anchor + junction into profiles (Windows)
+             dev-link.sh                   — anchor + symlink into profiles (macOS/Linux)
+             check-type-scale.mjs          — one type scale across every plugin
+             check-tokens.mjs              — every var(--dsw-*) must be a real token
              link-superpowers-skills.mjs   — link an upstream superpowers clone's skills
 
 AGENTS.md            repo conventions and the rules that are not obvious
