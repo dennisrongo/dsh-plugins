@@ -757,21 +757,41 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
 
 // --- dropdown dark mode -----------------------------------------------------
 // A select's popup is painted by the OS OUTSIDE the page, so no descendant CSS
-// reaches it: it obeys color-scheme alone. Without this the popup renders light
-// while the option text stays near-white — white-on-white and unreadable.
+// reaches it: it obeys color-scheme alone.
+//
+// This block used to assert the OPPOSITE, and was pinning a bug. It required
+// `@media (prefers-color-scheme: dark)`, on the premise that the shell "never
+// sets a color-scheme to inherit from". ui-layout's ThemePresenter does set
+// `documentElement.style.colorScheme` from the resolved theme, and it inherits
+// — so the plugin needed nothing, and keying off the OS actively broke the
+// case the old comment worried about: a LIGHT theme on a dark-mode machine got
+// dark popups. The assertions now pin the corrected behaviour.
 {
   const bundle = readFileSync(join(root, 'lib/client.js'), 'utf8')
-  assert.ok(/color-scheme: ?dark/.test(bundle),
-    'the tab must declare color-scheme: dark so native popups are readable')
-  // Scoped to the query: applied unconditionally the same declarations paint a
-  // DARK popup under a LIGHT theme, which is this bug with the polarity flipped.
-  assert.ok(/prefers-color-scheme: ?dark/.test(bundle),
-    'color-scheme must be scoped to the dark media query, never hardcoded')
-  // The modal portals to document.body, so it inherits nothing from .dshtd.
-  assert.ok(bundle.includes('.dshtd-modal') && /\.dshtd-modal[^{]*\{[^}]*color-scheme/.test(bundle.replace(/\s+/g, ' ')),
-    'the portalled modal must carry color-scheme in its own right')
+  // The construct, not the word: the shipped CSS must contain no media query
+  // on the OS preference. (Prose mentioning it survives into the bundle.)
+  assert.ok(!/@media[^{]*prefers-color-scheme/.test(bundle),
+    'the OS colour preference must not decide the palette — the app theme does')
+  // Option rows still need an explicit pair on platforms that paint them, but
+  // gated on the attribute ThemePresenter actually toggles.
+  assert.ok(/body\[data-ds-dark-theme\][^{]*\.dshtd-select option/.test(bundle.replace(/\s+/g, ' ')),
+    'option rows must follow body[data-ds-dark-theme], not the OS query')
 }
 
+
+// --- the modal's confirm action is the shell's button ------------------------
+// It used to be a link-styled button, which read as a bespoke control next to
+// dsh's own. Both tokens below follow the active theme AND the accent axis, so
+// the button is themed rather than merely dark-coloured.
+{
+  const bundle = readFileSync(join(root, 'lib/client.js'), 'utf8')
+  assert.ok(bundle.includes('dshtd-btn primary'),
+    "the modal's Done must be a real button, not a link")
+  assert.ok(/\.dshtd-btn\.primary[^}]*--dsw-alias-button-primary-fill/.test(bundle.replace(/\s+/g, ' ')),
+    'the primary variant must use the shell fill token, not a colour of its own')
+  assert.ok(!/className="dshtd-link" onClick=\{close\}/.test(bundle),
+    'the old link-styled Done must be gone')
+}
 
 // --- destructive actions are guarded ----------------------------------------
 // Delete is the only irreversible action in the tab. Every path to it must go

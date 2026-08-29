@@ -775,17 +775,14 @@ const VIEW_STYLES = `
    else: left unset it renders as a LIGHT popup while the option text inherits
    the shell near-white label colour, i.e. white-on-white and unreadable.
 
-   Keyed off the same prefers-color-scheme query the shell theme service listens
-   to (dsh-client-ui-theme holds a matchMedia for it), because the shell
-   publishes its theme as CSS VARIABLES and never sets a color-scheme or a
-   data-theme attribute to inherit from. Scoping to the query rather than
-   hardcoding dark keeps a light theme light.
-
-   Repeated for the modal: that panel portals to document.body, so it is not a
-   descendant of .dshtd and inherits none of this. */
-@media (prefers-color-scheme: dark) {
-  .dshtd, .dshtd-modal, .dshtd-modal-backdrop { color-scheme: dark; }
-}
+   This used to key off the prefers-color-scheme query, on the premise that the
+   shell "publishes its theme as CSS VARIABLES and never sets a color-scheme".
+   That premise was wrong: ui-layout's ThemePresenter sets
+   documentElement.style.colorScheme from the resolved theme on every change,
+   and color-scheme inherits — so native controls already follow the APP's
+   light/dark, including in the modal, which portals to document.body but is
+   still a descendant of <html>. Keying off the OS instead meant a light theme
+   on a dark-mode machine rendered dark popups. Nothing is needed here now.
 
 /* ---- header ---- */
 .dshtd-head {
@@ -826,13 +823,13 @@ const VIEW_STYLES = `
   padding: 8px 12px;
 }
 .dshtd-add::placeholder { color: var(--td-caption); }
-.dshtd-add:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshtd-add:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshtd-addbtn {
   flex: none; border: 1px solid var(--td-border); border-radius: 8px;
   background: var(--td-hover); color: var(--td-primary); font: inherit; font-weight: 500;
   padding: 8px 16px; cursor: pointer;
 }
-.dshtd-addbtn:hover:not(:disabled) { border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshtd-addbtn:hover:not(:disabled) { border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshtd-addbtn:disabled { opacity: 0.4; cursor: default; }
 
 /* ---- list ---- */
@@ -884,7 +881,7 @@ const VIEW_STYLES = `
 }
 .dshtd-edit {
   flex: 1 1 auto; min-width: 0;
-  border: 1px solid var(--dsw-alias-border-focus, #6b7280); border-radius: 6px;
+  border: 1px solid var(--dsw-alias-brand-primary, #6b7280); border-radius: 6px;
   background: transparent; color: var(--td-primary); font: inherit; padding: 3px 8px;
 }
 .dshtd-edit:focus { outline: none; }
@@ -917,8 +914,8 @@ const VIEW_STYLES = `
 /* Priority reads as a rank, so only the urgent bands get colour — colouring all
    four would make the list a rainbow and hide the two that matter. */
 .dshtd-chip.p0 { color: var(--td-danger); border-color: currentColor; font-weight: 500; }
-.dshtd-chip.p1 { color: var(--dsw-alias-state-warning-primary, #f59e0b); border-color: currentColor; }
-.dshtd-chip.rel { color: var(--dsw-alias-state-info-primary, #60a5fa); border-color: currentColor; }
+.dshtd-chip.p1 { color: var(--dsw-alias-state-warn-primary, #f59e0b); border-color: currentColor; }
+.dshtd-chip.rel { color: var(--dsw-alias-state-business-primary, #60a5fa); border-color: currentColor; }
 
 /* Status pill doubles as the status control, so it is a real button. */
 .dshtd-status {
@@ -927,8 +924,8 @@ const VIEW_STYLES = `
   font: inherit; font-size: 12px; line-height: 20px; color: var(--td-caption);
   cursor: pointer; appearance: none;
 }
-.dshtd-status:hover { color: var(--td-primary); border-color: var(--dsw-alias-border-focus, #6b7280); }
-.dshtd-status.s-in-progress { color: var(--dsw-alias-state-info-primary, #60a5fa); border-color: currentColor; }
+.dshtd-status:hover { color: var(--td-primary); border-color: var(--dsw-alias-brand-primary, #6b7280); }
+.dshtd-status.s-in-progress { color: var(--dsw-alias-state-business-primary, #60a5fa); border-color: currentColor; }
 .dshtd-status.s-blocked { color: var(--td-danger); border-color: currentColor; }
 .dshtd-status.s-done { color: var(--td-accent); border-color: currentColor; }
 
@@ -956,7 +953,7 @@ const VIEW_STYLES = `
   border: 1px solid var(--td-border); border-radius: 6px; background: transparent;
   color: var(--td-secondary); font: inherit; font-size: 14px; line-height: 22px; padding: 6px 8px;
 }
-.dshtd-desc:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshtd-desc:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshtd-fields { display: flex; flex-wrap: wrap; gap: 8px; }
 .dshtd-field { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 18px; color: var(--td-caption); }
 .dshtd-input {
@@ -964,24 +961,25 @@ const VIEW_STYLES = `
   color: var(--td-primary); font: inherit; font-size: 12px; line-height: 18px;
   padding: 3px 8px; min-width: 0; width: 130px;
 }
-.dshtd-input:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshtd-input:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshtd-select {
   border: 1px solid var(--td-border); border-radius: 6px; background: transparent;
   color: var(--td-primary); font: inherit; font-size: 12px; line-height: 18px; padding: 3px 6px;
 }
 
 /* Option rows get an explicit pair on the platforms that honour it (Windows and
-   Linux Chromium paint them; macOS ignores it and defers to color-scheme).
+   Linux Chromium paint them; macOS ignores it and defers to color-scheme,
+   which ui-layout already sets on <html> from the resolved theme).
 
-   Scoped to the dark query on purpose: applied unconditionally these same
-   declarations paint a DARK popup under a light theme, which is the original
-   bug with the polarity reversed. Verified in both media states. */
-@media (prefers-color-scheme: dark) {
-  .dshtd-select option,
-  .dshtd-status option {
-    background: var(--dsw-alias-bg-layer-1, #1b1d21);
-    color: var(--dsw-alias-label-primary, #f9fafb);
-  }
+   Gated on the APP's palette, not the OS query it used to use: applied
+   unconditionally these declarations paint a dark popup under a light theme,
+   and keyed to the OS query they did exactly that whenever the theme and the
+   OS disagreed. body[data-ds-dark-theme] is what ThemePresenter
+   actually toggles, so this now follows the theme the user picked. */
+body[data-ds-dark-theme] .dshtd-select option,
+body[data-ds-dark-theme] .dshtd-status option {
+  background: var(--dsw-alias-bg-layer-1, #1b1d21);
+  color: var(--dsw-alias-label-primary, #f9fafb);
 }
 
 /* ---- task modal ----
@@ -1028,14 +1026,14 @@ const VIEW_STYLES = `
   padding: 4px 8px;
 }
 .dshtd-modal-title:hover { border-color: var(--td-border); }
-.dshtd-modal-title:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshtd-modal-title:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshtd-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
 .dshtd-modal-desc {
   width: 100%; min-height: 160px; resize: vertical;
   border: 1px solid var(--td-border); border-radius: 8px; background: transparent;
   color: var(--td-secondary); font: inherit; font-size: 14px; line-height: 22px; padding: 8px 10px;
 }
-.dshtd-modal-desc:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshtd-modal-desc:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshtd-modal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .dshtd-modal-label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 18px; color: var(--td-caption); }
 .dshtd-modal-foot {
@@ -1076,16 +1074,26 @@ const VIEW_STYLES = `
   padding: 6px 14px; cursor: pointer;
 }
 .dshtd-btn:hover { background: var(--td-hover); }
-.dshtd-btn:focus-visible { outline: 2px solid var(--dsw-alias-border-focus, #6b7280); outline-offset: 1px; }
+.dshtd-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #6b7280); outline-offset: 1px; }
 /* The destructive action is the one that looks destructive; Cancel stays quiet
    so the safe choice is never the visually louder one. */
 .dshtd-btn.danger { border-color: var(--td-danger); color: var(--td-danger); }
-.dshtd-btn.danger:hover { background: var(--td-danger); color: var(--dsw-alias-label-on-accent, #fff); }
+.dshtd-btn.danger:hover { background: var(--td-danger); color: var(--dsw-alias-label-primary-foreground, #fff); }
+/* The shell's own filled primary, token for token, so a confirm action here
+   reads as the same control as one in Settings rather than a bespoke link.
+   Both tokens follow the active theme AND the accent axis. */
+.dshtd-btn.primary {
+  background: var(--dsw-alias-button-primary-fill, #f9fafb);
+  border-color: transparent;
+  color: var(--dsw-alias-label-primary-foreground, #0f1115);
+  font-weight: 500;
+}
+.dshtd-btn.primary:hover { background: var(--dsw-alias-button-primary-hover, #e1e5ee); }
 
 /* Overdue is the one state worth colouring in the list: it is the thing a
    standup escalates. Due-today is warned, not alarmed. */
 .dshtd-chip.due-over { color: var(--td-danger); border-color: currentColor; font-weight: 500; }
-.dshtd-chip.due-today { color: var(--dsw-alias-state-warning-primary, #f59e0b); border-color: currentColor; }
+.dshtd-chip.due-today { color: var(--dsw-alias-state-warn-primary, #f59e0b); border-color: currentColor; }
 
 /* ---- toolbar (group-by) ---- */
 .dshtd-tools { flex: none; display: flex; align-items: center; gap: 6px; padding: 0 20px 10px; }
@@ -1484,7 +1492,7 @@ export function TodoModal({
             {item.completedAt ? ` · completed ${fmtAge(item.completedAt)} ago` : ''}
             {overdue ? ' · overdue' : ''}
           </span>
-          <button className="dshtd-link" onClick={close}>Done</button>
+          <button className="dshtd-btn primary" onClick={close}>Done</button>
         </div>
       </div>
     </div>,
