@@ -586,6 +586,51 @@ export function normalizeBranchName(raw: string): string {
     .replace(/[-./]+$/g, '')
 }
 
+
+/** Adjectives for generated worktree names. */
+const NAME_ADJECTIVES = [
+  'amber', 'brave', 'calm', 'clever', 'crisp', 'eager', 'fleet', 'gentle',
+  'keen', 'lively', 'lucky', 'mellow', 'nimble', 'quiet', 'rapid', 'sharp',
+  'solid', 'spry', 'sunny', 'swift', 'tidy', 'vivid', 'warm', 'zesty',
+]
+
+/** Nouns for generated worktree names. */
+const NAME_NOUNS = [
+  'anchor', 'badger', 'beacon', 'cedar', 'comet', 'ember', 'falcon', 'harbor',
+  'heron', 'lantern', 'maple', 'meadow', 'otter', 'pebble', 'quartz', 'ridge',
+  'river', 'sparrow', 'summit', 'thicket', 'willow', 'canyon', 'delta', 'fjord',
+]
+
+/**
+ * Generate a readable name for a new worktree.
+ *
+ * Two words rather than hex, because this becomes a DIRECTORY you will see in a
+ * file picker and a BRANCH you will read in a list; `brave-otter` is something a
+ * person can say out loud and recognise later, where `wt-3f9a2c` is not.
+ *
+ * The RNG is a parameter so the result is testable. A generator that can only be
+ * observed by running it and squinting is one nobody checks — and this one has to
+ * produce a valid ref and a valid directory name every single time.
+ *
+ * 24 x 24 gives 576 combinations, which is ample for the handful of worktrees a
+ * project ever has open at once. Collisions are not silent: git refuses to create
+ * a worktree in a non-empty directory, so the worst case is a clear error rather
+ * than clobbered work.
+ *
+ * @param rand - returns a float in [0, 1); defaults to Math.random.
+ * @returns a lowercase `adjective-noun` name, safe as both a ref and a path segment.
+ */
+export function generateWorktreeName(rand: () => number = Math.random): string {
+  const pick = (list: readonly string[]): string => {
+    // Clamp: a caller's RNG returning exactly 1 (or anything out of range) must
+    // not index past the end and yield undefined.
+    const raw = Math.floor(rand() * list.length)
+    const index = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), list.length - 1) : 0
+    return list[index] as string
+  }
+  return pick(NAME_ADJECTIVES) + '-' + pick(NAME_NOUNS)
+}
+
 /** Which stash operation to run. */
 export type StashAction = 'push' | 'pop' | 'apply' | 'drop' | 'clear'
 

@@ -20,7 +20,12 @@ import { parseStatus, parseBranchHeader, assertSafePath, assertSafeRef } from '.
 import { GIT_REMOTE } from '../src/remote.ts'
 // Shared with the browser half: one implementation of the path arithmetic, so
 // the preview the user reads and the directory git receives cannot disagree.
-import { normalizeBranchName, resolveWorktreeTarget, suggestWorktreePath } from '../src/types.ts'
+import {
+  generateWorktreeName,
+  normalizeBranchName,
+  resolveWorktreeTarget,
+  suggestWorktreePath,
+} from '../src/types.ts'
 import {
   countChanges,
   badgeFor,
@@ -461,6 +466,40 @@ await test('the suggestion resolves to an actual sibling of the project', () => 
   const target = resolveWorktreeTarget(root, suggested)
   assert.equal(target.path, 'C:/Users/me/GitHub/myproj-feature-login')
   assert.equal(target.inside, false, 'a suggestion the host would refuse is a broken suggestion')
+})
+
+await test('generateWorktreeName produces a valid ref AND a valid directory name', () => {
+  // It becomes both a branch and a directory, so it has to satisfy the same ref
+  // rules every other name here does -- generated once and never checked is how
+  // a form starts refusing its own prefill.
+  const seen = new Set()
+  for (let i = 0; i < 200; i += 1) {
+    const name = generateWorktreeName()
+    seen.add(name)
+    assert.match(name, /^[a-z]+-[a-z]+$/, name + ' should be two lowercase words')
+    // The gate every ref crosses.
+    assert.equal(assertSafeRef(name), name, name + ' must be a safe ref')
+    // And it must survive the path derivation without landing inside the repo.
+    const target = resolveWorktreeTarget('C:/w/myproj', suggestWorktreePath('C:/w/myproj', name))
+    assert.equal(target.inside, false, name + ' must resolve BESIDE the project')
+    assert.equal(target.path, 'C:/w/myproj-' + name)
+  }
+  assert.ok(seen.size > 20, 'should not keep returning the same name, got ' + seen.size)
+})
+
+await test('generateWorktreeName survives a hostile RNG', () => {
+  // A caller's RNG returning exactly 1 (or out of range) must not index past the
+  // end and yield "undefined-undefined", which is a valid-looking ref that is
+  // not what anyone asked for.
+  assert.match(generateWorktreeName(() => 0), /^[a-z]+-[a-z]+$/)
+  assert.match(generateWorktreeName(() => 0.999999), /^[a-z]+-[a-z]+$/)
+  assert.match(generateWorktreeName(() => 1), /^[a-z]+-[a-z]+$/)
+  assert.match(generateWorktreeName(() => 42), /^[a-z]+-[a-z]+$/)
+  assert.match(generateWorktreeName(() => -1), /^[a-z]+-[a-z]+$/)
+  assert.match(generateWorktreeName(() => NaN), /^[a-z]+-[a-z]+$/)
+  for (const r of [() => 0, () => 1, () => NaN]) {
+    assert.doesNotMatch(generateWorktreeName(r), /undefined/)
+  }
 })
 
 await test('findWorkspaceForPath matches a worktree to its workspace', () => {

@@ -455,6 +455,29 @@ For the same reason `.dsh` is deliberately NOT in the watcher's `IGNORED_DIRS`: 
 project DOES track `todo.db`, ignoring it would stop the Changes tab live-updating as
 tasks change.
 
+**The worktree path is PREFILLED with a real value, not shown as a placeholder.** Opening
+the form generates a readable `adjective-noun` name (`generateWorktreeName`) and fills the
+path with `../<project>-<name>`, so the common case — "give me a worktree" — needs no
+typing at all. Two words rather than hex because the name becomes both a directory you
+will see in a file picker and a branch you will read in a list: `brave-otter` is sayable,
+`wt-3f9a2c` is not. The RNG is a parameter so the generator is testable, and `smoke.mjs`
+asserts every generated name passes `assertSafeRef` AND resolves to a path outside the
+repo — a generator whose output the form would then refuse is worse than no prefill.
+It is also pinned against a hostile RNG (`() => 1`, `NaN`) because an unclamped index
+yields `undefined-undefined`, which looks like a valid ref.
+
+**The generated name is held separately from the branch box, and that is the point.** The
+branch box doubles as the hint for the AI button, so seeding it with a random word would
+have the model dutifully name a branch about an otter. The box stays empty for a
+description; the generated name is used as the branch only when nothing was typed. The
+branch is then passed EXPLICITLY — left to itself git names a worktree's branch after the
+directory basename, which would be the redundant `myproj-brave-otter` rather than
+`brave-otter`.
+
+Clearing the branch box falls back to the generated name rather than blanking the path.
+Without that, emptying the field empties the path and disables the Add button, which reads
+as the form breaking.
+
 **The model names the BRANCH, never the path.** `suggestBranch` takes the rough text
 already in the branch box — "fix login retry" — and returns `fix/login-retry`; the path
 then derives from it deterministically. Naming is a creative problem with many good

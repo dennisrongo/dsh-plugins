@@ -12,7 +12,7 @@
 import React from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GIT_REMOTE } from './remote.ts'
-import { resolveWorktreeTarget, suggestWorktreePath } from './types.ts'
+import { generateWorktreeName, resolveWorktreeTarget, suggestWorktreePath } from './types.ts'
 import type {
   BranchAction,
   ChangeScope,
@@ -2346,6 +2346,16 @@ export function GitView({
      * overwriting a hand-typed path is worse than no auto-fill at all.
      */
     pathTouched: boolean
+    /**
+     * Readable name generated when the form opened, e.g. `brave-otter`.
+     *
+     * Used as the branch when the branch box is left empty, so "just make me a
+     * worktree" needs no typing at all. Held separately rather than prefilled
+     * INTO the branch box on purpose: that box doubles as the hint for the AI
+     * button, and seeding it with a random word would have the model dutifully
+     * name a branch about an otter.
+     */
+    generated: string
   } | null>(null)
   const [openSha, setOpenSha] = React.useState<string | null>(null)
   // null means "still loading". Anything else is a settled outcome that knows
@@ -2868,8 +2878,8 @@ export function GitView({
           <input
             type="text"
             value={worktreeForm.branch}
-            placeholder="new branch name"
-            aria-label="Branch for the new worktree"
+            placeholder={'branch, or describe the work for ✦ (else ' + worktreeForm.generated + ')'}
+            aria-label="Branch for the new worktree, or a description for the AI button"
             onChange={(e) => {
               const branch = e.target.value
               setWorktreeForm({
@@ -2878,9 +2888,18 @@ export function GitView({
                 // Name the directory after the branch, as a sibling of the
                 // project, so it sorts next to it in the workspace switcher —
                 // unless the user has already chosen a path themselves.
+                //
+                // Falling back to the generated name matters: without it,
+                // CLEARING the branch box would blank the prefilled path and
+                // disable the Add button, which reads as the form breaking.
                 ...(worktreeForm.pathTouched
                   ? {}
-                  : { path: suggestWorktreePath(status.root, branch) }),
+                  : {
+                      path: suggestWorktreePath(
+                        status.root,
+                        branch.trim().length > 0 ? branch : worktreeForm.generated,
+                      ),
+                    }),
               })
             }}
             onKeyDown={(e) => {
@@ -2921,10 +2940,14 @@ export function GitView({
               const form = worktreeForm
               const target = worktreePreview.path
               setWorktreeForm(null)
+              // Always name the branch explicitly. Left to itself git names it
+              // after the directory's basename, which would be the redundant
+              // "dsh-plugins-brave-otter" rather than "brave-otter".
+              const branch = form.branch.trim().length > 0 ? form.branch.trim() : form.generated
               void store
                 .worktree('add', {
                   path: form.path.trim(),
-                  ...(form.branch.trim().length > 0 ? { newBranch: form.branch.trim() } : {}),
+                  ...(branch.length > 0 ? { newBranch: branch } : {}),
                   // `register` is deliberately NOT sent. The host would write
                   // workspaceRegistry directly, which the browser's own workspace
                   // list is not guaranteed to learn about until a reload; going
@@ -3063,9 +3086,18 @@ export function GitView({
                   void workspaceLink?.remove(linked.workspaceId)
                 })
               }}
-              onAddWorktree={() =>
-                setWorktreeForm({ path: '', branch: '', register: true, pathTouched: false })
-              }
+              onAddWorktree={() => {
+                // Prefill a REAL value, not a placeholder: the common case is
+                // "give me a worktree" and that should need no typing.
+                const generated = generateWorktreeName()
+                setWorktreeForm({
+                  path: suggestWorktreePath(status.root, generated),
+                  branch: '',
+                  register: true,
+                  pathTouched: false,
+                  generated,
+                })
+              }}
               onOpenWorktree={openWorktree}
             />
           ) : mode === 'history' ? (
