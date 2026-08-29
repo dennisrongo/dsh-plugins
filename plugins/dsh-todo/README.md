@@ -31,17 +31,23 @@ next to the code it describes.
   standup actually asks about: what is moving, and what is stuck.
 - **Priority** — `P0`–`P3`, shown as a chip. Only P0/P1 are coloured, so the
   list flags what is urgent instead of turning into a rainbow.
-- **Release and sprint** — two independent decimal labels: what ships
-  together (`1.5`) and when it is worked (`24`). A task can be in both.
-  Decimal-only (`1`, `1.5`, `24` — never `v1.5`), so labels sort
-  numerically and never mix alpha with numeric.
+- **Release and sprint** — two independent numeric labels: what ships
+  together (`1.5`, `0.5.1`) and when it is worked (`24`). A task can be in
+  both. A **release** takes up to three numbers, so a patch release has a label
+  of its own; a **sprint** is a single decimal. Never alpha (`v1.5` is
+  refused), so labels sort by version — `1.10` above `1.9`, `0.5.1` above
+  `0.5`. The inputs accept only digits and a dot as you type; a value that is
+  still not a valid label is flagged with an inline error and never saved.
 - **Group by** — None · Status · Release · Sprint · Priority, with collapsible
   section headers carrying their own `done/total` and progress bar. Grouping by
   status gives you a kanban board without drag-and-drop.
 - **Task detail modal** — click a task's title to open the full dialog: a
   roomy description box plus status, priority, release, sprint and due date.
-  Esc or the backdrop closes it, focus is trapped inside and returned to the row
-  you came from, and edits commit on close so a stray click never loses them.
+  Focus is trapped inside and returned to the row you came from, and text edits
+  commit on close so a stray click never loses them. **Done is the save**: it is
+  the only control that refuses to proceed while a release or sprint is invalid.
+  Esc, the backdrop and the X always let you out, discarding an unsaved bad
+  label rather than trapping you in the dialog.
 - **Expandable rows** — the chevron still gives a quick in-row peek without
   leaving the list. Double-click a title to rename it inline. One scannable line
   collapsed is what lets a task carry nine fields without becoming a wall of text.
@@ -103,12 +109,27 @@ dsh profiles set `autoInstallPeers: false`, so this resolves correctly.
 pnpm install
 pnpm run build      # node build/build.mjs — emits lib/index.js + lib/client.js
 pnpm run typecheck  # tsc --noEmit
-pnpm test           # node test/smoke.mjs — offline, exercises the BUILT lib/ output
-pnpm run test:icons # headless Chrome: icon sizes and the 40px row budget
-pnpm run test:modal # headless Chrome: the dialog escapes the list's scroll container
+pnpm test                # offline: client + CLI, exercising the BUILT lib/ output
+pnpm run test:cli        # just the in-process CLI suite
+pnpm run test:integration # spawns the real bin — one full agent workflow
+pnpm run test:icons      # headless Chrome: icon sizes and the 40px row budget
+pnpm run test:modal      # headless Chrome: the dialog escapes the list's scroll container
+pnpm run test:agent      # OPT-IN: a real model drives the CLI (needs a key; costs tokens)
 ```
 
-`pnpm test` asserts against `lib/`, so **build before testing**.
+`pnpm test` asserts against `lib/`, so **build before testing** (the script rebuilds first).
+
+The CLI has two layers on purpose. `test/cli.test.mjs` calls into `lib/cli.js` in-process;
+`test/cli-integration.mjs` **spawns the real binary** for one realistic agent workflow — plan a
+release, inspect it, hit a refusal, recover from the payload alone, finish and archive — because
+the in-process suite cannot see the shebang'd entry point, `process.exitCode`, the stdout/stderr
+split, or argv as a shell delivers it.
+
+`pnpm run test:agent` is the odd one out and is **not** part of `pnpm test`: it hands a real
+model nothing but the binary path and a goal, then asserts on the resulting database rather than
+on anything the model said. It answers a question no offline test can — is `help` enough to
+drive this thing, and is a refusal message enough to recover from? It needs `DEEPSEEK_API_KEY`
+exported (it runs the harness in a throwaway `DSH_HOME`, which has no stored credentials).
 
 ## Install into a dsh profile
 
@@ -233,8 +254,8 @@ dsh-todo --workspace ~/projects/other list --open
 | `--json` | all | Machine-readable output, **including on errors** |
 | `--status <s>` | add, update, list | `backlog` · `todo` · `in-progress` · `blocked` · `done` |
 | `--priority <p>` | add, update, list | `p0`–`p3` (default `p2`) |
-| `--release <n[.n]>` | add, update, list | Decimal only, e.g. `1.5`; `v1.5` is refused |
-| `--sprint <n[.n]>` | add, update, list | Decimal only, e.g. `24`; `"Sprint 24"` is refused |
+| `--release <n[.n[.n]]>` | add, update, list | Numbers only, up to three: `1`, `1.5`, `0.5.1`; `v1.5` is refused |
+| `--sprint <n[.n]>` | add, update, list | Numbers only, one dot at most: `24`, `1.5`; `0.5.1` is refused |
 | `--due <YYYY-MM-DD>` | add, update | A calendar day; impossible dates are refused |
 | `--description <text>` | add, update | Body text — acceptance criteria, repro steps |
 | `--title <text>` | update | Rename |
@@ -255,6 +276,7 @@ dsh-todo list --open --json
 
 ```json
 {
+  "ok": true,
   "count": 3,
   "items": [
     {
@@ -270,17 +292,39 @@ dsh-todo list --open --json
 }
 ```
 
-`list` returns `{ count, items }`; `add` / `update` / `done` / `reopen` / `rm` return
-`{ item, revision }`; `archive` returns `{ archived, revision }`; `show` returns the task
-itself. A failure returns `{ error, code }` and exits with that code:
+**Every payload leads with `ok`**, so a caller never has to infer the verdict from the
+shape of what came back. On success `ok` is `true` and the command's own keys follow:
+`list` adds `{ count, items }`; `add` / `update` / `done` / `reopen` / `rm` add
+`{ item, revision }` — the stored task, so a write can be confirmed without a second
+call; `archive` adds `{ archived, revision }`; `show` adds the task itself.
+
+A failure returns `ok: false` with `error` and `code`, and exits with that code:
 
 ```bash
 $ dsh-todo update nope --status done --json; echo "exit=$?"
 {
+  "ok": false,
   "error": "no task matching \"nope\"",
   "code": 3
 }
 exit=3
+```
+
+A **refused value** says which field it refused, what that field accepts, and what it was
+given — enough for an agent to correct itself without parsing the sentence. Nothing is
+written when a value is refused:
+
+```bash
+$ dsh-todo add "Ship it" --release v1.5 --json; echo "exit=$?"
+{
+  "ok": false,
+  "error": "--release must be a version number like 1.5 or 0.5.1 (up to three numbers) (got \"v1.5\") — nothing was saved",
+  "code": 2,
+  "field": "release",
+  "expected": "a version number like 1.5 or 0.5.1 (up to three numbers)",
+  "got": "v1.5"
+}
+exit=2
 ```
 
 Exit codes are distinct so a script can branch on **why** a command failed:
@@ -340,18 +384,28 @@ list. That is the designed reconciliation, not lost data.
 | `description` | The body: acceptance criteria, repro steps, links. Its own 5000 cap, because reusing the title's 500 would silently truncate real notes. |
 | `status` | `backlog \| todo \| in-progress \| blocked \| done`. **The source of truth** — there is no separate `done` flag to fall out of sync. |
 | `priority` | `p0`–`p3`, default `p2` so an unranked task sits mid-pile rather than jumping the queue. |
-| `release` | What ships together, e.g. `1.5`. Decimal only. |
-| `sprint` | When it is worked, e.g. `24`. Decimal only. |
+| `release` | What ships together, e.g. `1.5` or `0.5.1`. One to three numbers. |
+| `sprint` | When it is worked, e.g. `24`. A single decimal — no patch segment. |
 | `dueDate` | `YYYY-MM-DD`. A calendar day, not an instant — an epoch would bind it to a timezone and let one task read as two different days. Impossible dates like `2025-02-31` are rejected rather than rolled forward. |
 
 **Release and sprint are separate on purpose.** A task can be worked in sprint 24
 and ship in 1.3; collapsing them into one field loses the ability to answer
-either question. Both are **decimal-only labels** (`^\d+(\.\d+)?$` — `1`,
-`1.5`, `24` pass; `v1.5`, `Sprint 24`, and `1.2.0` are refused at every
-write path, CLI and UI alike) rather than entities — grouping and filtering work
-with no releases table, no CRUD, and no migration to rename one. Decimal-only
-means the labels sort as numbers and never mix alpha with numeric. Labels stored
-before the rule still load, group, and display unchanged.
+either question. Both are **numeric labels** rather than entities, refused at
+every write path — CLI and UI alike — if they are anything else, so grouping and
+filtering work with no releases table, no CRUD, and no migration to rename one.
+
+The two shapes differ, because the fields mean different things:
+
+| Field | Pattern | Passes | Refused |
+| --- | --- | --- | --- |
+| `release` | `^\d+(\.\d+){0,2}$` | `1`, `1.5`, `0.5.1` | `v1.5`, `1.2.3.4`, `1.` |
+| `sprint` | `^\d+(\.\d+)?$` | `1`, `1.5`, `24` | `Sprint 24`, `0.5.1` |
+
+A release carries a **patch segment** so a fix shipping on top of 0.5 gets its own
+label; a sprint is a point on a calendar, not a shipped artefact, so it takes none.
+Being numeric means labels sort by **version semantics** — compared segment by
+segment, so `1.10` ranks above `1.9` and `0.5.1` sits between `0.5` and `0.6`.
+Labels stored before the rule still load, group, and display unchanged.
 
 `completedAt` is written only by the status transition, so it can never claim a
 task is finished that isn't. Absent optional fields are absent *keys*, never

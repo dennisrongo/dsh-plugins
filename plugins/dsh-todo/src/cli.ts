@@ -34,6 +34,7 @@ import {
   STATUSES,
   normalizeDueDate,
   normalizeVersionLabel,
+  type LabelField,
   toPriority,
   toStatus,
   type TodoItem,
@@ -102,10 +103,13 @@ export class CliError extends Error {
   /**
    * @param message - human-readable reason.
    * @param code - process exit code, from {@link EXIT}.
+   * @param details - extra machine-readable fields merged into the `--json`
+   * error payload, so an agent can correct itself without parsing the sentence.
    */
   constructor(
     message: string,
     readonly code: number = EXIT.usage,
+    readonly details: Record<string, string> = {},
   ) {
     super(message)
     this.name = 'CliError'
@@ -132,6 +136,27 @@ function oneOf<T extends string>(
     throw new CliError(`--${key} must be one of: ${allowed.join(', ')} (got "${raw}")`)
   }
   return raw as T
+}
+
+/**
+ * Refuse a release/sprint value that is not a numeric label for that field.
+ *
+ * The two rules differ — a release carries a patch segment (`0.5.1`), a sprint
+ * is a single decimal — so the message names the shape the field actually
+ * accepts rather than a generic "invalid". An empty string is left alone: it
+ * is how a field is CLEARED from a shell.
+ */
+function assertLabel(field: LabelField, raw: string | undefined): void {
+  if (raw === undefined || raw === '') return
+  if (normalizeVersionLabel(raw, field) !== undefined) return
+  const shape = field === 'release'
+    ? 'a version number like 1.5 or 0.5.1 (up to three numbers)'
+    : 'a decimal number like 1.5 (one dot at most)'
+  throw new CliError(
+    `--${field} must be ${shape} (got "${raw}") — nothing was saved`,
+    EXIT.usage,
+    { field, expected: shape, got: raw },
+  )
 }
 
 /**
@@ -278,7 +303,7 @@ Options
 
   --status <s>               ${STATUSES.join('|')}
   --priority <p>             ${PRIORITIES.join('|')}
-  --release <n[.n]>          e.g. 1.5            (empty string clears)
+  --release <n[.n[.n]]>      e.g. 1.5 or 0.5.1   (empty string clears)
   --sprint <n[.n]>           e.g. 24             (empty string clears)
   --due <YYYY-MM-DD>         Calendar day       (empty string clears)
   --description <text>       Body text          (empty string clears)
@@ -371,13 +396,10 @@ export function run(
       // A label that fails validation must not be dropped silently — the agent
       // asked for a release/sprint and would otherwise never learn it was
       // refused. Same contract as --due below.
-      for (const [flag, raw] of [['--release', releaseRaw], ['--sprint', sprintRaw]] as const) {
-        if (raw !== undefined && raw !== '' && normalizeVersionLabel(raw) === undefined) {
-          throw new CliError(`${flag} must be a decimal number like 1.5 (got "${raw}")`)
-        }
-      }
-      const release = normalizeVersionLabel(releaseRaw)
-      const sprint = normalizeVersionLabel(sprintRaw)
+      assertLabel('release', releaseRaw)
+      assertLabel('sprint', sprintRaw)
+      const release = normalizeVersionLabel(releaseRaw, 'release')
+      const sprint = normalizeVersionLabel(sprintRaw, 'sprint')
       const dueRaw = str(options, 'due')
       // A due date that fails validation must not be dropped silently — the
       // agent asked for a date and would otherwise never learn it was refused.
@@ -412,11 +434,8 @@ export function run(
       if (due !== undefined && due !== '' && normalizeDueDate(due) === undefined) {
         throw new CliError(`--due must be a real calendar date as YYYY-MM-DD (got "${due}")`)
       }
-      for (const [flag, raw] of [['--release', release], ['--sprint', sprint]] as const) {
-        if (raw !== undefined && raw !== '' && normalizeVersionLabel(raw) === undefined) {
-          throw new CliError(`${flag} must be a decimal number like 1.5 (got "${raw}")`)
-        }
-      }
+      assertLabel('release', release)
+      assertLabel('sprint', sprint)
       if (
         status === undefined && priority === undefined && title === undefined &&
         description === undefined && release === undefined && sprint === undefined &&
@@ -447,7 +466,7 @@ export function run(
           }
           for (const [key, raw] of [['release', release], ['sprint', sprint]] as const) {
             if (raw === undefined) continue
-            const label = normalizeVersionLabel(raw)
+            const label = normalizeVersionLabel(raw, key)
             if (label !== undefined) next[key] = label
             else delete next[key]
           }
@@ -535,12 +554,19 @@ export function main(argv: string[], cwd: string = process.cwd()): number {
   const wantsJson = parsed.options.json === true
   try {
     const outcome = run(parsed, cwd)
-    console.log(wantsJson ? JSON.stringify(outcome.json, null, 2) : outcome.text)
+    // `ok` leads on BOTH paths: a payload that only ever appears on success
+    // still forces an agent to infer the verdict from its shape, and a caller
+    // that guesses wrong reports a write that never happened.
+    const json = outcome.json !== null && typeof outcome.json === 'object' && !Array.isArray(outcome.json)
+      ? { ok: true, ...(outcome.json as Record<string, unknown>) }
+      : { ok: true, result: outcome.json }
+    console.log(wantsJson ? JSON.stringify(json, null, 2) : outcome.text)
     return EXIT.ok
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const code = error instanceof CliError ? error.code : 1
-    if (wantsJson) console.log(JSON.stringify({ error: message, code }, null, 2))
+    const details = error instanceof CliError ? error.details : {}
+    if (wantsJson) console.log(JSON.stringify({ ok: false, error: message, code, ...details }, null, 2))
     else console.error(`dsh-todo: ${message}`)
     return code
   }

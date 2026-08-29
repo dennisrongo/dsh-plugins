@@ -26,11 +26,13 @@ import {
   MAX_TEXT,
   PRIORITIES,
   STATUSES,
+  compareVersionsDesc,
   normalizeDueDate,
   normalizeLabel,
   normalizeVersionLabel,
   toPriority,
   toStatus,
+  type LabelField,
   type TodoItem,
   type TodoPriority,
   type TodoStatus,
@@ -382,26 +384,51 @@ export interface TodoGroup {
 export const UNASSIGNED = 'Unassigned'
 
 /**
- * Compare two release/sprint labels, newest first. Labels are decimal-only by
- * contract, so they compare as NUMBERS — `1.10` sorts below `1.5` — with a
- * localeCompare fallback for legacy labels written before the rule existed,
- * which still display and group (no migration).
+ * Compare two release/sprint labels, newest first.
+ *
+ * Delegates to the shared VERSION comparator: labels compare segment by
+ * segment, so `1.10` outranks `1.9` and `0.5.1` sits between `0.5` and `0.6`.
+ * Legacy labels written before the numeric rule still sort sanely through its
+ * string fallback (no migration).
  */
-function compareLabelsDesc(a: string, b: string): number {
-  const na = Number(a)
-  const nb = Number(b)
-  if (a !== '' && b !== '' && !Number.isNaN(na) && !Number.isNaN(nb)) return nb - na
-  return b.localeCompare(a, undefined, { numeric: true })
+const compareLabelsDesc = compareVersionsDesc
+
+/**
+ * Strip everything a decimal label cannot contain — anything but digits and
+ * dots. The inputs run every keystroke and paste through this, so invalid
+ * characters can never be entered at all; whether the remaining text is a
+ * VALID label (at most one dot) is decided on blur by
+ * {@link isCommittableLabel}.
+ */
+export function sanitizeDecimalInput(raw: string): string {
+  return raw.replace(/[^0-9.]/g, '')
 }
 
 /**
- * Whether a typed release/sprint edit may be committed: empty clears the
- * field, a bare decimal writes, anything else is refused — the same rule the
- * CLI enforces, so neither face of the plugin can mix alpha into a numeric
- * label.
+ * Whether a typed edit may be committed to `field`: empty clears it, a numeric
+ * label writes, anything else is refused — the same rule the CLI enforces, so
+ * neither face of the plugin can mix alpha into a numeric label. The two
+ * fields differ in shape, which is why the field is a parameter.
  */
-export function isCommittableLabel(raw: string): boolean {
-  return normalizeLabel(raw) === undefined || normalizeVersionLabel(raw) !== undefined
+export function isCommittableLabel(raw: string, field: LabelField): boolean {
+  return normalizeLabel(raw) === undefined || normalizeVersionLabel(raw, field) !== undefined
+}
+
+/** Inline message when a release edit is refused. */
+export const RELEASE_ERROR = 'Use a version like 1.5 or 0.5.1 (up to three numbers) — not saved'
+
+/** Inline message when a sprint edit is refused — no patch segment here. */
+export const SPRINT_ERROR = 'Use a decimal like 1.5 (one dot at most) — not saved'
+
+/**
+ * The validation error for a typed edit to `field`, or `undefined` when it may
+ * commit. A refused edit must SAY so — silently reverting the field reads as
+ * the input being broken, and the user never learns the rule. The message
+ * names the shape THAT field accepts, since release and sprint differ.
+ */
+export function labelError(raw: string, field: LabelField): string | undefined {
+  if (isCommittableLabel(raw, field)) return undefined
+  return field === 'release' ? RELEASE_ERROR : SPRINT_ERROR
 }
 
 /**
@@ -980,12 +1007,15 @@ const VIEW_STYLES = `
 .dshtd-desc:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshtd-fields { display: flex; flex-wrap: wrap; gap: 8px; }
 .dshtd-field { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 18px; color: var(--td-caption); }
+.dshtd-field-col { display: flex; flex-direction: column; gap: 2px; }
 .dshtd-input {
   border: 1px solid var(--td-border); border-radius: 6px; background: transparent;
   color: var(--td-primary); font: inherit; font-size: 12px; line-height: 18px;
   padding: 3px 8px; min-width: 0; width: 130px;
 }
 .dshtd-input:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
+.dshtd-input[aria-invalid="true"], .dshtd-input[aria-invalid="true"]:focus { border-color: var(--td-danger); }
+.dshtd-label-err { display: block; font-size: 12px; line-height: 18px; color: var(--td-danger); }
 .dshtd-select {
   border: 1px solid var(--td-border); border-radius: 6px; background: transparent;
   color: var(--td-primary); font: inherit; font-size: 12px; line-height: 18px; padding: 3px 6px;
@@ -1329,8 +1359,13 @@ export function ConfirmDialog({
  * Portalled to `document.body` because the tab's list is an `overflow-y: auto`
  * scroll container: rendered in place, the dialog would be clipped by it.
  *
- * Text fields commit on blur (and the dialog force-commits on close), so typing
- * does not put one host round-trip on the wire per keystroke.
+ * Text fields commit on blur (and the dialog force-commits title/description on
+ * exit), so typing does not put one host round-trip on the wire per keystroke.
+ *
+ * **Done saves; everything else dismisses.** Done is the only control that
+ * refuses to proceed while a label is invalid — the backdrop, Escape and the X
+ * always let you out, discarding the unsaved label rather than trapping you in
+ * a dialog because one field is half-typed.
  */
 export function TodoModal({
   item,
@@ -1348,6 +1383,9 @@ export function TodoModal({
   const [title, setTitle] = React.useState(item.title)
   const [desc, setDesc] = React.useState(item.description ?? '')
   const panel = React.useRef<HTMLDivElement | null>(null)
+  const releaseRef = React.useRef<HTMLInputElement | null>(null)
+  const sprintRef = React.useRef<HTMLInputElement | null>(null)
+  const [labelErr, setLabelErr] = React.useState<{ release?: boolean; sprint?: boolean }>({})
 
   // Commit whatever is in the local drafts. Called on close so edits are never
   // lost to a click on the backdrop.
@@ -1362,10 +1400,42 @@ export function TodoModal({
     })
   }, [title, desc, item, store])
 
-  const close = React.useCallback(() => {
+  /**
+   * Leave WITHOUT saving the labels.
+   *
+   * A dialog you cannot escape because one field is half-typed is a trap, so
+   * the backdrop, Escape and the X always get out. Title and description still
+   * flush — those cannot be invalid — while an unsaved invalid label is simply
+   * discarded, leaving the stored value untouched.
+   */
+  const dismiss = React.useCallback(() => {
     flush()
     onClose()
   }, [flush, onClose])
+
+  /**
+   * Save and leave. The ONLY control that refuses to proceed on bad data.
+   *
+   * Labels normally commit on blur, but the refs are re-read here so a value
+   * typed and confirmed in one gesture still lands, and so an invalid one is
+   * caught even if the blur handler never ran.
+   */
+  const save = React.useCallback(() => {
+    const releaseRaw = releaseRef.current?.value ?? ''
+    const sprintRaw = sprintRef.current?.value ?? ''
+    const badRelease = labelError(releaseRaw, 'release') !== undefined
+    const badSprint = labelError(sprintRaw, 'sprint') !== undefined
+    if (badRelease || badSprint) {
+      setLabelErr({ release: badRelease, sprint: badSprint })
+      // Put the cursor where the problem is, so the message is not something
+      // the user has to go hunting for.
+      ;(badRelease ? releaseRef.current : sprintRef.current)?.focus()
+      return
+    }
+    store.update((items) => updateItem(items, item.id, { release: releaseRaw, sprint: sprintRaw }))
+    flush()
+    onClose()
+  }, [flush, onClose, store, item.id])
 
   // Focus the dialog on open and restore focus to whatever opened it on close,
   // so keyboard users are not dumped at the top of the document.
@@ -1381,7 +1451,7 @@ export function TodoModal({
     e.stopPropagation()
     if (e.key === 'Escape') {
       e.preventDefault()
-      close()
+      dismiss()
       return
     }
     if (e.key !== 'Tab') return
@@ -1403,7 +1473,7 @@ export function TodoModal({
   const overdue = isOverdue(item)
 
   return createPortal(
-    <div className="dshtd-modal-backdrop" onClick={close} onKeyDown={onKeyDown}>
+    <div className="dshtd-modal-backdrop" onClick={dismiss} onKeyDown={onKeyDown}>
       <div
         className="dshtd-modal"
         role="dialog"
@@ -1425,7 +1495,7 @@ export function TodoModal({
               store.update((items) => updateItem(items, item.id, { title: next }))
             }}
           />
-          <button className="dshtd-icon" title="Close" aria-label="Close task details" onClick={close}>
+          <button className="dshtd-icon" title="Close without saving" aria-label="Close task details without saving" onClick={dismiss}>
             <Icon path={ICON.close} />
           </button>
         </div>
@@ -1475,30 +1545,58 @@ export function TodoModal({
             <label className="dshtd-modal-label">
               Release
               <input
+                ref={releaseRef}
                 className="dshtd-input"
                 list="dshtd-releases"
                 defaultValue={item.release ?? ''}
-                placeholder="1.5"
+                placeholder="1.5 or 0.5.1"
+                inputMode="decimal"
+                aria-invalid={labelErr.release === true || undefined}
+                onChange={(e) => {
+                  e.target.value = sanitizeDecimalInput(e.target.value)
+                  if (labelErr.release && labelError(e.target.value, 'release') === undefined) {
+                    setLabelErr((prev) => ({ ...prev, release: false }))
+                  }
+                }}
                 onBlur={(e) => {
-                  // Refused, never dropped: a non-decimal label reverts to the
-                  // stored value instead of being written.
-                  if (!isCommittableLabel(e.target.value)) { e.target.value = item.release ?? ''; return }
+                  // Refused edits are FLAGGED, not silently reverted: the text
+                  // stays so the user sees what was refused and can fix it.
+                  if (labelError(e.target.value, 'release') !== undefined) {
+                    setLabelErr((prev) => ({ ...prev, release: true }))
+                    return
+                  }
+                  setLabelErr((prev) => ({ ...prev, release: false }))
                   store.update((items) => updateItem(items, item.id, { release: e.target.value }))
                 }}
               />
+              {labelErr.release ? <span className="dshtd-label-err" role="alert">{RELEASE_ERROR}</span> : null}
             </label>
             <label className="dshtd-modal-label">
               Sprint
               <input
+                ref={sprintRef}
                 className="dshtd-input"
                 list="dshtd-sprints"
                 defaultValue={item.sprint ?? ''}
                 placeholder="24"
+                inputMode="decimal"
+                aria-invalid={labelErr.sprint === true || undefined}
+                onChange={(e) => {
+                  e.target.value = sanitizeDecimalInput(e.target.value)
+                  if (labelErr.sprint && labelError(e.target.value, 'sprint') === undefined) {
+                    setLabelErr((prev) => ({ ...prev, sprint: false }))
+                  }
+                }}
                 onBlur={(e) => {
-                  if (!isCommittableLabel(e.target.value)) { e.target.value = item.sprint ?? ''; return }
+                  if (labelError(e.target.value, 'sprint') !== undefined) {
+                    setLabelErr((prev) => ({ ...prev, sprint: true }))
+                    return
+                  }
+                  setLabelErr((prev) => ({ ...prev, sprint: false }))
                   store.update((items) => updateItem(items, item.id, { sprint: e.target.value }))
                 }}
               />
+              {labelErr.sprint ? <span className="dshtd-label-err" role="alert">{SPRINT_ERROR}</span> : null}
             </label>
             <label className="dshtd-modal-label">
               Due date
@@ -1524,7 +1622,7 @@ export function TodoModal({
             {item.completedAt ? ` · completed ${fmtAge(item.completedAt)} ago` : ''}
             {overdue ? ' · overdue' : ''}
           </span>
-          <button className="dshtd-btn primary" onClick={close}>Done</button>
+          <button className="dshtd-btn primary" onClick={save}>Done</button>
         </div>
       </div>
     </div>,
@@ -1781,6 +1879,7 @@ function TodoDetail({
   const [desc, setDesc] = React.useState(item.description ?? '')
   const [release, setRelease] = React.useState(item.release ?? '')
   const [sprint, setSprint] = React.useState(item.sprint ?? '')
+  const [labelErr, setLabelErr] = React.useState<{ release?: boolean; sprint?: boolean }>({})
 
   return (
     <div className="dshtd-detail">
@@ -1800,35 +1899,59 @@ function TodoDetail({
       <div className="dshtd-fields">
         <label className="dshtd-field">
           Release
-          <input
-            className="dshtd-input"
-            list="dshtd-releases"
-            value={release}
-            placeholder="1.5"
-            onChange={(e) => setRelease(e.target.value)}
-            onKeyDown={(e) => e.stopPropagation()}
-            onBlur={() => {
-              if (!isCommittableLabel(release)) { setRelease(item.release ?? ''); return }
-              if ((normalizeLabel(release) ?? '') === (item.release ?? '')) return
-              store.update((items) => updateItem(items, item.id, { release }))
-            }}
-          />
+          <span className="dshtd-field-col">
+            <input
+              className="dshtd-input"
+              list="dshtd-releases"
+              value={release}
+              placeholder="1.5 or 0.5.1"
+              inputMode="decimal"
+              aria-invalid={labelErr.release === true || undefined}
+              onChange={(e) => {
+                setRelease(sanitizeDecimalInput(e.target.value))
+                if (labelErr.release && labelError(e.target.value, 'release') === undefined) {
+                  setLabelErr((prev) => ({ ...prev, release: false }))
+                }
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              onBlur={() => {
+                // Flagged, not silently reverted: the text stays so the user
+                // sees what was refused and can fix it.
+                if (labelError(release, 'release') !== undefined) { setLabelErr((prev) => ({ ...prev, release: true })); return }
+                setLabelErr((prev) => ({ ...prev, release: false }))
+                if ((normalizeLabel(release) ?? '') === (item.release ?? '')) return
+                store.update((items) => updateItem(items, item.id, { release }))
+              }}
+            />
+            {labelErr.release ? <span className="dshtd-label-err" role="alert">{RELEASE_ERROR}</span> : null}
+          </span>
         </label>
         <label className="dshtd-field">
           Sprint
-          <input
-            className="dshtd-input"
-            list="dshtd-sprints"
-            value={sprint}
-            placeholder="24"
-            onChange={(e) => setSprint(e.target.value)}
-            onKeyDown={(e) => e.stopPropagation()}
-            onBlur={() => {
-              if (!isCommittableLabel(sprint)) { setSprint(item.sprint ?? ''); return }
-              if ((normalizeLabel(sprint) ?? '') === (item.sprint ?? '')) return
-              store.update((items) => updateItem(items, item.id, { sprint }))
-            }}
-          />
+          <span className="dshtd-field-col">
+            <input
+              className="dshtd-input"
+              list="dshtd-sprints"
+              value={sprint}
+              placeholder="24"
+              inputMode="decimal"
+              aria-invalid={labelErr.sprint === true || undefined}
+              onChange={(e) => {
+                setSprint(sanitizeDecimalInput(e.target.value))
+                if (labelErr.sprint && labelError(e.target.value, 'sprint') === undefined) {
+                  setLabelErr((prev) => ({ ...prev, sprint: false }))
+                }
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              onBlur={() => {
+                if (labelError(sprint, 'sprint') !== undefined) { setLabelErr((prev) => ({ ...prev, sprint: true })); return }
+                setLabelErr((prev) => ({ ...prev, sprint: false }))
+                if ((normalizeLabel(sprint) ?? '') === (item.sprint ?? '')) return
+                store.update((items) => updateItem(items, item.id, { sprint }))
+              }}
+            />
+            {labelErr.sprint ? <span className="dshtd-label-err" role="alert">{SPRINT_ERROR}</span> : null}
+          </span>
         </label>
         <label className="dshtd-field">
           Priority

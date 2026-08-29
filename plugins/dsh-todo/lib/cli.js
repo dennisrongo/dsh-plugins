@@ -22,10 +22,13 @@ function normalizeLabel(raw) {
   const text = raw.replace(/\s+/g, " ").trim().slice(0, MAX_LABEL);
   return text.length > 0 ? text : void 0;
 }
-var VERSION_LABEL_RE = /^\d+(\.\d+)?$/;
-function normalizeVersionLabel(raw) {
+var RELEASE_LABEL_RE = /^\d+(\.\d+){0,2}$/;
+var SPRINT_LABEL_RE = /^\d+(\.\d+)?$/;
+function normalizeVersionLabel(raw, field) {
   const label = normalizeLabel(raw);
-  return label !== void 0 && VERSION_LABEL_RE.test(label) ? label : void 0;
+  if (label === void 0) return void 0;
+  const pattern = field === "release" ? RELEASE_LABEL_RE : SPRINT_LABEL_RE;
+  return pattern.test(label) ? label : void 0;
 }
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 function normalizeDueDate(raw) {
@@ -194,10 +197,13 @@ var CliError = class extends Error {
   /**
    * @param message - human-readable reason.
    * @param code - process exit code, from {@link EXIT}.
+   * @param details - extra machine-readable fields merged into the `--json`
+   * error payload, so an agent can correct itself without parsing the sentence.
    */
-  constructor(message, code = EXIT.usage) {
+  constructor(message, code = EXIT.usage, details = {}) {
     super(message);
     this.code = code;
+    this.details = details;
     this.name = "CliError";
   }
 };
@@ -214,6 +220,16 @@ function oneOf(options, key, allowed) {
     throw new CliError(`--${key} must be one of: ${allowed.join(", ")} (got "${raw}")`);
   }
   return raw;
+}
+function assertLabel(field, raw) {
+  if (raw === void 0 || raw === "") return;
+  if (normalizeVersionLabel(raw, field) !== void 0) return;
+  const shape = field === "release" ? "a version number like 1.5 or 0.5.1 (up to three numbers)" : "a decimal number like 1.5 (one dot at most)";
+  throw new CliError(
+    `--${field} must be ${shape} (got "${raw}") \u2014 nothing was saved`,
+    EXIT.usage,
+    { field, expected: shape, got: raw }
+  );
 }
 function resolveWorkspace(options, cwd) {
   return resolve2(str(options, "workspace") ?? cwd);
@@ -302,7 +318,7 @@ Options
 
   --status <s>               ${STATUSES.join("|")}
   --priority <p>             ${PRIORITIES.join("|")}
-  --release <n[.n]>          e.g. 1.5            (empty string clears)
+  --release <n[.n[.n]]>      e.g. 1.5 or 0.5.1   (empty string clears)
   --sprint <n[.n]>           e.g. 24             (empty string clears)
   --due <YYYY-MM-DD>         Calendar day       (empty string clears)
   --description <text>       Body text          (empty string clears)
@@ -365,13 +381,10 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
       const description = str(options, "description");
       const releaseRaw = str(options, "release");
       const sprintRaw = str(options, "sprint");
-      for (const [flag, raw] of [["--release", releaseRaw], ["--sprint", sprintRaw]]) {
-        if (raw !== void 0 && raw !== "" && normalizeVersionLabel(raw) === void 0) {
-          throw new CliError(`${flag} must be a decimal number like 1.5 (got "${raw}")`);
-        }
-      }
-      const release = normalizeVersionLabel(releaseRaw);
-      const sprint = normalizeVersionLabel(sprintRaw);
+      assertLabel("release", releaseRaw);
+      assertLabel("sprint", sprintRaw);
+      const release = normalizeVersionLabel(releaseRaw, "release");
+      const sprint = normalizeVersionLabel(sprintRaw, "sprint");
       const dueRaw = str(options, "due");
       if (dueRaw !== void 0 && dueRaw !== "" && normalizeDueDate(dueRaw) === void 0) {
         throw new CliError(`--due must be a real calendar date as YYYY-MM-DD (got "${dueRaw}")`);
@@ -403,11 +416,8 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
       if (due !== void 0 && due !== "" && normalizeDueDate(due) === void 0) {
         throw new CliError(`--due must be a real calendar date as YYYY-MM-DD (got "${due}")`);
       }
-      for (const [flag, raw] of [["--release", release], ["--sprint", sprint]]) {
-        if (raw !== void 0 && raw !== "" && normalizeVersionLabel(raw) === void 0) {
-          throw new CliError(`${flag} must be a decimal number like 1.5 (got "${raw}")`);
-        }
-      }
+      assertLabel("release", release);
+      assertLabel("sprint", sprint);
       if (status === void 0 && priority === void 0 && title === void 0 && description === void 0 && release === void 0 && sprint === void 0 && due === void 0) {
         throw new CliError("update needs at least one field to change");
       }
@@ -430,7 +440,7 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
           }
           for (const [key, raw] of [["release", release], ["sprint", sprint]]) {
             if (raw === void 0) continue;
-            const label = normalizeVersionLabel(raw);
+            const label = normalizeVersionLabel(raw, key);
             if (label !== void 0) next[key] = label;
             else delete next[key];
           }
@@ -504,12 +514,14 @@ function main(argv, cwd = process.cwd()) {
   const wantsJson = parsed.options.json === true;
   try {
     const outcome = run(parsed, cwd);
-    console.log(wantsJson ? JSON.stringify(outcome.json, null, 2) : outcome.text);
+    const json = outcome.json !== null && typeof outcome.json === "object" && !Array.isArray(outcome.json) ? { ok: true, ...outcome.json } : { ok: true, result: outcome.json };
+    console.log(wantsJson ? JSON.stringify(json, null, 2) : outcome.text);
     return EXIT.ok;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const code = error instanceof CliError ? error.code : 1;
-    if (wantsJson) console.log(JSON.stringify({ error: message, code }, null, 2));
+    const details = error instanceof CliError ? error.details : {};
+    if (wantsJson) console.log(JSON.stringify({ ok: false, error: message, code, ...details }, null, 2));
     else console.error(`dsh-todo: ${message}`);
     return code;
   }

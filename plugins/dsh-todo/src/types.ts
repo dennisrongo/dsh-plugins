@@ -53,18 +53,19 @@ export interface TodoItem {
   status: TodoStatus
   priority: TodoPriority
   /**
-   * What ships together, e.g. `"1.5"`. Decimal-only (`1`, `1.5`, `24`),
-   * enforced at every write path — a numeric label sorts numerically and never
-   * mixes alpha with numeric the way `"v1.5"` or `"Sprint 24"` would. Still
-   * modelled as a LABEL rather than an entity: grouping and filtering work with
-   * no releases table, no CRUD, and no migration when one is renamed.
+   * What ships together, e.g. `"1.5"` or `"0.5.1"`. One to three numeric
+   * segments, enforced at every write path — a numeric label sorts by version
+   * and never mixes alpha with numeric the way `"v1.5"` would. Still modelled
+   * as a LABEL rather than an entity: grouping and filtering work with no
+   * releases table, no CRUD, and no migration when one is renamed.
    */
   release?: string
   /**
-   * When it is worked on, e.g. `"24"`. Same decimal-only rule as
-   * {@link TodoItem.release}, and deliberately a separate axis from it: a task
-   * can be worked in sprint 24 and ship in 1.3, and collapsing the two loses
-   * the ability to answer either question.
+   * When it is worked on, e.g. `"24"`. A single decimal — a sprint is a point
+   * on a calendar, not a shipped artefact, so unlike
+   * {@link TodoItem.release} it takes no patch segment. Deliberately a separate
+   * axis: a task can be worked in sprint 24 and ship in 1.3, and collapsing the
+   * two loses the ability to answer either question.
    */
   sprint?: string
   /**
@@ -166,24 +167,56 @@ export function normalizeLabel(raw: unknown): string | undefined {
   return text.length > 0 ? text : undefined
 }
 
-/**
- * A decimal label: digits with at most one dot, e.g. `1`, `1.5`, `24`.
- * Multi-part versions (`1.2.0`) are rejected on purpose — only one dot sorts
- * correctly as a single number.
- */
-const VERSION_LABEL_RE = /^\d+(\.\d+)?$/
+/** The two label fields, which are numeric but do NOT share one rule. */
+export type LabelField = 'release' | 'sprint'
 
 /**
- * Coerce untrusted input to a valid release/sprint label, or `undefined`.
- *
- * Returns the normalized label only when it is a bare decimal — `1.5` passes,
- * `v1.5` and `Sprint 24` do not — so release/sprint stay numeric and sort
- * without mixing alpha and numeric. Callers refuse on `undefined` rather than
- * dropping the input, the same contract as {@link normalizeDueDate}.
+ * A release: one to three numeric segments, e.g. `1`, `1.5`, `0.5.1`. The
+ * third segment is the patch level, so a fix shipping on top of 0.5 has a
+ * label of its own instead of overloading the minor.
  */
-export function normalizeVersionLabel(raw: unknown): string | undefined {
+const RELEASE_LABEL_RE = /^\d+(\.\d+){0,2}$/
+
+/**
+ * A sprint: a single decimal, e.g. `1`, `1.5`, `24`. A sprint is a point on a
+ * calendar, not a shipped artefact, so it takes no patch segment.
+ */
+const SPRINT_LABEL_RE = /^\d+(\.\d+)?$/
+
+/**
+ * Coerce untrusted input to a valid label for `field`, or `undefined`.
+ *
+ * Both fields stay purely numeric — `v1.5` and `Sprint 24` never pass — so
+ * labels sort without mixing alpha and numeric; they differ only in how many
+ * segments are allowed. Callers refuse on `undefined` rather than dropping the
+ * input, the same contract as {@link normalizeDueDate}.
+ */
+export function normalizeVersionLabel(raw: unknown, field: LabelField): string | undefined {
   const label = normalizeLabel(raw)
-  return label !== undefined && VERSION_LABEL_RE.test(label) ? label : undefined
+  if (label === undefined) return undefined
+  const pattern = field === 'release' ? RELEASE_LABEL_RE : SPRINT_LABEL_RE
+  return pattern.test(label) ? label : undefined
+}
+
+/**
+ * Compare two numeric labels SEGMENT BY SEGMENT, newest first.
+ *
+ * Version semantics, not decimal: `1.10` outranks `1.9`, and `0.5.1` sits
+ * between `0.5` and `0.6`. A label that is not numeric at all (data written
+ * before the rule existed) falls back to a numeric-aware string compare, so
+ * legacy lists still group in a sane order.
+ */
+export function compareVersionsDesc(a: string, b: string): number {
+  const segsA = a.split('.')
+  const segsB = b.split('.')
+  const numeric = (segs: string[]) => segs.every((s) => s.length > 0 && /^\d+$/.test(s))
+  if (!numeric(segsA) || !numeric(segsB)) return b.localeCompare(a, undefined, { numeric: true })
+  for (let i = 0; i < Math.max(segsA.length, segsB.length); i += 1) {
+    // A missing segment is 0, so 0.5 ranks below 0.5.1 rather than equal to it.
+    const diff = Number(segsB[i] ?? '0') - Number(segsA[i] ?? '0')
+    if (diff !== 0) return diff
+  }
+  return 0
 }
 
 /** Matches a `YYYY-MM-DD` calendar date. */

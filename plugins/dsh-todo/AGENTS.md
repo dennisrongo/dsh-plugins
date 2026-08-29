@@ -18,13 +18,23 @@ An item is a **task**, not a checklist line:
   **replaces the old boolean `done`**; `isDone(item)` derives it. Only `setStatus` writes it,
   so `completedAt` can never contradict the status.
 - `release` and `sprint` are **deliberately separate axes** — what ships together vs. when it
-  is worked — and both are **decimal-only labels** (`normalizeVersionLabel` in `types.ts`:
-  `1`, `1.5`, `24` pass; `v1.5`, `Sprint 24`, `1.2.0` are refused), so they sort
-  numerically and never mix alpha with numeric. Enforcement is at the write paths only — CLI
-  `add`/`update` throw, the UI editors revert on blur — while READ paths
-  (`db.ts`, `sanitizeItems`, `coerceItems`) still pass legacy labels through, because
-  there is no migration and pre-rule data must keep loading. Grouping and filtering need no
-  releases table, and `knownLabels()` feeds a `<datalist>` so labels converge without one.
+  is worked — and both are **numeric labels**, but they do NOT share one rule
+  (`normalizeVersionLabel(raw, field)` in `types.ts`):
+  a **release** takes up to three segments (`1`, `1.5`, `0.5.1`) because a patch release needs
+  a label of its own; a **sprint** takes one dot at most (`1`, `1.5`, `24`) because it is a
+  calendar point, not a shipped artefact. `v1.5`, `Sprint 24`, `1.2.3.4` and `1.` are refused
+  for both. Sorting is `compareVersionsDesc` — SEGMENT-WISE, not decimal, so `1.10` outranks
+  `1.9` and `0.5.1` sits between `0.5` and `0.6`; a non-numeric legacy label falls back to a
+  numeric-aware string compare. Enforcement is at the write paths only — CLI `add`/`update`
+  throw via `assertLabel` (whose message names that field's shape), the UI inputs strip every
+  character but digits and dots as you type (`sanitizeDecimalInput`), and an edit that is still
+  invalid on blur is FLAGGED with an inline error (`labelError(raw, field)`, `RELEASE_ERROR` /
+  `SPRINT_ERROR`, `.dshtd-label-err`, `aria-invalid`) and never committed — silently reverting
+  read as the field being broken. In the task modal an invalid label blocks the Done button —
+  and ONLY that button; dismissing is always allowed. Meanwhile READ paths (`db.ts`, `sanitizeItems`, `coerceItems`) still pass
+  legacy labels through, because there is no migration and pre-rule data must keep loading.
+  Grouping and filtering need no releases table, and `knownLabels()` feeds a `<datalist>` so
+  labels converge without one.
 - `title` caps at `MAX_TEXT` (500); `description` has its own `MAX_DESC` (5000), because
   reusing 500 silently truncates acceptance criteria. Labels cap at `MAX_LABEL` (60).
 - `dueDate` is a `YYYY-MM-DD` **calendar day, not an epoch** — "due the 14th" must read as the
@@ -62,8 +72,15 @@ inline, and the chevron still expands the cheap in-row peek.
   clears the 36px strip with top padding instead. `pnpm run test:modal` asserts both.
 - The dialog holds the open task's **id**, not the item, so it re-reads the current version after
   a commit and closes itself if another tab deletes the task.
-- Text fields commit on blur and the dialog force-commits on close, so a backdrop click cannot
-  lose an edit and typing does not put one host round-trip on the wire per keystroke.
+- Text fields commit on blur and the dialog force-commits title/description on exit, so a
+  backdrop click cannot lose an edit and typing does not put one host round-trip on the wire
+  per keystroke.
+- **Done saves; everything else dismisses.** `save()` is the ONLY path that validates: it
+  re-reads the label refs, refuses on a bad one (flagging it and focusing the offending input),
+  and otherwise commits and closes. `dismiss()` — backdrop, Escape, the X — never validates,
+  because a dialog you cannot leave while a field is half-typed is a trap; the unsaved bad
+  label is simply discarded and the stored value stands. `test/smoke.mjs` asserts the wiring
+  against the SOURCE, since minification renames the handlers.
 
 `pnpm run test:modal` drives headless Chrome against the built CSS and fails if the panel is
 clipped, off-screen, transparent, or under the drag strip.
@@ -109,11 +126,14 @@ dsh-todo done|reopen|rm|show <id>
 dsh-todo archive [<id>]        # no id = every completed task
 ```
 
-`--json` shapes, which is what an agent parses: `list` → `{ count, items }`; `add` /
-`update` / `done` / `reopen` / `rm` → `{ item, revision }`; `archive` →
-`{ archived, revision }`; `show` → the task; any failure → `{ error, code }`. Requires Node
-22+ for `node:sqlite`, which warns on stderr that it is experimental — harmless, and stdout
-stays clean JSON regardless.
+`--json` shapes, which is what an agent parses. **Every payload leads with `ok`**, so the
+verdict never has to be inferred from the shape: `{ ok: true, ... }` on success — `list` adds
+`{ count, items }`, `add` / `update` / `done` / `reopen` / `rm` add `{ item, revision }`
+(the stored task, so a write is confirmable without a second call), `archive` adds
+`{ archived, revision }`, `show` adds the task — and `{ ok: false, error, code }` on failure,
+plus `{ field, expected, got }` when a value was REFUSED, which is enough for an agent to
+correct itself without parsing the sentence. Requires Node 22+ for `node:sqlite`, which warns on
+stderr that it is experimental — harmless, and stdout stays clean JSON regardless.
 
 - **It talks to SQLite directly, and that is safe.** SQLite is a multi-process database: its
   file lock refuses a writer that lands inside another process's transaction rather than
@@ -137,12 +157,60 @@ stays clean JSON regardless.
   `--release=`, which the parser splits on `=` and which survives every shell.
 - **Invalid values are refused, never dropped.** `--due 2026-02-31` and
   `--release v1.5` exit non-zero instead of silently storing nothing, because an agent would
-  otherwise never learn it was ignored. Release/sprint accept only bare decimals
-  (`normalizeVersionLabel`); an empty value still CLEARS the field.
+  otherwise never learn it was ignored. `--release` takes up to three numbers (`0.5.1`),
+  `--sprint` one dot at most, and `assertLabel` names the right shape per field; an empty
+  value still CLEARS the field.
 - **Exit codes are distinct**: `2` usage, `3` not-found, `0` ok — so a script can branch on
-  why a command failed. `--json` prints JSON on the ERROR path too.
+  why a command failed. `--json` prints JSON on the ERROR path too, and `CliError` carries a
+  `details` bag that `main` merges into that payload (`assertLabel` fills it with
+  `field`/`expected`/`got`), so a refusal is self-describing rather than a sentence to parse.
 - **The shebang comes from the esbuild `banner`, not the source.** One in each makes the
   output a syntax error at load; `test/cli.test.mjs` asserts there is exactly one.
+
+### Two test layers, and why both exist
+
+`cli.test.mjs` imports `lib/cli.js` and calls `run()` / `main()` **in-process** — fast, and
+where the argument parsing, filtering, id resolution and migration coverage lives.
+`cli-integration.mjs` **spawns `lib/bin.js`** for one realistic agent workflow (plan a release,
+inspect it, hit a refusal, recover from the payload alone, finish and archive). Both run in
+`pnpm test`.
+
+The split is not redundancy: the in-process suite cannot see the shebang'd entry point,
+`process.exitCode`, the stdout/stderr split, or argv as a shell delivers it, so a refactor
+that breaks any of those keeps it green. The integration suite was verified to FAIL against
+four separate sabotages before being trusted — dropping `ok: true`, printing human errors to
+stdout, treating `--release=` as invalid instead of a clear, and removing label validation
+outright.
+
+Two traps it encodes, both learned by getting them wrong:
+
+- **Ids are time-ordered, so tasks created together share a long prefix.** A 4-character
+  prefix over three fresh tasks is AMBIGUOUS, and the CLI must refuse it rather than resolve
+  to whichever matched first. The test asserts the refusal, not a lucky resolution.
+- **stdout must stay pure JSON under `--json`.** `node:sqlite` prints an experimental
+  warning on every run; if it ever reached stdout, every `jq` caller would break. Pinned
+  directly.
+
+### `pnpm run test:agent` — opt-in, never in CI
+
+`test/verify-agent.mjs` hands a REAL model nothing but the binary path and a goal, then
+asserts on the **database**, never on what the model said. What it measures is whether the
+agent-facing surface is self-serving: is `help` enough to discover the flags, and is a
+refusal payload enough to correct a bad value unaided? The task deliberately plants
+`v2.0` — a value the CLI must refuse — so recovering from the refusal is an objective, not
+an accident. A failure here is usually a DOCUMENTATION bug (help text, refusal wording),
+not a code bug.
+
+It is excluded from `pnpm test` for the usual reasons — network, credentials, cost,
+non-determinism — and it runs the harness in a **throwaway `DSH_HOME`**. That isolation is
+mandatory, not tidiness: DSH Desktop sets `DSH_HOME` to its own directory, and a second
+harness on a live home corrupts the sessions it is holding open. The cost of that isolation
+is that a throwaway home has **no stored credentials**, so the probe needs
+`DEEPSEEK_API_KEY` exported, or `DSH_AGENT_HOME` pointed at a home that has one *with no
+harness running*. It distinguishes a runner failure from a model failure explicitly — an
+empty transcript is reported as the harness failing to start, never as the model failing
+the task. **The model-driving path is unverified here**: it has only been run as far as the
+credential check.
 
 ## Endpoints
 
