@@ -20,7 +20,7 @@ import { parseStatus, parseBranchHeader, assertSafePath } from '../src/git.ts'
 import { GIT_REMOTE } from '../src/remote.ts'
 // Shared with the browser half: one implementation of the path arithmetic, so
 // the preview the user reads and the directory git receives cannot disagree.
-import { resolveWorktreeTarget } from '../src/types.ts'
+import { resolveWorktreeTarget, suggestWorktreePath } from '../src/types.ts'
 import {
   countChanges,
   badgeFor,
@@ -341,6 +341,37 @@ await test('a successful refs read carries all three lists through', async () =>
   // An EMPTY stash list is a legitimate success, distinct from a failure.
   assert.deepEqual(state.refs.stashes, [])
   assert.equal(state.refs.worktrees[0].main, true)
+})
+
+await test('suggestWorktreePath names a sibling after the project and branch', () => {
+  const root = 'C:/Users/me/GitHub/myproj'
+  assert.equal(suggestWorktreePath(root, 'feature'), '../myproj-feature')
+  // Slashes MUST flatten. '../myproj-feature/login' would silently create a
+  // directory called 'myproj-feature' with the worktree nested inside it.
+  assert.equal(suggestWorktreePath(root, 'feature/login'), '../myproj-feature-login')
+  assert.equal(suggestWorktreePath(root, 'fix/JIRA-123/retry'), '../myproj-fix-JIRA-123-retry')
+  // Spaces and punctuation git tolerates in refs are not safe in a directory.
+  assert.equal(suggestWorktreePath(root, 'my  branch'), '../myproj-my-branch')
+  // Version-ish names keep their dots; only leading/trailing ones are stripped.
+  assert.equal(suggestWorktreePath(root, 'release-1.2'), '../myproj-release-1.2')
+  assert.equal(suggestWorktreePath(root, '..weird..'), '../myproj-weird')
+  // Nothing usable yields nothing, rather than a dangling '../myproj-'.
+  for (const empty of ['', '   ', '///', '---']) {
+    assert.equal(suggestWorktreePath(root, empty), '', JSON.stringify(empty) + ' has no suggestion')
+  }
+  // A trailing separator on the root must not eat the project name.
+  assert.equal(suggestWorktreePath('C:/Users/me/GitHub/myproj/', 'x'), '../myproj-x')
+  assert.equal(suggestWorktreePath('/home/me/myproj', 'x'), '../myproj-x')
+})
+
+await test('the suggestion resolves to an actual sibling of the project', () => {
+  // The two functions have to agree: the suggestion is only sensible if
+  // resolving it lands beside the project and NOT inside it.
+  const root = 'C:/Users/me/GitHub/myproj'
+  const suggested = suggestWorktreePath(root, 'feature/login')
+  const target = resolveWorktreeTarget(root, suggested)
+  assert.equal(target.path, 'C:/Users/me/GitHub/myproj-feature-login')
+  assert.equal(target.inside, false, 'a suggestion the host would refuse is a broken suggestion')
 })
 
 await test('workspaceIdOf accepts the shapes the shell actually returns', () => {

@@ -405,6 +405,35 @@ implementations of the same arithmetic drift. The host cannot own it (the browse
 renders its result live under the input, which is what stops "where does `../x` go?"
 from being a question anyone answers by trying it.
 
+**Worktrees go BESIDE the project, named `<project>-<branch>`.** `suggestWorktreePath`
+auto-fills the path from the branch as the user types it, and stops the moment they type
+a path themselves — auto-fill that keeps overwriting a hand-typed value is worse than
+none. Three layouts were weighed: siblings (chosen), the bare-repo layout
+(`project/.bare` + `project/main` + `project/feature`, tidier but impossible to retrofit
+onto an ordinary clone, and a dsh workspace always points at one), and a central worktree
+store (which loses the adjacency). The project prefix earns its place in dsh
+specifically: workspaces are listed by TITLE, so `myproj-feature-login` sorts directly
+beside `myproj` in the switcher.
+
+**Flattening the branch into the directory name is not cosmetic.** Branch names contain
+slashes, and `../myproj-feature/login` silently creates a directory called
+`myproj-feature` with the worktree nested inside it — a layout nobody chose, noticed only
+afterwards. `smoke.mjs` pins the flattening and also asserts the suggestion RESOLVES to a
+real sibling, because a suggestion the host would then refuse is a broken suggestion.
+
+**`.dsh/` was considered for worktrees and rejected.** It looks tidy — self-contained,
+dies with the project — and git handles nesting better than expected: a nested worktree
+shows as a single `?? .dsh/` entry rather than thousands of files, and `git clean -fdx`
+reports `Would skip repository` rather than deleting it (both measured). But whether it
+is CLEAN depends entirely on the project's `.gitignore`, and `.dsh/` is dsh's own
+per-workspace state directory — `dsh-todo` keeps `todo.db` there. A project that tracks
+that DB would get untracked worktree content dropped into a tracked directory. A rule
+that depends on each project's ignore file is not a rule.
+
+For the same reason `.dsh` is deliberately NOT in the watcher's `IGNORED_DIRS`: where a
+project DOES track `todo.db`, ignoring it would stop the Changes tab live-updating as
+tasks change.
+
 **Listing worktrees without a way to reach one made the feature read-only.** A worktree
 is a directory, and in dsh a directory is reached by being a workspace — so each row
 carries an Open button calling `ctx.workspaces.create({ path })` then

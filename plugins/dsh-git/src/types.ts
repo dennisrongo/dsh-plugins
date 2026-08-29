@@ -496,6 +496,41 @@ export function resolveWorktreeTarget(root: string, input: string): WorktreeTarg
   return { path, inside }
 }
 
+
+/**
+ * Suggest where a new worktree should live, from the branch it will check out.
+ *
+ * The convention is a SIBLING of the project named "<project>-<branch>":
+ * "myproj" plus "feature/login" gives "../myproj-feature-login". Siblings are
+ * the standard layout for an ordinary clone -- the tidier bare-repo layout
+ * (project/.bare + project/main + project/feature) cannot be retrofitted onto
+ * one, and a dsh workspace always points at an ordinary clone. The project
+ * prefix is what makes the worktree sort next to its project in the workspace
+ * switcher, which a central worktree store would lose.
+ *
+ * Flattening the branch is not cosmetic. A branch name may contain slashes, and
+ * "../myproj-feature/login" would silently create a directory called
+ * "myproj-feature" with the worktree nested inside it -- a layout nobody asked
+ * for, discovered only after the fact.
+ *
+ * @param root - repository working-tree root.
+ * @param branch - branch name the worktree will check out.
+ * @returns a relative path suggestion, or an empty string when there is no usable branch.
+ */
+export function suggestWorktreePath(root: string, branch: string): string {
+  const project = root.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).pop()
+  if (project === undefined || project.length === 0) return ''
+  const clean = branch
+    .trim()
+    // Anything that is not safe in a directory name becomes a dash: slashes
+    // above all, but also spaces and the punctuation git tolerates in refs.
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+  if (clean.length === 0) return ''
+  return '../' + project + '-' + clean
+}
+
 /** Which stash operation to run. */
 export type StashAction = 'push' | 'pop' | 'apply' | 'drop' | 'clear'
 

@@ -12,7 +12,7 @@
 import React from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GIT_REMOTE } from './remote.ts'
-import { resolveWorktreeTarget } from './types.ts'
+import { resolveWorktreeTarget, suggestWorktreePath } from './types.ts'
 import type {
   BranchAction,
   ChangeScope,
@@ -2256,6 +2256,13 @@ export function GitView({
     path: string
     branch: string
     register: boolean
+    /**
+     * Whether the user has typed their own path.
+     *
+     * Once true the branch field stops rewriting it. Auto-fill that keeps
+     * overwriting a hand-typed path is worse than no auto-fill at all.
+     */
+    pathTouched: boolean
   } | null>(null)
   const [openSha, setOpenSha] = React.useState<string | null>(null)
   // null means "still loading". Anything else is a settled outcome that knows
@@ -2743,9 +2750,11 @@ export function GitView({
             type="text"
             value={worktreeForm.path}
             autoFocus
-            placeholder="../worktree-test"
+            placeholder={suggestWorktreePath(status.root, 'my-branch')}
             aria-label="Worktree directory"
-            onChange={(e) => setWorktreeForm({ ...worktreeForm, path: e.target.value })}
+            onChange={(e) =>
+              setWorktreeForm({ ...worktreeForm, path: e.target.value, pathTouched: true })
+            }
             onKeyDown={(e) => e.stopPropagation()}
           />
           <input
@@ -2753,7 +2762,19 @@ export function GitView({
             value={worktreeForm.branch}
             placeholder="new branch name"
             aria-label="Branch for the new worktree"
-            onChange={(e) => setWorktreeForm({ ...worktreeForm, branch: e.target.value })}
+            onChange={(e) => {
+              const branch = e.target.value
+              setWorktreeForm({
+                ...worktreeForm,
+                branch,
+                // Name the directory after the branch, as a sibling of the
+                // project, so it sorts next to it in the workspace switcher —
+                // unless the user has already chosen a path themselves.
+                ...(worktreeForm.pathTouched
+                  ? {}
+                  : { path: suggestWorktreePath(status.root, branch) }),
+              })
+            }}
             onKeyDown={(e) => e.stopPropagation()}
           />
           <label className="dshgit-check">
@@ -2889,7 +2910,9 @@ export function GitView({
                 }
                 void store.worktree(action, { ...(path !== undefined ? { path } : {}) })
               }}
-              onAddWorktree={() => setWorktreeForm({ path: '', branch: '', register: true })}
+              onAddWorktree={() =>
+                setWorktreeForm({ path: '', branch: '', register: true, pathTouched: false })
+              }
               onOpenWorktree={openWorktree}
             />
           ) : mode === 'history' ? (
