@@ -875,6 +875,38 @@ drop buttons, and a row-level button would nest them. A stash with no `sha` — 
 booted before stashes carried one — stays plain text rather than becoming a control that
 does nothing.
 
+## Modals
+
+**Both forms — New worktree and New branch — are modal, and share one `Modal`
+component.** It portals to `document.body`, traps Tab, closes on Escape or a backdrop
+click, focuses the first field on open and hands focus back to the opener on close.
+
+**Dismissing NEVER validates.** Backdrop, Escape and ✕ all just close; only the caller's
+own action button commits. A dialog you cannot leave while a field is half-typed is a trap,
+and this one holds a path.
+
+**The backdrop sits BELOW DSH Desktop's window-drag strip** (`2147483644`), at
+`2147483100`, with 48px of top padding to keep the panel clear of the 36px strip. Raising
+z-index instead is the seductive wrong fix and cannot work: the strip swallows clicks even
+under `pointer-events: none` because the compositor resolves drag regions BEFORE
+hit-testing, and CSS clamps anything past `2147483647` regardless. Copied from
+`dsh-todo`, which measured it.
+
+`pnpm run test:modal` drives headless Chrome against the **built** stylesheet with a fake
+drag strip in the page: the panel must clear it, the backdrop must stack below it, the panel
+must be on-screen, opaque, and — via `elementFromPoint` — actually hittable at its top edge
+and at its primary button. Geometry alone would pass a panel painted under an overlay.
+
+**The fixture's body is deliberately TALL.** With a short panel the backdrop's
+`align-items: center` keeps it clear of the strip by accident, so deleting the top padding
+changes nothing and the probe proves nothing. Only a panel driven to `max-height: 100%`
+exercises what the padding is for — verified by sabotage, which then fails with
+`panel top 0 is under the 36px drag strip`.
+
+One sabotage was retired rather than fixed: widening the panel past the viewport. A flex
+item shrinks to fit its container, so `width: 2400px` collapses harmlessly — it was never
+a bug to catch.
+
 **The add-worktree form is a GRID.** Seven controls on one flex line left every field too
 narrow to read a path in, which is the one thing that form exists to show. Branch comes
 first because the branch drives the path, so the order matches the causality; below the

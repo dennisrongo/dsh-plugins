@@ -37,6 +37,7 @@
     "test:skeleton": "node test/skeleton-probe.mjs",
     "test:icons": "node test/icon-probe.mjs",
     "test:history": "node test/history-probe.mjs",
+    "test:modal": "node test/modal-probe.mjs",
     "test:menu": "node test/menu-probe.mjs",
     "test:watch": "node --experimental-strip-types test/watch-probe.mjs",
     "test:env": "node --experimental-strip-types test/env-isolation.mjs",
@@ -77,6 +78,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
     "esbuild": "^0.24.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",

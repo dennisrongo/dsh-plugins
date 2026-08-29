@@ -10,6 +10,7 @@
  * the host after every command rather than guessing at the new state.
  */
 import React from 'react'
+import { createPortal } from 'react-dom'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GIT_REMOTE } from './remote.ts'
 import { generateWorktreeName, resolveWorktreeTarget, suggestWorktreePath } from './types.ts'
@@ -1157,6 +1158,48 @@ const VIEW_STYLES = `
   outline: 2px solid var(--dsw-alias-brand-primary, #6b7280); outline-offset: 1px;
 }
 
+
+
+/* ---- modal ----
+
+   Portalled to document.body, so it escapes .dshgit-scroll's overflow-y: auto —
+   rendered inside the tab it would be CLIPPED by its own scroll container.
+
+   z-index sits just UNDER DSH Desktop's window-drag strip
+   (#dsh-desktop-windows-drag-region, z-index 2147483644). That strip swallows
+   clicks even though it sets pointer-events: none, because the compositor
+   resolves drag regions BEFORE hit-testing — so raising z-index cannot beat it,
+   and CSS clamps anything past 2147483647 anyway. The backdrop's top padding
+   keeps the panel physically clear of the 36px strip instead. */
+.dshgit-modal-backdrop {
+  position: fixed; inset: 0; z-index: 2147483100;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center;
+  padding: 48px 24px 24px;
+}
+.dshgit-modal {
+  box-sizing: border-box;
+  width: min(560px, 100%); max-height: 100%;
+  display: flex; flex-direction: column;
+  background: var(--dsw-alias-bg-layer-1, #16181c);
+  border: 1px solid var(--g-border); border-radius: 12px;
+  color: var(--g-secondary);
+  font: 400 13px/20px var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+.dshgit-modal *, .dshgit-modal *::before, .dshgit-modal *::after { box-sizing: border-box; }
+.dshgit-modal-head {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--g-border);
+}
+.dshgit-modal-title { font-size: 14px; line-height: 22px; font-weight: 600; color: var(--g-primary); }
+.dshgit-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px; }
+.dshgit-modal-foot {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-top: 1px solid var(--g-border);
+}
+/* Inside a dialog the form IS the surface: no border, no page padding. */
+.dshgit-modal .dshgit-form { padding: 0; border-bottom: 0; }
 
 /* ---- commit box ---- */
 .dshgit-commit { flex: none; padding: 12px 20px; border-bottom: 1px solid var(--g-border); }
@@ -2510,6 +2553,106 @@ function RepoPane({
   )
 }
 
+
+/**
+ * A modal dialog: backdrop, focus trap, Escape, portalled out of the tab.
+ *
+ * Shared by both of this tab's forms rather than written twice. Three details
+ * are copied from `dsh-todo`'s dialog because they were MEASURED there, and
+ * rediscovering them costs the same bugs again:
+ *
+ *   * **It must portal to `document.body`.** `.dshgit-scroll` is
+ *     `overflow-y: auto`, so a dialog rendered in place is clipped by its own
+ *     scroll container.
+ *   * **The backdrop sits BELOW DSH Desktop's window-drag strip**
+ *     (`#dsh-desktop-windows-drag-region`, z-index 2147483644). That strip
+ *     swallows clicks even under `pointer-events: none`, because the compositor
+ *     resolves drag regions BEFORE hit-testing — so raising z-index cannot beat
+ *     it, and trying is the seductive wrong fix. The backdrop's top padding
+ *     keeps the panel physically clear of the 36px strip instead.
+ *   * **Keys are stopped at the dialog.** The shell binds global shortcuts, and
+ *     one that leaks Escape or Tab acts on the app behind the dialog.
+ *
+ * DISMISSING NEVER VALIDATES. Backdrop, Escape and the close button all just
+ * close; only the caller's own action button commits. A dialog you cannot leave
+ * while a field is half-typed is a trap, and this one holds a path.
+ *
+ * @param title - accessible name, shown as the heading.
+ * @param onClose - called for every dismissal route.
+ * @param children - the form body.
+ * @param footer - the action row, against the panel's bottom edge.
+ */
+function Modal({
+  title,
+  onClose,
+  children,
+  footer,
+}: {
+  title: string
+  onClose: () => void
+  children: React.ReactNode
+  footer: React.ReactNode
+}): React.JSX.Element {
+  const panel = React.useRef<HTMLDivElement | null>(null)
+
+  // Focus the first field on open, and hand focus BACK to whatever opened the
+  // dialog on close — otherwise focus lands on <body> and a keyboard user is
+  // dropped at the top of the page.
+  React.useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null
+    panel.current?.querySelector<HTMLElement>('input, select, textarea, button')?.focus()
+    return () => opener?.focus?.()
+  }, [])
+
+  const onKeyDown = (e: React.KeyboardEvent): void => {
+    e.stopPropagation()
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onClose()
+      return
+    }
+    if (e.key !== 'Tab') return
+    const focusable = panel.current?.querySelectorAll<HTMLElement>(
+      'input:not([disabled]), select:not([disabled]), button:not([disabled])',
+    )
+    if (!focusable || focusable.length === 0) return
+    const first = focusable[0] as HTMLElement
+    const last = focusable[focusable.length - 1] as HTMLElement
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+
+  return createPortal(
+    <div className="dshgit-modal-backdrop" onClick={onClose} onKeyDown={onKeyDown}>
+      <div
+        className="dshgit-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        ref={panel}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="dshgit-modal-head">
+          <span className="dshgit-modal-title">{title}</span>
+          <span className="dshgit-spacer" />
+          <button className="dshgit-icon" aria-label="Close" onClick={onClose}>
+            <Icon path={ICON.close} />
+          </button>
+        </div>
+        <div className="dshgit-modal-body">{children}</div>
+        <div className="dshgit-modal-foot">{footer}</div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 export function GitView({
   store,
   openWorktree,
@@ -3105,37 +3248,57 @@ export function GitView({
       ) : null}
 
       {newBranch !== null ? (
-        <div className="dshgit-form">
-          <input
-            type="text"
-            value={newBranch}
-            autoFocus
-            placeholder="new-branch-name"
-            aria-label="New branch name"
-            onChange={(e) => setNewBranch(e.target.value)}
-            onKeyDown={(e) => {
-              e.stopPropagation()
-              if (e.key === 'Escape') setNewBranch(null)
-              if (e.key === 'Enter' && newBranch.trim().length > 0) {
-                void store.branch('createSwitch', { name: newBranch.trim() })
-                setNewBranch(null)
-              }
-            }}
-          />
-          <button
-            className="dshgit-btn primary"
-            disabled={busy !== null || newBranch.trim().length === 0}
-            onClick={() => {
-              void store.branch('createSwitch', { name: newBranch.trim() })
-              setNewBranch(null)
-            }}
-          >
-            Create and switch
-          </button>
-          <button className="dshgit-btn" onClick={() => setNewBranch(null)}>
-            Cancel
-          </button>
-        </div>
+        <Modal
+          title="New branch"
+          onClose={() => setNewBranch(null)}
+          footer={
+            <>
+              <span className="dshgit-spacer" />
+              <button className="dshgit-btn" onClick={() => setNewBranch(null)}>
+                Cancel
+              </button>
+              <button
+                className="dshgit-btn primary"
+                disabled={busy !== null || newBranch.trim().length === 0}
+                onClick={() => {
+                  void store.branch('createSwitch', { name: newBranch.trim() })
+                  setNewBranch(null)
+                }}
+              >
+                Create and switch
+              </button>
+            </>
+          }
+        >
+          <div className="dshgit-form wtform">
+            <label className="dshgit-flabel" htmlFor="dshgit-new-branch">
+              Name
+            </label>
+            <input
+              id="dshgit-new-branch"
+              className="dshgit-fgrow"
+              type="text"
+              value={newBranch}
+              placeholder="new-branch-name"
+              aria-label="New branch name"
+              onChange={(e) => setNewBranch(e.target.value)}
+              onKeyDown={(e) => {
+                // Escape belongs to the dialog; Enter is a shortcut for the same
+                // primary action the footer button performs.
+                e.stopPropagation()
+                if (e.key === 'Enter' && newBranch.trim().length > 0) {
+                  void store.branch('createSwitch', { name: newBranch.trim() })
+                  setNewBranch(null)
+                }
+              }}
+            />
+            <span />
+            <span />
+            <div className="dshgit-preview">
+              Created from {status.branch ?? 'the current HEAD'}, and checked out.
+            </div>
+          </div>
+        </Modal>
       ) : null}
 
       {worktreeForm !== null ? (
@@ -3143,6 +3306,54 @@ export function GitView({
            row left every field too narrow to read a path in, which is the one
            thing this form exists to show. Branch comes FIRST because the branch
            drives the path, so the order matches the causality. */
+        <Modal
+          title="New worktree"
+          onClose={() => setWorktreeForm(null)}
+          footer={
+            <>
+              <label className="dshgit-check">
+                <input
+                  type="checkbox"
+                  checked={worktreeForm.register}
+                  onChange={(e) =>
+                    setWorktreeForm({ ...worktreeForm, register: e.target.checked })
+                  }
+                />
+                Open it after creating
+              </label>
+              <span className="dshgit-spacer" />
+              <button className="dshgit-btn" onClick={() => setWorktreeForm(null)}>
+                Cancel
+              </button>
+              <button
+                className="dshgit-btn primary"
+                disabled={
+                  busy !== null ||
+                  worktreeForm.path.trim().length === 0 ||
+                  worktreePreview.inside
+                }
+                onClick={() => {
+                  const form = worktreeForm
+                  const target = worktreePreview.path
+                  setWorktreeForm(null)
+                  const branch =
+                    form.branch.trim().length > 0 ? form.branch.trim() : form.generated
+                  void store
+                    .worktree('add', {
+                      path: form.path.trim(),
+                      ...(branch.length > 0 ? { newBranch: branch } : {}),
+                      ...(form.startPoint.length > 0 ? { startPoint: form.startPoint } : {}),
+                    })
+                    .then((result) => {
+                      if (result?.ok && form.register && openWorktree) openWorktree(target)
+                    })
+                }}
+              >
+                Add worktree
+              </button>
+            </>
+          }
+        >
         <div className="dshgit-form wtform">
           <label className="dshgit-flabel" htmlFor="dshgit-wt-branch">
             Branch
@@ -3236,48 +3447,7 @@ export function GitView({
             </select>
           </label>
 
-          <div className="dshgit-factions">
-            <label className="dshgit-check">
-              <input
-                type="checkbox"
-                checked={worktreeForm.register}
-                onChange={(e) => setWorktreeForm({ ...worktreeForm, register: e.target.checked })}
-              />
-              Open it after creating
-            </label>
-            <span className="dshgit-spacer" />
-            <button className="dshgit-btn" onClick={() => setWorktreeForm(null)}>
-              Cancel
-            </button>
-          <button
-            className="dshgit-btn primary"
-            disabled={busy !== null || worktreeForm.path.trim().length === 0 || worktreePreview.inside}
-            onClick={() => {
-              const form = worktreeForm
-              const target = worktreePreview.path
-              setWorktreeForm(null)
-              // Always name the branch explicitly. Left to itself git names it
-              // after the directory's basename, which would be the redundant
-              // "dsh-plugins-brave-otter" rather than "brave-otter".
-              const branch = form.branch.trim().length > 0 ? form.branch.trim() : form.generated
-              void store
-                .worktree('add', {
-                  path: form.path.trim(),
-                  ...(branch.length > 0 ? { newBranch: branch } : {}),
-                  ...(form.startPoint.length > 0 ? { startPoint: form.startPoint } : {}),
-                  // `register` is deliberately NOT sent. The host would write
-                  // workspaceRegistry directly, which the browser's own workspace
-                  // list is not guaranteed to learn about until a reload; going
-                  // through ctx.workspaces below keeps that list coherent.
-                })
-                .then((result) => {
-                  if (result?.ok && form.register && openWorktree) openWorktree(target)
-                })
-            }}
-          >
-            Add worktree
-          </button>
-          </div>
+
           {/* Show where it will actually land. "Where does ../x go?" is not a
               question a user should have to answer by trying it. */}
           <div className={'dshgit-preview' + (worktreePreview.inside ? ' err' : '')}>
@@ -3289,6 +3459,7 @@ export function GitView({
                 : worktreePreview.path}
           </div>
         </div>
+        </Modal>
       ) : null}
 
       {mode === 'changes' ? (

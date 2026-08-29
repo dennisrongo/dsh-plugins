@@ -563,6 +563,46 @@ of the shared manifest:
 `plugins` is accepted too, to link just one package. An absent file means the underlying
 script's own defaults.
 
+#### Adding a plugin to a profile that is already linked
+
+Linking follows the profile's manifest, so a plugin added to this repo **after** the profile was
+set up is not picked up by re-running `dev-link` alone. It is skipped, by design and out loud:
+
+```
+--    dsh-headless-plus not a dependency of web - left alone
+```
+
+Junctioning a package a profile never declared would leave a module its own manifest does not
+mention, which the next install removes again. So install it into the profile first (step 3, and
+mind the absolute-path rule there), then link:
+
+```bash
+dsh plugin --profile web add "file:C:/absolute/path/to/dsh-plugins/plugins/dsh-hooks"
+node scripts/dev-link.mjs
+```
+
+Do the same for the desktop's profile — including its `ERR_PNPM_UNEXPECTED_STORE` fallback in
+step 3, where you add the `dependencies` line and the `dsh.profile.bundles` entry by hand. That
+path needs no pnpm at all, so it is also the safe one while the desktop is running.
+
+One asymmetry worth knowing: pnpm records a directory argument as `link:` rather than `file:`,
+so newer entries in a profile look different from older ones. `link:` is the **stronger** of the
+two — a `file:` dep is re-materialised as a frozen copy by every install, which is the whole
+reason `dev-link` exists, while a `link:` stays a symlink to the source. Both work, and
+`dev-link` matches on dependency **names**, so a profile mixing the two is managed identically.
+
+Confirm the result rather than assuming it, because the failure is silent — a declared but
+unlinked plugin serves a frozen copy, and edits simply never appear however often you rebuild:
+
+```bash
+node scripts/verify.mjs        # want: "N profile install(s) track this repo, 0 frozen"
+```
+
+`0 frozen` is the number that matters.
+
+A newly added plugin needs a **profile restart** before it exists at all; a browser refresh only
+picks up client-half edits to plugins the harness has already mounted.
+
 ### 6. Verify
 
 ```bash

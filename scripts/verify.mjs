@@ -201,9 +201,18 @@ for (const root of profileRoots) {
 console.log(`  ${live} profile install(s) track this repo, ${frozen} frozen${foreign ? `, ${foreign} not from this repo` : ''}`)
 
 // --- 6. live wire probes ----------------------------------------------------
+// One workspace-addressed method per host service. The point of a probe is to
+// prove the package's './typert' export registered — without it the service
+// still constructs and only the /api call 404s — so any method reachable with
+// a bare { workspaceId } will do. dsh-hooks ignores the field; it is sent
+// anyway so every probe shares one request shape.
 const PROBES = [
   { pkg: '@dennisrongo/dsh-todo', method: 'dshTodo/list' },
   { pkg: '@dennisrongo/dsh-git', method: 'dshGit/status' },
+  // Host-only: no browser half to serve, so the client.js fetch is skipped.
+  { pkg: '@dennisrongo/dsh-hooks', method: 'dshHooks/describe', client: false },
+  { pkg: '@dennisrongo/dsh-plan-board', method: 'dshPlans/list' },
+  { pkg: '@dennisrongo/dsh-memory', method: 'dshMemory/inspect' },
 ]
 
 if (port) {
@@ -219,7 +228,7 @@ if (port) {
   if (!workspaceId) {
     fail('no workspace id — pass --workspace=<id>')
   } else {
-    for (const { pkg, method } of PROBES) {
+    for (const { pkg, method, client = true } of PROBES) {
       const body = {
         type: 'client-request', rpcId: 'verify', method,
         payload: { args: { request: { workspaceId } } },
@@ -235,6 +244,7 @@ if (port) {
         else ok(`${method} → 200 ok:true`)
       } catch (e) { fail(`${method} unreachable: ${e.message}`) }
       // the browser half is served from disk per request
+      if (!client) continue
       try {
         const r = await fetch(`http://127.0.0.1:${port}/plugins/${pkg}/client.js`)
         const len = (await r.text()).length
