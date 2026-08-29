@@ -78,6 +78,10 @@ const script = `
     hitPanelTop: hit(p.left + p.width / 2, p.top + 4),
     hitPrimary: hit(primary.left + primary.width / 2, primary.top + primary.height / 2),
     primaryTop: primary.top,
+    primaryBg: getComputedStyle(document.getElementById('primary')).backgroundColor,
+    primaryColor: getComputedStyle(document.getElementById('primary')).color,
+    cancelBorder: getComputedStyle(document.querySelector('.dshgit-modal-foot .dshgit-btn')).borderTopColor,
+    inputColor: getComputedStyle(document.getElementById('first')).color,
   })
 `
 
@@ -138,6 +142,18 @@ check('the panel and its primary action are actually hittable', () => {
   )
   assert.equal(m.hitPrimary, 'primary', 'the primary button resolves to ' + m.hitPrimary)
   assert.ok(m.primaryTop >= DRAG_STRIP_H, 'the primary action sits under the drag strip')
+})
+
+check('the palette reaches CONTROLS inside the portal, not just the panel', () => {
+  // The panel's own background has a literal fallback, so it looks fine even
+  // when every --g-* is undefined. The controls do not: the primary button's
+  // background comes from --g-accent with NO fallback, and its text colour is a
+  // hard-coded near-black — so an unresolved palette renders the main action as
+  // a blank rectangle. That shipped, and only a user clicking it found it.
+  assert.notEqual(m.primaryBg, 'rgba(0, 0, 0, 0)', 'primary button has no background')
+  assert.notEqual(m.primaryBg, m.primaryColor, 'primary button is text-on-itself')
+  assert.notEqual(m.cancelBorder, 'rgba(0, 0, 0, 0)', 'secondary button has no border')
+  assert.notEqual(m.inputColor, 'rgba(0, 0, 0, 0)', 'input text is invisible')
 })
 
 console.log('\n' + passed + ' modal checks passed')

@@ -1172,6 +1172,25 @@ const VIEW_STYLES = `
    and CSS clamps anything past 2147483647 anyway. The backdrop's top padding
    keeps the panel physically clear of the 36px strip instead. */
 .dshgit-modal-backdrop {
+  /* REDECLARE the palette. Every --g-* above is scoped to .dshgit, and this
+     backdrop portals to document.body — OUTSIDE it — so inside the dialog they
+     would all be undefined. The failure is not a crash and not a warning: it is
+     "background: var(--g-accent)" resolving to nothing on the primary button,
+     whose text colour is a hard-coded near-black. The action reads as a blank
+     rectangle, and the dialog looks broken rather than unstyled.
+
+     dsh-todo hit this and redeclares its own --td-* on the panel for the same
+     reason. Declared on the BACKDROP rather than the panel so anything the
+     dialog renders — including the form's own rules — inherits them. */
+  --g-border: var(--dsw-alias-border-l2, rgba(255,255,255,0.12));
+  --g-primary: var(--dsw-alias-label-primary, #f9fafb);
+  --g-secondary: var(--dsw-alias-label-secondary, #cfd3d6);
+  --g-caption: var(--dsw-alias-label-caption, #81858c);
+  --g-accent: var(--dsw-alias-state-success-primary, #22c55e);
+  --g-hover: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,0.08));
+  --g-danger: var(--dsw-alias-state-error-primary, #ef4444);
+  --g-warn: var(--dsw-alias-state-warn-primary, #f59e0b);
+  --g-info: var(--dsw-alias-state-business-primary, #3b82f6);
   position: fixed; inset: 0; z-index: 2147483100;
   background: rgba(0, 0, 0, 0.55);
   display: flex; align-items: center; justify-content: center;

@@ -892,6 +892,24 @@ under `pointer-events: none` because the compositor resolves drag regions BEFORE
 hit-testing, and CSS clamps anything past `2147483647` regardless. Copied from
 `dsh-todo`, which measured it.
 
+**A portalled dialog leaves the plugin's PALETTE behind, and that shipped.** Every
+`--g-*` is declared on `.dshgit`; the backdrop portals to `document.body`, outside it, so
+inside the dialog they all resolve to nothing. It is not a crash and not a warning —
+`.dshgit-btn.primary` is `background: var(--g-accent)` with a hard-coded near-black text
+colour, so the main action renders as a blank rectangle on a dark panel. The user found it
+by trying to create a worktree and not being able to.
+
+The palette is redeclared on the BACKDROP (not the panel), so anything the dialog renders
+inherits it. `dsh-todo` hit the same thing and redeclares its own `--td-*`; that file was
+open while this was written and the lesson still was not carried across.
+
+**The probe missed it because it only measured the PANEL.** `.dshgit-modal`'s background
+has a literal fallback, so it looked fine while every control inside was unstyled. It now
+asserts a control: the primary button must have a background, that background must differ
+from its text colour, the secondary button must have a border, and the input's text must
+not be invisible. Verified by removing the redeclaration, which fails with
+`primary button has no background`.
+
 `pnpm run test:modal` drives headless Chrome against the **built** stylesheet with a fake
 drag strip in the page: the panel must clear it, the backdrop must stack below it, the panel
 must be on-screen, opaque, and — via `elementFromPoint` — actually hittable at its top edge
