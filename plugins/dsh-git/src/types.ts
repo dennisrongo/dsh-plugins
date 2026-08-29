@@ -531,6 +531,61 @@ export function suggestWorktreePath(root: string, branch: string): string {
   return '../' + project + '-' + clean
 }
 
+
+/**
+ * `suggestBranch` request: turn a rough description into a branch name.
+ *
+ * The hint is whatever the user typed in the branch box — "fix login retry"
+ * rather than a finished ref. A new worktree is often for work that has not
+ * started, so there is frequently no diff to describe; the typed hint is the one
+ * input that is always available.
+ */
+export interface SuggestBranchRequest {
+  workspaceId: string
+  /** Free text describing the work. */
+  hint?: string
+}
+
+/** `suggestBranch` reply. */
+export interface SuggestBranchResult {
+  /** A valid, safe branch name the create/worktree forms can use verbatim. */
+  name: string
+}
+
+/**
+ * Force arbitrary model output into something git will accept as a branch name.
+ *
+ * Applied to the model's answer rather than trusting it: an LLM asked for a
+ * branch name will still occasionally return quotes, a trailing period, or
+ * "Branch: feat/x". Sanitising is cheaper than a retry and cannot fail, whereas
+ * handing an invalid ref to `git branch` produces an error the user did not
+ * cause and cannot act on.
+ *
+ * Slashes SURVIVE, because `feat/login-retry` is the conventional shape and is a
+ * perfectly legal ref; everything else collapses to a dash.
+ *
+ * @param raw - the model's verbatim text.
+ * @returns a safe branch name, or an empty string when nothing usable remains.
+ */
+export function normalizeBranchName(raw: string): string {
+  let text = raw.trim().split('\n')[0] ?? ''
+  // Strip the wrappers models add despite instructions.
+  text = text.replace(/^(?:branch(?: name)?|name)\s*:\s*/i, '').trim()
+  text = text.replace(/^[`'"]+|[`'"]+$/g, '').trim()
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, '-')
+    // A run of separators reads as a typo and '//' is an invalid ref.
+    .replace(/\/{2,}/g, '/')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-./]+|[-./]+$/g, '')
+    // git refuses a component ending in .lock, and '..' is revision syntax.
+    .replace(/\.\.+/g, '.')
+    .replace(/\.lock(?=$|\/)/g, 'lock')
+    .slice(0, 60)
+    .replace(/[-./]+$/g, '')
+}
+
 /** Which stash operation to run. */
 export type StashAction = 'push' | 'pop' | 'apply' | 'drop' | 'clear'
 

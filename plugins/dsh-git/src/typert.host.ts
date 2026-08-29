@@ -82,6 +82,7 @@ export const TYPERT = {
           method('merge', '@Remote merge(request: MergeRequest): Promise<CommandResult>', 'Merge a branch, or abort/continue a merge in progress.'),
           method('stash', '@Remote stash(request: StashRequest): Promise<CommandResult>', 'Push, pop, apply, drop or clear stash entries.'),
           method('worktree', '@Remote worktree(request: WorktreeRequest): Promise<CommandResult>', 'Add, remove or prune a worktree.'),
+          method('suggestBranch', '@Remote suggestBranch(request: SuggestBranchRequest): Promise<SuggestBranchResult>', 'Draft a branch name from a short description via the LLM.'),
         ],
         types: [
           {

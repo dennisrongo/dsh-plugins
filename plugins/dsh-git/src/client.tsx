@@ -651,6 +651,33 @@ export class GitStore {
     )
   }
 
+  /**
+   * Ask the model to turn a rough description into a branch name.
+   *
+   * Fails SOFT and returns an empty string: no provider configured, a refused
+   * request, or an unusable answer all leave the field exactly as the user left
+   * it, with the reason in the log strip. The form stays fully usable by typing
+   * a name — this is an accelerator, never a dependency.
+   *
+   * @param hint - the user's rough description.
+   * @returns the suggested branch name, or an empty string on any failure.
+   */
+  async suggestBranch(hint: string): Promise<string> {
+    this.publish({ ...this.state, busy: 'suggestBranch', error: null })
+    try {
+      const reply = await this.remote.suggestBranch({ workspaceId: this.workspaceId, hint })
+      if (!reply.ok) {
+        this.publish({ ...this.state, busy: null, error: reply.error.message })
+        return ''
+      }
+      this.publish({ ...this.state, busy: null })
+      return reply.value.name
+    } catch (error) {
+      this.publish({ ...this.state, busy: null, error: describe(error) })
+      return ''
+    }
+  }
+
   /** Stage, unstage, or discard paths. */
   stage(action: StageAction, paths: string[]): Promise<CommandResult | null> {
     return this.run(`stage:${action}`, () =>
@@ -844,6 +871,10 @@ export interface GitRemote {
   }) => Promise<RemoteReply<{ message: string; scope?: ChangeScope }>>
   changeToken: (request: { workspaceId: string }) => Promise<RemoteReply<{ token: number }>>
   refs: (request: { workspaceId: string }) => Promise<RemoteReply<RefsResult>>
+  suggestBranch: (request: {
+    workspaceId: string
+    hint?: string
+  }) => Promise<RemoteReply<{ name: string }>>
   branch: (request: {
     workspaceId: string
     action: BranchAction
@@ -2519,6 +2550,31 @@ export function GitView({
   const blocker = commitBlocker(status, message)
   const up = status.upstream
 
+  /**
+   * Draft a branch name from the rough text already in the branch box.
+   *
+   * The field doubles as the hint input: type "fix login retry", press the
+   * sparkle, and it becomes "fix/login-retry". One field rather than two,
+   * because a separate hint box would sit empty and unexplained the rest of
+   * the time.
+   */
+  const draftWorktreeBranch = async (): Promise<void> => {
+    const form = worktreeForm
+    if (form === null || form.branch.trim().length === 0) return
+    const name = await store.suggestBranch(form.branch)
+    // An empty answer means it failed and already reported why; leave the
+    // user's own text alone rather than blanking it.
+    if (name.length === 0) return
+    setWorktreeForm((current) =>
+      current === null
+        ? current
+        : {
+            ...current,
+            branch: name,
+            ...(current.pathTouched ? {} : { path: suggestWorktreePath(status.root, name) }),
+          },
+    )
+  }
   /** Commit the index, then clear the box only if the commit actually landed. */
   const doCommit = async (): Promise<void> => {
     const text = message.trim()
@@ -2775,8 +2831,29 @@ export function GitView({
                   : { path: suggestWorktreePath(status.root, branch) }),
               })
             }}
-            onKeyDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter' && worktreeForm.branch.trim().length > 0) {
+                e.preventDefault()
+                void draftWorktreeBranch()
+              }
+            }}
           />
+          <button
+            className="dshgit-btn ai"
+            title="Describe the work in the branch box, then let the model name the branch"
+            disabled={busy !== null || worktreeForm.branch.trim().length === 0}
+            onClick={() => void draftWorktreeBranch()}
+          >
+            {busy === 'suggestBranch' ? (
+              <span className="dshgit-spin">
+                <Icon path={ICON.sparkle} />
+              </span>
+            ) : (
+              <Icon path={ICON.sparkle} />
+            )}
+            {busy === 'suggestBranch' ? 'Naming…' : 'AI name'}
+          </button>
           <label className="dshgit-check">
             <input
               type="checkbox"

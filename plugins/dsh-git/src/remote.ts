@@ -275,6 +275,15 @@ const worktreeRequestSchema = z.object({
   register: z.boolean().optional(),
 })
 
+const suggestBranchRequestSchema = z.object({
+  workspaceId: z.string(),
+  hint: z.string().optional(),
+})
+// Validated with the SAME ref rules as every other branch field. The host
+// sanitizes the model's answer, but the browser must still refuse a bad one
+// rather than drop it into a field the user will then try to create.
+const suggestBranchResultSchema = z.object({ name: refSchema })
+
 const PACKAGE = '@dennisrongo/dsh-git'
 
 /**
@@ -333,6 +342,7 @@ export const GIT_REMOTE = {
     descriptor('merge', mergeRequestSchema, commandResultSchema),
     descriptor('stash', stashRequestSchema, commandResultSchema),
     descriptor('worktree', worktreeRequestSchema, commandResultSchema),
+    descriptor('suggestBranch', suggestBranchRequestSchema, suggestBranchResultSchema),
   ],
 }
 

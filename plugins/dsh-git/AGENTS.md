@@ -20,6 +20,7 @@ Source-control ("Source Control") tab for DeepSeek Harness. Two halves in one pa
 - `merge` — `{ workspaceId, action, from?, noFF? }`; action is merge | abort | continue
 - `stash` — `{ workspaceId, action, index?, message?, includeUntracked? }`; action is push | pop | apply | drop | clear
 - `worktree` — `{ workspaceId, action, path?, branch?, newBranch?, force?, register? }`; action is add | remove | prune
+- `suggestBranch` — `{ workspaceId, hint }` → `{ name }`; drafts a branch name from a typed description via the LLM. Fails soft — the form stays usable with no provider configured
 - `changeToken` — `{ workspaceId }` → `{ token }`; the POLLING endpoint. Answers from an `fs.watch` counter and **never spawns git** (measured 52 ms vs `status`'s 141 ms). `token: 0` means "not a repository", which is the client's signal to stop polling. A token is comparable only against an earlier token for the same workspace.
 
 `wire: 'request'` in `src/remote.ts` must match the host parameter name — the gateway resolves endpoints by reading parameter names off the function source.
@@ -433,6 +434,36 @@ that depends on each project's ignore file is not a rule.
 For the same reason `.dsh` is deliberately NOT in the watcher's `IGNORED_DIRS`: where a
 project DOES track `todo.db`, ignoring it would stop the Changes tab live-updating as
 tasks change.
+
+**The model names the BRANCH, never the path.** `suggestBranch` takes the rough text
+already in the branch box — "fix login retry" — and returns `fix/login-retry`; the path
+then derives from it deterministically. Naming is a creative problem with many good
+answers; turning `feat/login` into `../myproj-feat-login` is arithmetic with exactly one
+right answer, and a model there would buy nondeterminism and latency to compute what a
+regex already gets right every time.
+
+The hint is TYPED text, not the diff. `suggestMessage` describes the working tree because
+a commit is about work already done, but a new worktree is usually for work that has not
+started — there is often nothing in the tree to describe. The branch field doubles as the
+hint input rather than adding a second box that would sit empty and unexplained the rest
+of the time. Existing local branch names go into the prompt so the model does not propose
+one that already exists, which would fail on create with an error the user did not cause.
+
+**The model's answer is sanitized, not trusted.** `normalizeBranchName` takes the first
+line, strips the `Branch:` labels and quotes models add despite instructions, lower-cases,
+collapses separator runs, and removes the constructs git itself refuses (`..`, a trailing
+`.lock`, leading or trailing separators). Slashes survive, because `feat/x` is the
+conventional shape and a legal ref. The result then passes through `assertSafeRef` — the
+same gate every other ref crosses — and `smoke.mjs` asserts that every normalized sample
+survives it, because a name the normalizer produced but the validator refused would be a
+failure the user can neither explain nor act on.
+
+**It fails soft, by design.** `GitStore.suggestBranch` returns an EMPTY STRING on any
+failure and the form leaves the user's text untouched; the reason goes to the log strip.
+Verified live against a harness with no credentials: the endpoint mounts and answers
+`no API key for provider route "deepseek-official"` rather than hanging or 404ing, and an
+empty hint is refused before any model call at all. Typing a branch name by hand is
+always the path of least resistance — this is an accelerator, never a dependency.
 
 **Listing worktrees without a way to reach one made the feature read-only.** A worktree
 is a directory, and in dsh a directory is reached by being a workspace — so each row

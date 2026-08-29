@@ -182,6 +182,11 @@ var worktreeRequestSchema = z.object({
   force: z.boolean().optional(),
   register: z.boolean().optional()
 });
+var suggestBranchRequestSchema = z.object({
+  workspaceId: z.string(),
+  hint: z.string().optional()
+});
+var suggestBranchResultSchema = z.object({ name: refSchema });
 var PACKAGE = "@dennisrongo/dsh-git";
 function descriptor(method2, request, result) {
   return {
@@ -230,7 +235,8 @@ var GIT_REMOTE = {
     descriptor("branch", branchRequestSchema, commandResultSchema),
     descriptor("merge", mergeRequestSchema, commandResultSchema),
     descriptor("stash", stashRequestSchema, commandResultSchema),
-    descriptor("worktree", worktreeRequestSchema, commandResultSchema)
+    descriptor("worktree", worktreeRequestSchema, commandResultSchema),
+    descriptor("suggestBranch", suggestBranchRequestSchema, suggestBranchResultSchema)
   ]
 };
 
@@ -269,7 +275,8 @@ var TYPERT = {
           method("branch", "@Remote branch(request: BranchRequest): Promise<CommandResult>", "Create, switch, delete or rename a branch."),
           method("merge", "@Remote merge(request: MergeRequest): Promise<CommandResult>", "Merge a branch, or abort/continue a merge in progress."),
           method("stash", "@Remote stash(request: StashRequest): Promise<CommandResult>", "Push, pop, apply, drop or clear stash entries."),
-          method("worktree", "@Remote worktree(request: WorktreeRequest): Promise<CommandResult>", "Add, remove or prune a worktree.")
+          method("worktree", "@Remote worktree(request: WorktreeRequest): Promise<CommandResult>", "Add, remove or prune a worktree."),
+          method("suggestBranch", "@Remote suggestBranch(request: SuggestBranchRequest): Promise<SuggestBranchResult>", "Draft a branch name from a short description via the LLM.")
         ],
         types: [
           {

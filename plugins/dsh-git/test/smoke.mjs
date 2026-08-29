@@ -16,11 +16,11 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { parseStatus, parseBranchHeader, assertSafePath } from '../src/git.ts'
+import { parseStatus, parseBranchHeader, assertSafePath, assertSafeRef } from '../src/git.ts'
 import { GIT_REMOTE } from '../src/remote.ts'
 // Shared with the browser half: one implementation of the path arithmetic, so
 // the preview the user reads and the directory git receives cannot disagree.
-import { resolveWorktreeTarget, suggestWorktreePath } from '../src/types.ts'
+import { normalizeBranchName, resolveWorktreeTarget, suggestWorktreePath } from '../src/types.ts'
 import {
   countChanges,
   badgeFor,
@@ -55,7 +55,7 @@ async function test(name, fn) {
 
 await test('every remote codec is strict', () => {
   assert.equal(GIT_REMOTE.package, '@dennisrongo/dsh-git')
-  assert.equal(GIT_REMOTE.descriptors.length, 15)
+  assert.equal(GIT_REMOTE.descriptors.length, 16)
   for (const d of GIT_REMOTE.descriptors) {
     assert.equal(d.namespace, 'dshGit', `${d.method} namespace`)
     assert.equal(d.result.mode, 'strict', `${d.method} result codec`)
@@ -72,7 +72,7 @@ await test('remote covers every host method', () => {
   const methods = GIT_REMOTE.descriptors.map((d) => d.method).sort()
   assert.deepEqual(methods, [
     'branch', 'changeToken', 'commit', 'commitDiff', 'commitFiles', 'diff', 'init', 'merge',
-    'refs', 'stage', 'stash', 'status', 'suggestMessage', 'sync', 'worktree',
+    'refs', 'stage', 'stash', 'status', 'suggestBranch', 'suggestMessage', 'sync', 'worktree',
   ])
 })
 
@@ -341,6 +341,94 @@ await test('a successful refs read carries all three lists through', async () =>
   // An EMPTY stash list is a legitimate success, distinct from a failure.
   assert.deepEqual(state.refs.stashes, [])
   assert.equal(state.refs.worktrees[0].main, true)
+})
+
+await test('suggestBranch fails SOFT when no provider is configured', () => {
+  // The whole point of the fallback: an unconfigured or failing model must
+  // leave the form exactly as usable as it was, never block naming a branch.
+  return (async () => {
+    const store = new GitStore(
+      {
+        suggestBranch: async () => ({
+          ok: false,
+          error: { code: 'no_provider', message: 'no model provider configured' },
+        }),
+      },
+      'ws-test',
+    )
+    const name = await store.suggestBranch('fix login retry')
+    assert.equal(name, '', 'an empty answer is the signal to leave the field alone')
+    const state = store.getSnapshot()
+    assert.equal(state.busy, null, 'the button is never left spinning')
+    assert.match(state.error, /provider/, 'and the reason is shown, not swallowed')
+  })()
+})
+
+await test('suggestBranch survives a thrown bridge error', () => {
+  return (async () => {
+    const store = new GitStore(
+      { suggestBranch: async () => { throw new Error('bridge down') } },
+      'ws-test',
+    )
+    assert.equal(await store.suggestBranch('x'), '')
+    assert.equal(store.getSnapshot().busy, null)
+    assert.match(store.getSnapshot().error, /bridge down/)
+  })()
+})
+
+await test('a successful suggestBranch returns the name for the form to adopt', () => {
+  return (async () => {
+    const store = new GitStore(
+      { suggestBranch: async () => ({ ok: true, value: { name: 'fix/login-retry' } }) },
+      'ws-test',
+    )
+    assert.equal(await store.suggestBranch('fix login retry'), 'fix/login-retry')
+    assert.equal(store.getSnapshot().error, null)
+    // And the path the form will derive from it must be a real sibling.
+    const target = resolveWorktreeTarget('C:/w/myproj', suggestWorktreePath('C:/w/myproj', 'fix/login-retry'))
+    assert.equal(target.path, 'C:/w/myproj-fix-login-retry')
+    assert.equal(target.inside, false)
+  })()
+})
+
+await test('normalizeBranchName forces model output into a usable ref', () => {
+  // Models return the wrappers they were told not to, so the answer is
+  // sanitized rather than trusted -- an invalid ref would surface later as an
+  // error the user did not cause and cannot act on.
+  assert.equal(normalizeBranchName('feat/login-retry'), 'feat/login-retry')
+  assert.equal(normalizeBranchName('"feat/login-retry"'), 'feat/login-retry')
+  assert.equal(normalizeBranchName('Branch: feat/Login Retry'), 'feat/login-retry')
+  assert.equal(normalizeBranchName('branch name: fix/x'), 'fix/x')
+  // Only the first line; a chatty model adds an explanation after it.
+  assert.equal(normalizeBranchName('fix/retry\nThis name reflects...'), 'fix/retry')
+  // Separator runs and trailing punctuation are typos waiting to happen.
+  assert.equal(normalizeBranchName('feat//double//slash'), 'feat/double/slash')
+  assert.equal(normalizeBranchName('feat/trailing-'), 'feat/trailing')
+  assert.equal(normalizeBranchName('feat/dots...here'), 'feat/dots.here')
+  // '..' is revision syntax and '.lock' is refused by git itself.
+  assert.doesNotMatch(normalizeBranchName('a..b'), /\.\./)
+  assert.doesNotMatch(normalizeBranchName('feat/thing.lock'), /\.lock$/)
+  // Nothing usable yields empty, which the host turns into a clear error.
+  for (const junk of ['', '   ', '"""', '---', '///', '...']) {
+    assert.equal(normalizeBranchName(junk), '', JSON.stringify(junk) + ' has nothing usable')
+  }
+})
+
+await test('every normalized name survives the ref validator', () => {
+  // The two must agree: a name the normalizer produces but assertSafeRef
+  // refuses would be a failure the user cannot explain or act on.
+  const samples = [
+    'Branch: feat/Login Retry!!',
+    'fix/JIRA 123 -- retry the login',
+    '  CHORE/Bump   Deps  ',
+    'feat/very-long-' + 'x'.repeat(200),
+    'refactor/tidy_up(the)parser',
+  ]
+  for (const raw of samples) {
+    const name = normalizeBranchName(raw)
+    assert.ok(name.length > 0, JSON.stringify(raw) + ' should yield something')
+    assert.equal(assertSafeRef(name), name, JSON.stringify(raw) + ' -> ' + name + ' must be a safe ref')
+  }
 })
 
 await test('suggestWorktreePath names a sibling after the project and branch', () => {

@@ -79,6 +79,13 @@ function resolveWorktreeTarget(root, input) {
   return { path, inside };
 }
 __name(resolveWorktreeTarget, "resolveWorktreeTarget");
+function normalizeBranchName(raw) {
+  let text = raw.trim().split("\n")[0] ?? "";
+  text = text.replace(/^(?:branch(?: name)?|name)\s*:\s*/i, "").trim();
+  text = text.replace(/^[`'"]+|[`'"]+$/g, "").trim();
+  return text.toLowerCase().replace(/[^a-z0-9._/-]+/g, "-").replace(/\/{2,}/g, "/").replace(/-{2,}/g, "-").replace(/^[-./]+|[-./]+$/g, "").replace(/\.\.+/g, ".").replace(/\.lock(?=$|\/)/g, "lock").slice(0, 60).replace(/[-./]+$/g, "");
+}
+__name(normalizeBranchName, "normalizeBranchName");
 var MAX_DIFF_BYTES = 4e5;
 var MAX_AI_DIFF_BYTES = 6e4;
 var RECENT_COMMITS = 15;
@@ -745,7 +752,7 @@ var RepoWatcher = _RepoWatcher;
 
 // src/index.ts
 var NETWORK_TIMEOUT_MS = 12e4;
-var _worktree_dec, _stash_dec, _merge_dec, _branch_dec, _refs_dec, _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _commitDiff_dec, _commitFiles_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
+var _suggestBranch_dec, _worktree_dec, _stash_dec, _merge_dec, _branch_dec, _refs_dec, _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _commitDiff_dec, _commitFiles_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
 var _GitService = class _GitService extends (_a = TypertRemoteService) {
   /**
    * @param ctx - host context carrying the workspace registry and LLM runtime.
@@ -1148,6 +1155,52 @@ ${body}` }],
       }
     });
   }
+  async suggestBranch(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const hint = typeof request?.hint === "string" ? request.hint.trim().slice(0, 500) : "";
+    if (hint.length === 0) throw new Error("dsh-git: describe the work first");
+    const root = await repoRoot(dir);
+    const existing = root === void 0 ? [] : (await readRefs(root)).branches.filter((b) => !b.remote).map((b) => b.name);
+    const system = [
+      "You name git branches for a software project.",
+      "Return a single branch name and nothing else.",
+      "Use the conventional form <type>/<short-kebab-summary>, where type is one of feat, fix, chore, docs, refactor, test, perf.",
+      "Lower case, words separated by hyphens, at most 40 characters, no spaces, no quotes, no trailing punctuation.",
+      "Return ONLY the branch name. No preamble, no explanation, no code fences."
+    ].join("\n");
+    const prompt = [
+      "Suggest a branch name for this work:",
+      hint,
+      ...existing.length > 0 ? ["", "These branches already exist, so do not reuse them:", existing.slice(0, 40).join(", ")] : []
+    ].join("\n");
+    const selection = this.ctx.agentDefaultModel.currentSelection();
+    const assembler = new BlockAssembler();
+    for await (const chunk of this.ctx.llm.stream({
+      provider: selection.provider,
+      model: selection.model,
+      ...selection.reasoningEffort !== void 0 ? { reasoningEffort: selection.reasoningEffort } : {},
+      messages: [
+        createUserMessage({
+          content: [{ type: "text", text: prompt }],
+          source: { kind: "plugin", plugin: "dsh-git" }
+        })
+      ],
+      system,
+      // A branch name is a few tokens; a bigger budget only buys a longer
+      // ramble to throw away.
+      maxTokens: 64
+    })) {
+      assembler.push(chunk);
+    }
+    const finish = assembler.finish;
+    if (finish.kind === "error" || finish.kind === "aborted") {
+      throw new Error("dsh-git: " + (finish.failure?.message ?? finish.kind));
+    }
+    const text = assembler.blocks().filter((b) => b.type === "text").map((b) => b.text).join("");
+    const name = normalizeBranchName(text);
+    if (name.length === 0) throw new Error("dsh-git: the model produced no usable branch name");
+    return { name: assertSafeRef(name) };
+  }
   /**
    * Run one repository mutation on the repo's write chain and report the result.
    * @param dir - workspace directory.
@@ -1201,7 +1254,7 @@ ${body}` }],
    * `dispose` is not a member of its Events map. Getting this wrong leaks an OS
    * watch handle per repository on every plugin reload.
    */
-  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _commitFiles_dec = [Remote], _commitDiff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], _refs_dec = [Remote], _branch_dec = [Remote], _merge_dec = [Remote], _stash_dec = [Remote], _worktree_dec = [Remote], Service.init)]() {
+  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _commitFiles_dec = [Remote], _commitDiff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], _refs_dec = [Remote], _branch_dec = [Remote], _merge_dec = [Remote], _stash_dec = [Remote], _worktree_dec = [Remote], _suggestBranch_dec = [Remote], Service.init)]() {
     this.ctx.effect(() => () => {
       this.watcher.close();
     });
@@ -1223,6 +1276,7 @@ __decorateElement(_init, 1, "branch", _branch_dec, _GitService);
 __decorateElement(_init, 1, "merge", _merge_dec, _GitService);
 __decorateElement(_init, 1, "stash", _stash_dec, _GitService);
 __decorateElement(_init, 1, "worktree", _worktree_dec, _GitService);
+__decorateElement(_init, 1, "suggestBranch", _suggestBranch_dec, _GitService);
 __decoratorMetadata(_init, _GitService);
 __name(_GitService, "GitService");
 __publicField(_GitService, "inject", ["workspaceRegistry", "llm", "agentDefaultModel"]);

@@ -25,6 +25,7 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import {
   MAX_AI_DIFF_BYTES,
   MAX_DIFF_BYTES,
+  normalizeBranchName,
   type ChangeTokenRequest,
   type ChangeTokenResult,
   type CommandResult,
@@ -45,6 +46,8 @@ import {
   type StatusRequest,
   type StatusResult,
   type WorktreeRequest,
+  type SuggestBranchRequest,
+  type SuggestBranchResult,
   type SuggestRequest,
   type SuggestResult,
   type SyncRequest,
@@ -784,6 +787,94 @@ export class GitService extends TypertRemoteService {
           throw new Error(`dsh-git: unknown worktree action ${String(action)}`)
       }
     })
+  }
+
+  /**
+   * Turn a rough description into a branch name.
+   *
+   * The model is used HERE and not for the worktree path, deliberately. Naming
+   * is a creative problem with many good answers; deriving
+   * `../myproj-feat-login` from `feat/login` is arithmetic with exactly ONE
+   * right answer, and a model there would buy nondeterminism and latency to
+   * compute what a regex already gets right every time.
+   *
+   * The hint is free text the user typed rather than a diff, because a new
+   * worktree is usually for work that has NOT started — there is often nothing
+   * in the tree to describe. Existing branch names are supplied so the model
+   * does not propose one that already exists, which would fail on create with
+   * an error the user did not cause.
+   *
+   * @param request - workspace and the user's rough description.
+   * @returns a valid, safe branch name.
+   */
+  @Remote
+  async suggestBranch(request: SuggestBranchRequest): Promise<SuggestBranchResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const hint = typeof request?.hint === 'string' ? request.hint.trim().slice(0, 500) : ''
+    if (hint.length === 0) throw new Error('dsh-git: describe the work first')
+
+    const root = await repoRoot(dir)
+    const existing =
+      root === undefined
+        ? []
+        : (await readRefs(root)).branches.filter((b) => !b.remote).map((b) => b.name)
+
+    const system = [
+      'You name git branches for a software project.',
+      'Return a single branch name and nothing else.',
+      'Use the conventional form <type>/<short-kebab-summary>, where type is one of feat, fix, chore, docs, refactor, test, perf.',
+      'Lower case, words separated by hyphens, at most 40 characters, no spaces, no quotes, no trailing punctuation.',
+      'Return ONLY the branch name. No preamble, no explanation, no code fences.',
+    ].join('\n')
+
+    const prompt = [
+      'Suggest a branch name for this work:',
+      hint,
+      ...(existing.length > 0
+        ? ['', 'These branches already exist, so do not reuse them:', existing.slice(0, 40).join(', ')]
+        : []),
+    ].join('\n')
+
+    const selection = this.ctx.agentDefaultModel.currentSelection()
+    const assembler = new BlockAssembler()
+    for await (const chunk of this.ctx.llm.stream({
+      provider: selection.provider,
+      model: selection.model,
+      ...(selection.reasoningEffort !== undefined
+        ? { reasoningEffort: selection.reasoningEffort }
+        : {}),
+      messages: [
+        createUserMessage({
+          content: [{ type: 'text', text: prompt }],
+          source: { kind: 'plugin', plugin: 'dsh-git' },
+        }),
+      ],
+      system,
+      // A branch name is a few tokens; a bigger budget only buys a longer
+      // ramble to throw away.
+      maxTokens: 64,
+    })) {
+      assembler.push(chunk)
+    }
+
+    const finish = assembler.finish
+    if (finish.kind === 'error' || finish.kind === 'aborted') {
+      throw new Error('dsh-git: ' + (finish.failure?.message ?? finish.kind))
+    }
+
+    const text = assembler
+      .blocks()
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+
+    // Sanitize rather than trust: models still return quotes or a 'Branch:'
+    // label sometimes, and an invalid ref would surface later as an error the
+    // user did not cause and cannot act on.
+    const name = normalizeBranchName(text)
+    if (name.length === 0) throw new Error('dsh-git: the model produced no usable branch name')
+    // Final gate: the same validator every other ref goes through.
+    return { name: assertSafeRef(name) }
   }
 
   /**
