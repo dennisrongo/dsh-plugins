@@ -493,20 +493,20 @@ function parseBranches(raw) {
   const out = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
-    const [name, head, upstream, track, subject] = line.split(REF_SEP);
-    if (!name) continue;
-    if (name.includes(" -> ")) continue;
-    const remote = name.startsWith("remotes/") || /^[^/]+\/.+$/.test(name) && upstream === void 0;
-    const clean = name.startsWith("remotes/") ? name.slice("remotes/".length) : name;
+    const [full, name, head, upstream, symref, track, subject] = line.split(REF_SEP);
+    if (!full || !name) continue;
+    if (symref !== void 0 && symref.length > 0) continue;
+    const remote = full.startsWith("refs/remotes/");
+    const hasUpstream = typeof upstream === "string" && upstream.length > 0;
     const ahead = /ahead (\d+)/.exec(track ?? "");
     const behind = /behind (\d+)/.exec(track ?? "");
     out.push({
-      name: clean,
+      name,
       current: (head ?? "").trim() === "*",
-      remote: name.startsWith("remotes/") || remote,
-      ...upstream ? { upstream } : {},
-      ...upstream && ahead ? { ahead: Number(ahead[1]) } : upstream ? { ahead: 0 } : {},
-      ...upstream && behind ? { behind: Number(behind[1]) } : upstream ? { behind: 0 } : {},
+      remote,
+      ...hasUpstream ? { upstream } : {},
+      ...hasUpstream ? { ahead: ahead ? Number(ahead[1]) : 0 } : {},
+      ...hasUpstream ? { behind: behind ? Number(behind[1]) : 0 } : {},
       ...subject ? { subject } : {}
     });
   }
@@ -573,9 +573,11 @@ function parseWorktrees(raw, currentRoot) {
 __name(parseWorktrees, "parseWorktrees");
 async function readRefs(root) {
   const format = [
+    "%(refname)",
     "%(refname:short)",
     "%(HEAD)",
     "%(upstream:short)",
+    "%(symref)",
     "%(upstream:track)",
     "%(contents:subject)"
   ].join(REF_SEP);

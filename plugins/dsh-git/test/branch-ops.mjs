@@ -372,24 +372,76 @@ try {
     assert.equal(got[1].main, false)
   })
 
-  await test('parseBranches keeps ahead/behind undefined without an upstream', () => {
+  await test('parseBranches classifies remote refs from the FULL refname', () => {
+    // This fixture is REAL output captured from a repository with a remote, in
+    // field order [refname, refname:short, HEAD, upstream:short, symref,
+    // upstream:track, subject]. The previous fixture was written from an
+    // ASSUMPTION about git's output -- 'remotes/origin/HEAD' with a ' -> '
+    // arrow, which is the HUMAN format, not what --format emits -- so it passed
+    // while every remote-tracking ref was being filed as a LOCAL branch. The
+    // branch menu then offered 'origin' and 'origin/main' as things to switch
+    // to, and checking one out detaches HEAD.
     const S = String.fromCharCode(31)
     const raw = [
-      ['main', '*', 'origin/main', '[ahead 2, behind 1]', 'subject one'].join(S),
-      ['local-only', ' ', '', '', 'subject two'].join(S),
-      ['remotes/origin/HEAD', ' ', '', '', ''].join(S) + ' -> origin/main',
+      ['refs/heads/feature/test-branch', 'feature/test-branch', ' ', '', '', '', 'subject one'].join(S),
+      ['refs/heads/main', 'main', '*', 'origin/main', '', '[ahead 2, behind 1]', 'subject two'].join(S),
+      ['refs/remotes/origin/HEAD', 'origin', ' ', '', 'refs/remotes/origin/main', '', ''].join(S),
+      ['refs/remotes/origin/main', 'origin/main', ' ', '', '', '', 'subject three'].join(S),
     ].join('\n')
     const got = parseBranches(raw)
+
+    // The symref is a POINTER, not a branch, and must not be listed at all.
+    assert.ok(!got.some((b) => b.name === 'origin'), 'origin/HEAD (short name "origin") is skipped')
+
+    const locals = got.filter((b) => !b.remote).map((b) => b.name).sort()
+    assert.deepEqual(locals, ['feature/test-branch', 'main'], 'only refs/heads/* are local')
+
+    const remotes = got.filter((b) => b.remote).map((b) => b.name)
+    assert.deepEqual(remotes, ['origin/main'], 'refs/remotes/* are remote even without a "remotes/" prefix')
+
     const main = got.find((b) => b.name === 'main')
     assert.equal(main.current, true)
     assert.equal(main.ahead, 2)
     assert.equal(main.behind, 1)
-    const local = got.find((b) => b.name === 'local-only')
-    // Not zero: 'in sync' and 'no upstream' are different facts.
-    assert.equal(local.ahead, undefined)
-    assert.equal(local.behind, undefined)
-    assert.equal(local.upstream, undefined)
-    assert.ok(!got.some((b) => b.name.includes('->')), 'the remote HEAD symref is skipped')
+
+    // A slashed LOCAL branch must not be mistaken for a remote one just because
+    // it contains a slash -- that was the old heuristic's other failure mode.
+    const feature = got.find((b) => b.name === 'feature/test-branch')
+    assert.equal(feature.remote, false)
+    // Not zero: 'in sync' and 'no upstream' are different facts, and the fields
+    // arrive as EMPTY STRINGS from split(), never undefined.
+    assert.equal(feature.ahead, undefined)
+    assert.equal(feature.behind, undefined)
+    assert.equal(feature.upstream, undefined)
+  })
+
+  await test('a REAL repository with a remote reports exactly one local branch', async () => {
+    // The fixture above can still drift from git. This asserts against a real
+    // repo with a real remote, which is what would have caught the original bug.
+    const remoteDir = mkdtempSync(join(tmpdir(), 'dsh-git-remote-'))
+    try {
+      execFileSync('git', ['init', '--bare', '-b', 'main'], { cwd: remoteDir, stdio: 'ignore' })
+      await runGit(dir, ['checkout', 'main'])
+      await runGit(dir, ['remote', 'add', 'origin', remoteDir])
+      await runGit(dir, ['push', '-u', 'origin', 'main'])
+      // Create the origin/HEAD symref the way a real clone has one.
+      await runGit(dir, ['remote', 'set-head', 'origin', 'main'])
+
+      const refs = await readRefs(dir)
+      const locals = refs.branches.filter((b) => !b.remote).map((b) => b.name)
+      const remotes = refs.branches.filter((b) => b.remote).map((b) => b.name)
+
+      assert.ok(locals.includes('main'), 'main is local')
+      assert.ok(!locals.includes('origin'), 'origin/HEAD must not appear as a local branch')
+      assert.ok(!locals.includes('origin/main'), 'origin/main must not appear as a local branch')
+      assert.ok(remotes.includes('origin/main'), 'origin/main is a remote-tracking branch')
+      assert.ok(!refs.branches.some((b) => b.name === 'origin'), 'the symref is skipped entirely')
+
+      const main = refs.branches.find((b) => b.name === 'main' && !b.remote)
+      assert.equal(main.upstream, 'origin/main', 'and the upstream is reported')
+    } finally {
+      rmSync(remoteDir, { recursive: true, force: true })
+    }
   })
 
   await test('parseStashes reads the index from the selector git printed', () => {

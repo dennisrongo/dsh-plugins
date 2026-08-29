@@ -368,6 +368,26 @@ if checkout ever stopped refusing, the second-click affordance would be dead UI.
 renumbers everything after it, so the client re-reads `refs` after every mutation. The
 index is validated because it is interpolated into `stash@{N}`.
 
+**Branch classification reads the FULL refname, and the first version did not.**
+`%(refname:short)` shortens `refs/remotes/origin/main` to `origin/main` — leaving no
+`remotes/` prefix to test — and shortens `refs/remotes/origin/HEAD` all the way to a bare
+`origin`. The original heuristic tested `startsWith('remotes/')` (never true under
+`--format`) with a fallback on `upstream === undefined` (never true either, because
+`split()` yields EMPTY STRINGS). Every branch therefore came back `remote: false`, and the
+menu offered `origin` and `origin/main` as switch targets — checking one out detaches HEAD.
+
+The format now emits `%(refname)` and `%(symref)` first: `remote` is
+`full.startsWith('refs/remotes/')`, exact rather than heuristic, and any ref with a symref
+value is skipped because it POINTS AT a branch instead of being one.
+
+**The unit test passed the whole time, and that is the lesson.** Its fixture was written
+from an assumption about git's output — `remotes/origin/HEAD` with a ` -> ` arrow, which
+is the HUMAN `git branch` format, not what `--format` emits — so it tested the assumption
+rather than git. It was only caught by reading real data off a running harness. The
+fixture is now REAL captured output, and `branch-ops.mjs` additionally builds a repo with
+a real remote and `remote set-head`, asserting that neither `origin` nor `origin/main`
+appears as local. Both halves were verified to fail against the old code.
+
 **`assertSafeRef` is the `assertSafeSha` of branch names.** Same risk, same reason: not a
 shell, but git's argument grammar. A leading `-` is read as a FLAG (`--exec=...` as a
 "branch name"), `..` forms a revision RANGE, `~`/`^` walk ancestry, `:` addresses the

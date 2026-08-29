@@ -774,22 +774,28 @@ export function parseBranches(raw: string): GitBranch[] {
   const out: GitBranch[] = []
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue
-    const [name, head, upstream, track, subject] = line.split(REF_SEP)
-    if (!name) continue
-    // A remote HEAD pointer ('origin/HEAD -> origin/main') is a symref, not a
-    // branch anyone can check out; listing it would offer a dead menu row.
-    if (name.includes(' -> ')) continue
-    const remote = name.startsWith('remotes/') || /^[^/]+\/.+$/.test(name) && upstream === undefined
-    const clean = name.startsWith('remotes/') ? name.slice('remotes/'.length) : name
+    const [full, name, head, upstream, symref, track, subject] = line.split(REF_SEP)
+    if (!full || !name) continue
+    // A ref carrying a symref value POINTS AT a branch and is not one:
+    // refs/remotes/origin/HEAD short-names to a bare "origin". Listing it would
+    // offer a menu row that detaches HEAD when clicked.
+    if (symref !== undefined && symref.length > 0) continue
+    // Classify on the FULL refname. %(refname:short) shortens
+    // refs/remotes/origin/main to "origin/main" — no "remotes/" prefix left to
+    // test — so any heuristic over the short name files remote-tracking refs as
+    // LOCAL, which is exactly the bug this replaced.
+    const remote = full.startsWith('refs/remotes/')
+    // split() yields EMPTY STRINGS, never undefined, so emptiness is the test.
+    const hasUpstream = typeof upstream === 'string' && upstream.length > 0
     const ahead = /ahead (\d+)/.exec(track ?? '')
     const behind = /behind (\d+)/.exec(track ?? '')
     out.push({
-      name: clean,
+      name,
       current: (head ?? '').trim() === '*',
-      remote: name.startsWith('remotes/') || remote,
-      ...(upstream ? { upstream } : {}),
-      ...(upstream && ahead ? { ahead: Number(ahead[1]) } : upstream ? { ahead: 0 } : {}),
-      ...(upstream && behind ? { behind: Number(behind[1]) } : upstream ? { behind: 0 } : {}),
+      remote,
+      ...(hasUpstream ? { upstream } : {}),
+      ...(hasUpstream ? { ahead: ahead ? Number(ahead[1]) : 0 } : {}),
+      ...(hasUpstream ? { behind: behind ? Number(behind[1]) : 0 } : {}),
       ...(subject ? { subject } : {}),
     })
   }
@@ -889,10 +895,14 @@ export function parseWorktrees(raw: string, currentRoot?: string): GitWorktree[]
 export async function readRefs(
   root: string,
 ): Promise<{ branches: GitBranch[]; stashes: GitStash[]; worktrees: GitWorktree[] }> {
+  // %(refname) FIRST: classification depends on the full ref, not the short
+  // name, and %(symref) is what identifies origin/HEAD as a pointer.
   const format = [
+    '%(refname)',
     '%(refname:short)',
     '%(HEAD)',
     '%(upstream:short)',
+    '%(symref)',
     '%(upstream:track)',
     '%(contents:subject)',
   ].join(REF_SEP)
