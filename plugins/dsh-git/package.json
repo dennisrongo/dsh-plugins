@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-git",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Git source-control tab for DeepSeek Harness (dsh) — view, stage, AI-commit and sync a workspace's changes",
   "type": "module",
   "license": "MIT",

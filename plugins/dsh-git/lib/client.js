@@ -76,8 +76,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
   --g-accent: var(--dsw-alias-state-success-primary, #22c55e);
   --g-hover: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,0.08));
   --g-danger: var(--dsw-alias-state-error-primary, #ef4444);
-  --g-warn: var(--dsw-alias-state-warning-primary, #f59e0b);
-  --g-info: var(--dsw-alias-state-info-primary, #3b82f6);
+  --g-warn: var(--dsw-alias-state-warn-primary, #f59e0b);
+  --g-info: var(--dsw-alias-state-business-primary, #3b82f6);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -145,14 +145,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 }
 .dshgit-mode:hover { color: var(--g-primary); }
 .dshgit-mode[aria-pressed='true'] { color: var(--g-primary); border-bottom-color: var(--g-accent); }
-.dshgit-mode:focus-visible { outline: 2px solid var(--dsw-alias-border-focus, #6b7280); outline-offset: -2px; }
+.dshgit-mode:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #6b7280); outline-offset: -2px; }
 
 /* ---- history ----
    Commit rows reuse the .dshgit-row box so they inherit the same 32px height
    and 20px line-height the icon probe pins; only the inner columns differ. */
 .dshgit-sha {
   flex: none; color: var(--g-caption); font-size: 12px; line-height: 20px;
-  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .dshgit-subject {
   flex: 1 1 auto; min-width: 0;
@@ -179,7 +179,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
   padding: 8px 11px; line-height: 1.5;
 }
 .dshgit-msg::placeholder { color: var(--g-caption); }
-.dshgit-msg:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshgit-msg:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshgit-commitrow { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 /* The reason the Commit button is dead. min-width: 0 with ellipsis so a narrow
    tab truncates the hint instead of squeezing the button it explains. */
@@ -253,10 +253,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
   line-height: 20px;
 }
 .dshgit-row:hover { background: var(--g-hover); border-color: var(--g-border); }
-.dshgit-row.active { background: var(--g-hover); border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshgit-row.active { background: var(--g-hover); border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshgit-code {
   flex: none; width: 16px; text-align: center; font-size: 12px; line-height: 16px; font-weight: 700;
-  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .dshgit-code.M { color: var(--g-warn); }
 .dshgit-code.A { color: var(--g-accent); }
@@ -304,12 +304,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
   position: sticky; top: 0; z-index: 1;
   display: flex; align-items: center; gap: 8px;
   padding: 7px 20px; border-bottom: 1px solid var(--g-border);
-  background: var(--dsw-alias-bg-l1, #16181c);
+  background: var(--dsw-alias-bg-layer-1, #16181c);
   color: var(--g-caption); font-size: 12px; line-height: 18px;
 }
 .dshgit-diffbody {
   margin: 0; padding: 8px 0;
-  font: 400 12px/18px var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font: 400 12px/18px var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
   white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2;
 }
 /* Wrapped lines are indented past the +/- column and the pane no longer scrolls
@@ -369,7 +369,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
   border: 1px solid var(--g-border); border-radius: 7px; background: transparent;
   color: var(--g-primary); font: inherit; font-size: 12px; line-height: 18px; padding: 5px 10px; width: 130px;
 }
-.dshgit-init input:focus { outline: none; border-color: var(--dsw-alias-border-focus, #6b7280); }
+.dshgit-init input:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
 .dshgit-foot {
   flex: none; display: flex; align-items: center; gap: 8px;
   padding: 8px 20px; border-top: 1px solid var(--g-border);
@@ -377,7 +377,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 }
 .dshgit-out {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .dshgit-out.err { color: var(--g-danger); }
 /* inline-flex (not inline-block) so the SVG child rotates about the box centre
