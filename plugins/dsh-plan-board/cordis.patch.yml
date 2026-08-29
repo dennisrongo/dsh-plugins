@@ -1,0 +1,10 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack, so
+# `dsh plugin add` mounts it without hand-editing the profile's own
+# cordis.patch.yml. Both id: and name: are required — a bare id: is an
+# id-targeted override of an existing row and silently no-ops.
+#
+# One row mounts BOTH halves: the host service (dshPlans) and the browser
+# window + history tab.
+- insert:
+    - id: dsh-plan-board
+      name: '@dennisrongo/dsh-plan-board'

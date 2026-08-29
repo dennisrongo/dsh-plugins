@@ -1,0 +1,72 @@
+{
+  "name": "@dennisrongo/dsh-plan-board",
+  "version": "0.1.0",
+  "description": "Durable plans for DeepSeek Harness (dsh) — captures every exit_plan_mode plan to <workspace>/.dsh/plans as markdown, opens a review window when one is presented, and keeps the history",
+  "type": "module",
+  "license": "MIT",
+  "author": "Dennis Rongo",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./typert": {
+      "default": "./lib/typert.host.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "!lib/client.body.cjs",
+    "!lib/*.test.mjs",
+    "README.md",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "node build/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node build/build.mjs && node test/smoke.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "immediately": true
+    }
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-workspace": "^0.1.1-rc.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "esbuild": "^0.24.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "typescript": "^5.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dennisrongo/dsh-plugins.git",
+    "directory": "plugins/dsh-plan-board"
+  },
+  "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-plan-board#readme",
+  "bugs": {
+    "url": "https://github.com/dennisrongo/dsh-plugins/issues"
+  }
+}
