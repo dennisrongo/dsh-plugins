@@ -339,6 +339,45 @@ try {
     assert.equal(here, there, 'stash is shared across worktrees')
   })
 
+  await test('a worktree can fork from a branch OTHER than the current one', async () => {
+    // Git's default for 'worktree add -b' is HEAD, so without an explicit start
+    // point a worktree made while on feature-test forks from feature-test. This
+    // is the escape hatch: branch off main without switching first.
+    const forkDir = mkdtempSync(join(tmpdir(), 'dsh-git-fork-'))
+    rmSync(forkDir, { recursive: true, force: true })
+    const wtPath = forkDir
+    worktrees.push(wtPath)
+
+    // Put a commit on a side branch that main does NOT have.
+    await runGit(dir, ['checkout', 'main'])
+    await runGit(dir, ['checkout', '-b', 'fork-src'])
+    writeFileSync(join(dir, 'only-here.txt'), 'side\n')
+    execFileSync('git', ['add', '-A'], { cwd: dir })
+    execFileSync('git', ['commit', '-m', 'feat: only on fork-src'], { cwd: dir })
+
+    // Sitting on fork-src, ask for a worktree started from main. The commit-ish
+    // goes AFTER the path, and still works with the '--' separator in front.
+    const add = await runGit(dir, ['worktree', 'add', '-b', 'off-main-wt', '--', wtPath, 'main'])
+    assert.equal(add.code, 0, add.stderr)
+
+    const log = await runGit(wtPath, ['log', '--oneline'])
+    assert.doesNotMatch(log.stdout, /only on fork-src/, 'must NOT inherit the current branch')
+    const base = await runGit(dir, ['merge-base', 'off-main-wt', 'main'])
+    const mainTip = await runGit(dir, ['rev-parse', 'main'])
+    assert.equal(base.stdout.trim(), mainTip.stdout.trim(), 'forked from main exactly')
+
+    // And an unknown start point is refused rather than silently using HEAD.
+    const bad = await runGit(dir, ['worktree', 'add', '-b', 'nope', '--', wtPath + '-x', 'no-such-ref'])
+    assert.notEqual(bad.code, 0)
+    assert.match(bad.stderr + bad.stdout, /invalid reference|not a valid/i)
+
+    // Clean up after itself. A test that leaves a worktree behind breaks the
+    // NEXT test's count assertion, which then reads as a bug in removal.
+    await runGit(dir, ['worktree', 'remove', '--force', '--', wtPath])
+    worktrees.splice(worktrees.indexOf(wtPath), 1)
+    await runGit(dir, ['checkout', 'main'])
+  })
+
   await test('worktree remove drops it from the list', async () => {
     const wt = worktrees[0]
     const removed = await runGit(dir, ['worktree', 'remove', wt])

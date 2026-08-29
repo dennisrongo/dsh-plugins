@@ -1336,6 +1336,23 @@ const VIEW_STYLES = `
   font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .dshgit-preview.err { color: var(--g-danger); font-family: inherit; }
+.dshgit-select {
+  border: 1px solid var(--g-border); border-radius: 7px; background: transparent;
+  color: var(--g-primary); font: inherit; font-size: 12px; line-height: 18px; padding: 4px 6px;
+  max-width: 180px;
+}
+.dshgit-select:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
+/* A select's popup is painted by the OS outside the page, so no descendant rule
+   reaches it — it follows color-scheme, which ui-layout already sets on <html>
+   from the RESOLVED theme. Option rows get an explicit pair only on the
+   platforms that honour them, gated on the APP's palette rather than the OS
+   query: keyed to prefers-color-scheme this paints a dark popup under a light
+   theme whenever the two disagree. body[data-ds-dark-theme] is what
+   ThemePresenter actually toggles. */
+body[data-ds-dark-theme] .dshgit-select option {
+  background: var(--dsw-alias-bg-layer-1, #16181c);
+  color: var(--dsw-alias-label-primary, #f9fafb);
+}
 .dshgit-check {
   display: inline-flex; align-items: center; gap: 6px;
   color: var(--g-caption); font-size: 12px; line-height: 18px; cursor: pointer;
@@ -2367,6 +2384,8 @@ export function GitView({
      * name a branch about an otter.
      */
     generated: string
+    /** Branch the new one forks from; empty means the current HEAD. */
+    startPoint: string
   } | null>(null)
   const [openSha, setOpenSha] = React.useState<string | null>(null)
   // null means "still loading". Anything else is a settled outcome that knows
@@ -2937,6 +2956,26 @@ export function GitView({
             {busy === 'suggestBranch' ? 'Naming…' : 'AI name'}
           </button>
           <label className="dshgit-check">
+            from
+            <select
+              className="dshgit-select"
+              value={worktreeForm.startPoint}
+              aria-label="Start the new branch from"
+              onChange={(e) => setWorktreeForm({ ...worktreeForm, startPoint: e.target.value })}
+            >
+              {/* Empty value = HEAD, git's own default. Named rather than blank
+                  so the row reads as a statement of what will happen. */}
+              <option value="">{status.branch ?? 'current HEAD'} (current)</option>
+              {(state.refs?.ok ? state.refs.branches : [])
+                .filter((b) => b.name !== status.branch)
+                .map((b) => (
+                  <option key={(b.remote ? 'r:' : 'l:') + b.name} value={b.name}>
+                    {b.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label className="dshgit-check">
             <input
               type="checkbox"
               checked={worktreeForm.register}
@@ -2959,6 +2998,7 @@ export function GitView({
                 .worktree('add', {
                   path: form.path.trim(),
                   ...(branch.length > 0 ? { newBranch: branch } : {}),
+                  ...(form.startPoint.length > 0 ? { startPoint: form.startPoint } : {}),
                   // `register` is deliberately NOT sent. The host would write
                   // workspaceRegistry directly, which the browser's own workspace
                   // list is not guaranteed to learn about until a reload; going
@@ -3107,6 +3147,9 @@ export function GitView({
                   register: true,
                   pathTouched: false,
                   generated,
+                  // Empty = current HEAD, which is git's own default and the
+                  // common case. The select renders it as the current branch.
+                  startPoint: '',
                 })
               }}
               onOpenWorktree={openWorktree}

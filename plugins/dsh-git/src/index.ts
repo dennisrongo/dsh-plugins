@@ -742,6 +742,10 @@ export class GitService extends TypertRemoteService {
       typeof request?.newBranch === 'string' && request.newBranch.length > 0
         ? assertSafeRef(request.newBranch)
         : undefined
+    const startPoint =
+      typeof request?.startPoint === 'string' && request.startPoint.length > 0
+        ? assertSafeRef(request.startPoint)
+        : undefined
     const force = request?.force === true
     const register = request?.register === true
 
@@ -753,9 +757,17 @@ export class GitService extends TypertRemoteService {
           if (newBranch !== undefined) args.push('-b', newBranch)
           if (force) args.push('--force')
           args.push('--', target)
-          // A bare `worktree add <path>` with no ref checks out a new branch
-          // named after the directory; naming the branch is the explicit form.
-          if (newBranch === undefined && branch !== undefined) args.push(branch)
+          // The commit-ish comes AFTER the path in git's grammar, and it still
+          // does with a `--` separator in front (verified on git 2.50):
+          // `worktree add -b X -- <path> main` forks from main while HEAD is
+          // elsewhere. Omitted, git uses HEAD — the current branch.
+          if (newBranch !== undefined && startPoint !== undefined) {
+            args.push(startPoint)
+          } else if (newBranch === undefined && branch !== undefined) {
+            // A bare `worktree add <path>` with no ref checks out a new branch
+            // named after the directory; naming the branch is the explicit form.
+            args.push(branch)
+          }
           const run = await runGit(root, args)
           const output = combined(run)
           if (run.code !== 0 || !register) return output

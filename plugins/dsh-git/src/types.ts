@@ -659,6 +659,15 @@ export interface WorktreeRequest {
   branch?: string
   /** Create this branch in the new worktree instead of checking one out. */
   newBranch?: string
+  /**
+   * Where the new branch starts. Defaults to the CURRENT branch.
+   *
+   * Git's default for `worktree add -b` is HEAD, which means a worktree made
+   * while sitting on `feature-test` forks from `feature-test` — usually right,
+   * occasionally not. This makes "branch off main while I'm on something else"
+   * expressible without switching first.
+   */
+  startPoint?: string
   /** Remove a worktree with local modifications. */
   force?: boolean
   /**

@@ -19,7 +19,7 @@ Source-control ("Source Control") tab for DeepSeek Harness. Two halves in one pa
 - `branch` — `{ workspaceId, action, name?, startPoint?, force? }`; action is create | switch | createSwitch | delete | rename | stashSwitch
 - `merge` — `{ workspaceId, action, from?, noFF? }`; action is merge | abort | continue
 - `stash` — `{ workspaceId, action, index?, message?, includeUntracked? }`; action is push | pop | apply | drop | clear
-- `worktree` — `{ workspaceId, action, path?, branch?, newBranch?, force?, register? }`; action is add | remove | prune
+- `worktree` — `{ workspaceId, action, path?, branch?, newBranch?, startPoint?, force?, register? }`; action is add | remove | prune
 - `suggestBranch` — `{ workspaceId, hint }` → `{ name }`; drafts a branch name from a typed description via the LLM. Fails soft — the form stays usable with no provider configured
 - `changeToken` — `{ workspaceId }` → `{ token }`; the POLLING endpoint. Answers from an `fs.watch` counter and **never spawns git** (measured 52 ms vs `status`'s 141 ms). `token: 0` means "not a repository", which is the client's signal to stop polling. A token is comparable only against an earlier token for the same workspace.
 
@@ -467,6 +467,28 @@ carry the explanation instead.
 Note `current` is NOT always `main`: open the tab on a linked worktree and that one is
 current while main is a different row. Gating on `main` alone would leave the Remove
 button live on the worktree the user is inside.
+
+**A worktree can fork from a branch other than the current one.** `startPoint` is optional and
+defaults to HEAD, which is git's own default and the common case — but it means a worktree
+created while sitting on `feature-test` forks from `feature-test`, which is occasionally not
+what was wanted. The form offers a `from` select over the local branches, defaulting to the
+current one.
+
+**The commit-ish goes AFTER the path in git's grammar**, and still does with a `--` separator
+in front: `worktree add -b X -- <path> main` forks from main while HEAD is elsewhere
+(verified on git 2.50, along with an unknown start point being refused as
+`fatal: invalid reference`). `branch-ops.mjs` asserts the new branch does NOT inherit the
+current branch's commit and that its merge-base equals main's tip exactly.
+
+That test cleans up its own worktree, and that is not tidiness: leaving it behind broke the
+NEXT test's worktree COUNT assertion, which then reads as a bug in removal rather than as
+contamination from a neighbour.
+
+**The `from` select follows the APP's palette, not the OS.** A select's popup is painted
+outside the page and obeys `color-scheme`, which `ui-layout` already sets on `<html>` from the
+resolved theme; option rows get an explicit pair gated on `body[data-ds-dark-theme]`. Keyed to
+`prefers-color-scheme` instead, a light theme on a dark-mode machine paints a dark popup —
+the exact inversion `dsh-todo` shipped and then fixed.
 
 **A worktree cannot check out a branch that is already checked out somewhere else.** Git
 refuses with `fatal: 'main' is already used by worktree at ...`, so "just use the current

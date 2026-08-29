@@ -1122,6 +1122,7 @@ ${body}` }],
     const action = request?.action;
     const branch = typeof request?.branch === "string" && request.branch.length > 0 ? assertSafeRef(request.branch) : void 0;
     const newBranch = typeof request?.newBranch === "string" && request.newBranch.length > 0 ? assertSafeRef(request.newBranch) : void 0;
+    const startPoint = typeof request?.startPoint === "string" && request.startPoint.length > 0 ? assertSafeRef(request.startPoint) : void 0;
     const force = request?.force === true;
     const register = request?.register === true;
     return this.withRepo(dir, async (root) => {
@@ -1132,7 +1133,11 @@ ${body}` }],
           if (newBranch !== void 0) args.push("-b", newBranch);
           if (force) args.push("--force");
           args.push("--", target);
-          if (newBranch === void 0 && branch !== void 0) args.push(branch);
+          if (newBranch !== void 0 && startPoint !== void 0) {
+            args.push(startPoint);
+          } else if (newBranch === void 0 && branch !== void 0) {
+            args.push(branch);
+          }
           const run = await runGit(root, args);
           const output = combined(run);
           if (run.code !== 0 || !register) return output;

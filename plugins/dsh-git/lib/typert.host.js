@@ -179,6 +179,7 @@ var worktreeRequestSchema = z.object({
   path: z.string().optional(),
   branch: refSchema.optional(),
   newBranch: refSchema.optional(),
+  startPoint: refSchema.optional(),
   force: z.boolean().optional(),
   register: z.boolean().optional()
 });
