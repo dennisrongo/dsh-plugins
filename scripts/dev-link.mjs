@@ -17,7 +17,7 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 const script = path.join(path.dirname(fileURLToPath(import.meta.url)),
   process.platform === 'win32' ? 'dev-link.ps1' : 'dev-link.sh')
@@ -25,6 +25,27 @@ const script = path.join(path.dirname(fileURLToPath(import.meta.url)),
 if (!existsSync(script)) {
   console.warn(`dev-link: ${script} not found — skipping (non-fatal)`)
   process.exit(0)
+}
+
+// Machine-local targets: .dev-link.json (gitignored) at the repo root, e.g.
+//   { "profiles": "web,mission-control", "desktopProfiles": "web" }
+// Absent file = the underlying script's own defaults. Keeps per-machine
+// profile names out of the shared manifest.
+const extraArgs = []
+try {
+  const cfgPath = path.join(repoRootArg(), '.dev-link.json')
+  if (existsSync(cfgPath)) {
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    if (cfg.profiles) extraArgs.push('--profiles', String(cfg.profiles))
+    if (cfg.desktopProfiles) extraArgs.push('--desktop-profiles', String(cfg.desktopProfiles))
+    if (cfg.plugins) extraArgs.push('--plugins', String(cfg.plugins))
+  }
+} catch (err) {
+  console.warn(`dev-link: ignoring unreadable .dev-link.json (${err.message})`)
+}
+
+function repoRootArg() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 }
 
 const runner = process.platform === 'win32'

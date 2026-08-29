@@ -32,3 +32,6 @@ scratch/
 # (pnpm add "github:owner/repo#path:/plugins/<name>"), and a git install runs no
 # build step — an uncommitted lib/ means the package arrives with no output and
 # fails to load. Rebuild and commit lib/ when you change src/.
+
+# machine-local dev-link targets
+.dev-link.json
