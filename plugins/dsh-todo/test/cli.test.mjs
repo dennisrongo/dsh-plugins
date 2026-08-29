@@ -103,23 +103,27 @@ const cli = await import(pathToFileURL(join(root, 'lib/cli.js')).href)
   assert.equal(added.json.item.status, 'todo', 'a new task defaults to todo')
   assert.ok(existsSync(join(ws, '.dsh', 'todo.db')), 'the database is created on first write')
 
-  // release/sprint are decimal-only labels, so they sort numerically and never
-  // mix alpha with numeric — invalid values are REFUSED, never dropped.
-  for (const bad of ['v1.5', 'Sprint 24', '1.2.0', 'beta']) {
+  // Labels stay numeric so they sort without mixing alpha and numeric, but the
+  // two fields differ: a RELEASE carries a patch segment (0.5.1), a SPRINT is a
+  // single decimal. Invalid values are REFUSED, never dropped.
+  for (const bad of ['v1.5', 'Sprint 24', 'beta', '1.2.3.4', '1.']) {
     assert.throws(
       () => go(['add', 'Bad release', '--release', bad]),
-      /--release must be a decimal number/,
+      /--release must be a version number/,
       `add refuses --release "${bad}"`,
     )
+    assert.throws(
+      () => go(['update', id, '--release', bad]),
+      /--release must be a version number/,
+      `update refuses --release "${bad}"`,
+    )
+  }
+  // A sprint is NOT a version: the patch form is refused there.
+  for (const bad of ['v1.5', 'Sprint 24', 'beta', '0.5.1']) {
     assert.throws(
       () => go(['add', 'Bad sprint', '--sprint', bad]),
       /--sprint must be a decimal number/,
       `add refuses --sprint "${bad}"`,
-    )
-    assert.throws(
-      () => go(['update', id, '--release', bad]),
-      /--release must be a decimal number/,
-      `update refuses --release "${bad}"`,
     )
     assert.throws(
       () => go(['update', id, '--sprint', bad]),
@@ -134,6 +138,13 @@ const cli = await import(pathToFileURL(join(root, 'lib/cli.js')).href)
   assert.equal(added.json.revision, 1, 'first write is revision 1')
   const second = go(['add', 'Second'])
   assert.equal(second.json.revision, 2, 'revision advances per write')
+
+  // A release carries a patch segment; every numeric shape up to three parts is
+  // accepted and stored verbatim.
+  for (const good of ['0.5.1', '1', '24', '1.5']) {
+    assert.equal(go(['update', id, '--release', good]).json.item.release, good,
+      `update accepts --release "${good}"`)
+  }
 
   // list
   assert.equal(go(['list']).json.count, 2)
@@ -181,6 +192,45 @@ const cli = await import(pathToFileURL(join(root, 'lib/cli.js')).href)
   assert.throws(() => go(['add']), /needs a title/)
   assert.throws(() => go(['update', id]), /at least one field/)
   assert.throws(() => go(['bogus']), /unknown command/)
+
+  // --- agent-facing feedback ------------------------------------------------
+  // An agent parses --json, so BOTH paths must state plainly whether the write
+  // happened: a bare payload with no verdict makes failure look like success.
+  {
+    const captured = []
+    const errors = []
+    const log = console.log
+    const err = console.error
+    console.log = (line) => captured.push(String(line))
+    console.error = (line) => errors.push(String(line))
+    let okCode, badCode, badText
+    try {
+      okCode = cli.main(['add', 'Feedback ok', '--release', '0.5.1', '--json', '--workspace', ws], ws)
+      badCode = cli.main(['add', 'Feedback bad', '--release', 'v1.5', '--json', '--workspace', ws], ws)
+      badText = cli.main(['add', 'Feedback bad', '--sprint', '0.5.1', '--workspace', ws], ws)
+    } finally {
+      console.log = log
+      console.error = err
+    }
+
+    const success = JSON.parse(captured[0])
+    assert.equal(okCode, cli.EXIT.ok, 'a good write exits 0')
+    assert.equal(success.ok, true, 'a successful command SAYS it succeeded')
+    assert.equal(success.item.release, '0.5.1', 'the stored task comes back for confirmation')
+
+    const failure = JSON.parse(captured[1])
+    assert.equal(badCode, cli.EXIT.usage, 'refused data exits non-zero')
+    assert.equal(failure.ok, false, 'a refused command SAYS it failed')
+    assert.equal(failure.code, cli.EXIT.usage)
+    assert.equal(failure.field, 'release', 'the agent is told WHICH field was refused')
+    assert.match(failure.expected, /0\.5\.1/, 'and what shape that field accepts')
+    assert.equal(failure.got, 'v1.5', 'and what it sent')
+    assert.match(failure.error, /--release/)
+
+    // Without --json the human path must still explain itself on stderr.
+    assert.equal(badText, cli.EXIT.usage)
+    assert.ok(errors.some((l) => /--sprint must be/.test(l)), 'the text path names the field too')
+  }
 
   rmSync(ws, { recursive: true, force: true })
 }

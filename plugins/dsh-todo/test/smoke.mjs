@@ -555,32 +555,75 @@ assert.deepEqual(m.filterItems([], 'open'), [])
   assert.deepEqual(m.knownLabels([], 'release'), [])
 }
 
-// Decimal labels sort NUMERICALLY, not lexicographically: "1.10" is 1.1, so it
-// sorts below "1.5" — the whole point of the decimal-only rule.
+// Releases sort by VERSION semantics — segment by segment — so 1.10 outranks
+// 1.9, and a patch release sits between its own minor and the next one.
 {
   const dec = [
     { id: 'a', title: 'a', status: 'todo', priority: 'p2', release: '1.10', createdAt: 1 },
     { id: 'b', title: 'b', status: 'todo', priority: 'p2', release: '1.9', createdAt: 2 },
-    { id: 'c', title: 'c', status: 'todo', priority: 'p2', release: '1.5', createdAt: 3 },
+    { id: 'c', title: 'c', status: 'todo', priority: 'p2', release: '0.5.1', createdAt: 3 },
+    { id: 'd', title: 'd', status: 'todo', priority: 'p2', release: '0.5', createdAt: 4 },
   ]
-  assert.deepEqual(m.groupItems(dec, 'release').map((g) => g.key), ['1.9', '1.5', '1.10'],
-    'decimal releases sort as numbers, newest first')
-  assert.deepEqual(m.knownLabels(dec, 'release'), ['1.9', '1.5', '1.10'])
+  assert.deepEqual(m.groupItems(dec, 'release').map((g) => g.key), ['1.10', '1.9', '0.5.1', '0.5'],
+    'releases sort segment-wise, newest first — 1.10 above 1.9, 0.5.1 above 0.5')
+  assert.deepEqual(m.knownLabels(dec, 'release'), ['1.10', '1.9', '0.5.1', '0.5'])
 }
 
-// --- decimal label gate -------------------------------------------------------
-// Release/sprint accept only bare decimals; the gate decides whether a typed
-// edit may commit, mirroring the CLI's "refused, never dropped" rule.
+// --- decimal input filtering --------------------------------------------------
+// The release/sprint inputs admit only the characters a decimal label can
+// contain — digits and one-dot material — so invalid text can never be typed
+// or pasted in. Whether the result is a VALID label (at most one dot) stays
+// the blur gate's job.
 {
-  assert.equal(m.isCommittableLabel('1.5'), true)
-  assert.equal(m.isCommittableLabel('24'), true)
-  assert.equal(m.isCommittableLabel(' 1.5 '), true, 'surrounding whitespace is normalized')
-  assert.equal(m.isCommittableLabel(''), true, 'an empty edit clears the field')
-  assert.equal(m.isCommittableLabel('   '), true, 'a whitespace-only edit clears the field')
-  assert.equal(m.isCommittableLabel('v1.5'), false)
-  assert.equal(m.isCommittableLabel('Sprint 24'), false)
-  assert.equal(m.isCommittableLabel('1.2.0'), false, 'only one dot — a single number')
-  assert.equal(m.isCommittableLabel('beta'), false)
+  assert.equal(m.sanitizeDecimalInput('v1.5'), '1.5')
+  assert.equal(m.sanitizeDecimalInput('Sprint 24'), '24')
+  assert.equal(m.sanitizeDecimalInput('abc'), '')
+  assert.equal(m.sanitizeDecimalInput('1 5'), '15')
+  assert.equal(m.sanitizeDecimalInput('1.2.3.4'), '1.2.3.4',
+    'segment COUNT is a validity problem, not a character problem — blur decides')
+}
+
+// --- numeric label gate -------------------------------------------------------
+// The gate decides whether a typed edit may commit, mirroring the CLI's
+// "refused, never dropped" rule — and it is FIELD-AWARE: a release carries a
+// patch segment (0.5.1), a sprint is a single decimal.
+{
+  for (const field of ['release', 'sprint']) {
+    assert.equal(m.isCommittableLabel('1.5', field), true)
+    assert.equal(m.isCommittableLabel('24', field), true)
+    assert.equal(m.isCommittableLabel(' 1.5 ', field), true, 'surrounding whitespace is normalized')
+    assert.equal(m.isCommittableLabel('', field), true, 'an empty edit clears the field')
+    assert.equal(m.isCommittableLabel('   ', field), true, 'a whitespace-only edit clears the field')
+    assert.equal(m.isCommittableLabel('v1.5', field), false)
+    assert.equal(m.isCommittableLabel('Sprint 24', field), false)
+    assert.equal(m.isCommittableLabel('beta', field), false)
+    assert.equal(m.isCommittableLabel('1.', field), false, 'a trailing dot is not a number')
+    assert.equal(m.isCommittableLabel('1.2.3.4', field), false, 'three segments at most')
+  }
+  assert.equal(m.isCommittableLabel('0.5.1', 'release'), true, 'a patch release is valid')
+  assert.equal(m.isCommittableLabel('0.5.1', 'sprint'), false, 'a sprint is a single decimal')
+}
+
+// A refused label edit must SAY so: silently reverting reads as the field being
+// broken. labelError() drives the inline message both editors render, and the
+// two fields say different things because their rules differ.
+{
+  assert.equal(m.labelError('1.5', 'release'), undefined)
+  assert.equal(m.labelError('0.5.1', 'release'), undefined)
+  assert.equal(m.labelError('', 'release'), undefined, 'empty clears — not an error')
+  assert.match(m.labelError('1.2.3.4', 'release'), /version/, 'too many segments is an error')
+  assert.match(m.labelError('1.', 'release'), /version/)
+  assert.equal(m.labelError('1.5', 'sprint'), undefined)
+  assert.match(m.labelError('0.5.1', 'sprint'), /decimal/, 'a sprint takes no patch segment')
+  assert.ok(typeof m.RELEASE_ERROR === 'string' && m.RELEASE_ERROR.length > 0)
+  assert.ok(typeof m.SPRINT_ERROR === 'string' && m.SPRINT_ERROR.length > 0)
+}
+
+// The error UI must actually ship in the bundle.
+{
+  const bundle = readFileSync(join(root, 'lib/client.js'), 'utf8')
+  assert.ok(bundle.includes('dshtd-label-err'), 'the label error styles must ship')
+  assert.ok(bundle.includes('aria-invalid'), 'a refused label must mark its input aria-invalid')
 }
 
 // --- archive ----------------------------------------------------------------
@@ -842,6 +885,22 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
     'both the single and bulk delete prompts must ship')
 }
 
+// --- the modal's save vs dismiss split ---------------------------------------
+// Asserted on the SOURCE: these are wiring decisions, and minification renames
+// the handlers a bundle-level regex would look for.
+{
+  const source = readFileSync(join(root, 'src/client.tsx'), 'utf8')
+  // Done is the SAVE button: it is the only control that refuses to proceed
+  // while a label is invalid.
+  assert.match(source, /onClick=\{save\}[\s\S]{0,80}Done/, 'the Done button must call save()')
+  // Dismissing must always be possible — a dialog you cannot leave because a
+  // field is half-typed is a trap. Backdrop, Escape and the X discard instead.
+  assert.match(source, /className="dshtd-modal-backdrop" onClick=\{dismiss\}/,
+    'a backdrop click must dismiss, not save')
+  assert.ok(!/onClick=\{close\}/.test(source), 'no control may call the old blocking close()')
+  assert.match(source, /const dismiss = React\.useCallback/, 'dismiss() must exist')
+  assert.match(source, /const save = React\.useCallback/, 'save() must exist')
+}
 // Every delete path routes through the confirm dialog. Asserted on the SOURCE
 // rather than the minified bundle: minification renames the callback parameter,
 // so a bundle-level regex silently matches nothing and passes vacuously.
