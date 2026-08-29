@@ -23,6 +23,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | [`dsh-superpowers`](plugins/dsh-superpowers) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
 | [`dsh-skills`](plugins/dsh-skills) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-skills) | the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library as an installable skill catalog | host | — |
 | [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox, pomodoro timer | host + client | `dshMissionControl/load`, `save` |
+| [`dsh-theme`](plugins/dsh-theme) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-theme) | twelve themes, eight accents, contrast and scale sliders, and three fonts with two bundled, live preview | client + tiny host | — |
 
 ---
 
@@ -169,11 +170,25 @@ A **settings drawer** persists to `localStorage` (bad shapes fall back to defaul
 
 ---
 
+### `dsh-theme`
+
+A **Themes** page in Settings: twelve curated palettes — Bumble Bee, Catppuccin, Citron, Claude, Everforest, Gruvbox, Nord, One, Rosé Pine, Sakura, Solarized, Tokyo Night — eight accent colours, a **contrast** slider and a **UI scale** slider, and a font axis whose two non-default entries — Geist Mono and JetBrains Mono — **ship inside the bundle** as data URLs, so they render identically everywhere with nothing to install. One choice sets both the interface and the code face. Hovering a theme swaps its one-line description for its full authored palette, so you can read the colours without applying it. Picking any of them previews across the whole app immediately; nothing is saved until you press Apply, and Revert or closing the modal puts back what was committed.
+
+Every theme ships **both** palettes, so it layers over your existing Light/Dark/System choice rather than replacing it. Flip appearance in General and the theme swaps variant; leave it on System and it follows the OS.
+
+**How it works.** Four independent `ctx.theme.overrideTokens` layers — palette (110 tokens), accent (17), font (2), scale (1). The runtime keeps one layer per source and replaces it wholesale when the same source overrides again, which is the entire preview mechanism: no stacking bookkeeping and no way to leak a half-applied palette. Because layers compose per token, theme × accent × font × scale costs the sum of those lists rather than their product. The accent drives the send button — the one control prominent enough to carry a theme's identity — and because that button hardcodes a white icon, each accent passes through a solver that finds the nearest shade clearing 3:1 both for the icon on the fill and for the fill against the page; an accent that already clears both is used unchanged. The font layer is two tokens because one choice drives both faces: all ~200 of the harness's composed typography tokens read `var(--dsw-font-family)`, and `--ds-font-family-code` covers code. Both non-default faces are bundled as data URLs, so they render identically everywhere with nothing to install. A **contrast** slider pushes surfaces and text apart while leaving the palette's accent and state colours untouched, and a **UI scale** slider zooms the whole interface.
+
+Selection rides a **cookie**, deliberately. DSH Desktop serves the UI from a new ephemeral port every launch and `localStorage` is origin-scoped, so a localStorage-only plugin forgets your theme on every Desktop restart — the same trap that gave `dsh-mission-control` its host half. Cookies are not isolated by port, so the choice survives the relaunch; localStorage is kept as a fallback. The settings document was rejected because its writes silently no-op on a non-loopback connection. A first-paint bootstrap inlined by the tiny host half stops the shell flashing the stock palette on load — measured at roughly half a second without it, and it reads the cookie first so the fix holds on the Desktop too.
+
+**Adding a theme is data.** One file of ~15 colours per variant in `src/themes/`, one line in the catalogue; the builder derives every custom property the harness reads, and the test suite enforces WCAG contrast floors on all of them and reports every failure at once. See the [package README](plugins/dsh-theme#adding-a-theme).
+
+---
+
 Every package carries an `AGENTS.md` with its endpoints, mount row, dev loop and a verification recipe. See [AGENTS.md](AGENTS.md) for the repo as a whole.
 
 ## Install a plugin
 
-All seven are on npm, and each declares `dsh.bundle` — so one command installs **and**
+All eight are on npm, and each declares `dsh.bundle` — so one command installs **and**
 mounts it. `dsh plugin` forwards to pnpm inside the profile directory:
 
 > **Profile names carry templates.** `dsh plugin --profile <name> add ...` scaffolds a new

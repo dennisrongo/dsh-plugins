@@ -1,6 +1,6 @@
 # AGENTS.md — dsh-plugins
 
-Seven plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under `plugins/`
+Eight plugins for DeepSeek Harness (dsh), one pnpm workspace. Each package under `plugins/`
 is self-contained: its own `package.json`, exports map, build and tests. Per-package
 `AGENTS.md` files cover endpoints and verification; this file covers the repo.
 
@@ -25,13 +25,17 @@ plugins/dsh-mission-control host + client — fleet dashboard overlay, service k
 plugins/dsh-headless-plus CLI app      — --model/--resume/--continue
 plugins/dsh-superpowers  host          — system-prompt section
 plugins/dsh-skills       host          — skill provider over @dennisrongo/skills
-scripts/                 verify.mjs, anchor.mjs, link-superpowers-skills.mjs (portable)
+plugins/dsh-theme        client + host — Themes settings page; four ctx.theme override
+                         layers (palette/accent/font/scale) + an inlined first-paint
+                         script. Bundles two OFL fonts as data URLs.
+scripts/                 verify.mjs, anchor.mjs, check-type-scale.mjs, check-tokens.mjs,
+                         link-superpowers-skills.mjs (all portable)
                          dev-link.ps1 (Windows: anchors + junctions into profiles)
 ```
 
 Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package.
 
-All seven are scoped `@dennisrongo/` and published. The folder name is not the package name: a
+All eight are scoped `@dennisrongo/` and published. The folder name is not the package name: a
 `cordis.patch.yml` row takes the **package** name (`@dennisrongo/dsh-superpowers`), while the
 folder stays `plugins/dsh-superpowers`. Keep the scope: the bare `dsh-superpowers` on npm is
 an unrelated plugin by another author, and unscoped generic names in this space get taken.
@@ -98,6 +102,30 @@ testing a stale bundle.
 - **Line endings are pinned to LF** by the root `.gitattributes` (`.ps1` excepted).
   `lib/client.js` is served byte-for-byte to the browser and asserted on by the smoke tests,
   so letting git rewrite them per-platform would change what ships.
+- **A browser preference that must survive a DSH Desktop restart cannot live in
+  `localStorage`.** The Desktop serves the UI from a new ephemeral port every launch, and an
+  origin includes the port, so localStorage is empty on each start — this is what gave
+  `dsh-mission-control` its host half. A host-owned cell is one answer; a **cookie** is the
+  cheaper one, because cookies are not isolated by port (RFC 6265 §8.5) and need no host half
+  at all. `dsh-theme` uses a cookie, with localStorage as a fallback. Anything inlined into
+  the index for pre-paint work has to read the same store, or it will work on the CLI and
+  fail on the Desktop.
+- **A browser preference belongs in the browser, not the settings document.**
+  `ctx.settingsScope.bind()` constructs its controller with
+  `connection.isLoopback ? 'host' : 'memory'`, and a memory-mode scope's writes silently
+  no-op — so a remote browser loses the preference with no error anywhere. The same gate
+  inverts a related trap: `ui-theme`'s `ThemeRuntime.adopt()` resets the theme preference to
+  the durable value on any settings-scope change, and the scope's mirror re-reads on ANY
+  `settings/document-updated`, so a non-built-in `setTheme(id)` gets snapped back — but only
+  on loopback, meaning it tests clean remotely and fails on localhost. `dsh-theme` avoids
+  both by using token override layers and `localStorage`; see its `AGENTS.md`.
+- **In `run_code`, only what you `return` or `console.log` reaches you.** A bare
+  `await tools.skill({ name })` loads the skill and discards it — the result is
+  `(run_code completed with no output)` and the content never enters context. Return or
+  print the value. And never probe the filesystem for skill files (`~/.claude/skills`,
+  `~/.agents/skills`) instead of calling the `skill` tool: the provider root is the
+  authoritative location, and a guessed path is a prior, not a fact. (Grok 4.6 hit both in
+  one turn: fire-and-forget skill loads, then a glob of the wrong hardcoded path.)
 
 ## Dev loop
 
@@ -152,5 +180,44 @@ Both surfaces need checking when resolution changes: the CLI, and DSH Desktop wi
 
 Commits use `feat:` / `fix:` / `docs:` / `chore:` prefixes. JSDoc on exported functions,
 explaining *why* where the reason is not obvious from the signature. Client CSS classes are
-namespaced per plugin (`dshtd-`, `dshgit-`, `dshwx-`, `dshmc-`). Clickable controls are real
-`<button>`s. Keep accessibility affordances that are already there — they are deliberate.
+namespaced per plugin (`dshtd-`, `dshgit-`, `dshwx-`, `dshmc-`, `dshth-`). Clickable controls
+are real `<button>`s. Keep accessibility affordances that are already there — they are
+deliberate.
+
+**Every `var(--dsw-*)` must name a token the harness actually defines.** A misspelt one
+never errors: CSS falls back to the second argument, so it renders a plausible colour forever
+and silently stops following the theme. Ten such references were shipped across three plugins
+before this was checked — `state-warning-primary` (real: `state-warn-primary`),
+`state-info-primary` (`state-business-primary`), `label-on-accent`
+(`label-primary-foreground`), `bg-l1` (`bg-layer-1`), `font-mono`/`font-family-mono`
+(`--ds-font-family-code`, so git diffs and mission-control's tool output never followed the
+code font), and `border-focus`, which does not exist at all.
+`node scripts/check-tokens.mjs` enforces it against the installed harness's own stylesheet,
+and skips when no dsh is installed. Define your own custom properties with a plugin prefix
+(`--td-`, `--mc-`, `--dshth-`) — those are ignored by the check.
+
+**Never gate a plugin's palette on `prefers-color-scheme`.** That follows the OS, not the
+app, so a light theme on a dark-mode machine renders dark. `ui-layout`'s ThemePresenter sets
+`documentElement.style.colorScheme` from the resolved theme and toggles
+`body[data-ds-dark-theme]` — key off those. `dsh-todo` carried the OS query for both its
+select popups and its option rows, with a comment asserting the shell "never sets a
+color-scheme to inherit from", which was simply untrue.
+
+**One type scale across every plugin: 11 / 12 / 13 / 14 / 16 / 20 / 24 px.** Those are the
+sizes the harness's own typography tokens define, so a plugin on this ladder matches the
+shell it renders inside. `node scripts/check-type-scale.mjs` enforces it over every
+`plugins/*/src` file; it runs from the root `test` script and the pre-commit hook.
+
+Use literal px, not `font: var(--dsw-font-*)`. Counter-intuitive, but measured: the harness
+sets `font-size` literally in **305** places and through a token in **44**, so the tokens are
+not what dsh's own UI follows — matching the values is what buys visual consistency, and
+`dsh-todo`'s size probe greps for literals. Line-height is deliberately NOT checked; it stays
+tuned per layout, and is the lever for density.
+
+State a derived step as its own custom property; never `calc()` one off another. Arithmetic on
+a scale step lands between rungs by construction (`11px - 1px` = 10px), and the checker rejects
+`font-size: calc(...)` for that reason. It also resolves one level of `var()`, because the
+first version of this rule only read the literal at the `font-size:` declaration and missed
+four sizes parked in custom properties. Nothing stops a plugin drifting on its own, which is exactly what happened:
+`dsh-mission-control` had grown to 9–15px with half-pixel steps (10.5, 11.5, 12.5) and read
+as a different application beside dsh's chrome.
