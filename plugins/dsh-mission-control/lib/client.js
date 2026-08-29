@@ -15144,6 +15144,13 @@ var PANEL_STYLES = `
      the rail, a size the shell ladder does not have. */
   --mc-ctl-font-sm: 11px;
   --mc-ease: var(--ds-ease-in-out, cubic-bezier(0.4, 0, 0.2, 1));
+  /* Breathing room the frame reservation adds BESIDE the rail's width (see the
+     paddingRight effect). The rail itself stays flush to the viewport edge;
+     the gap keeps docked conversation views off its seam \u2014 the centered chat
+     supplies its own margins, but full-width plugin views (Todo, Source
+     Control) would otherwise run right up against the panel. Read back
+     through getComputedStyle so the stylesheet and the effect cannot drift. */
+  --mc-dock-gap: 16px;
 }
 /* Docked right rail. The shell frame is a grid (sidebar | conversation |
    details) whose side seats are single-occupant and already filled, so this
@@ -18715,7 +18722,8 @@ function MissionControl({ ctx }) {
     frame.setAttribute("data-dshmc-reserved", "");
     const apply2 = () => {
       const w = panel.getBoundingClientRect().width;
-      frame.style.paddingRight = w > 0 ? `${Math.round(w)}px` : "";
+      const gap = parseFloat(getComputedStyle(panel).getPropertyValue("--mc-dock-gap")) || 0;
+      frame.style.paddingRight = w > 0 ? `${Math.round(w + gap)}px` : "";
     };
     apply2();
     const ro = new ResizeObserver(apply2);

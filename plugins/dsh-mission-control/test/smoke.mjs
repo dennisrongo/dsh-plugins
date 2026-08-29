@@ -64,6 +64,13 @@ assert.equal(typeof exports.packPomodoroEnvelope, 'function', 'exports packPomod
 assert.equal(typeof exports.parsePomodoroEnvelope, 'function', 'exports parsePomodoroEnvelope')
 const clientSrc = readFileSync(join(root, 'lib/client.js'), 'utf8')
 assert.ok(clientSrc.includes('dshMissionControl'), 'client mounts the host state remote')
+// The docked rail reserves its width in the shell frame so conversation views
+// reflow instead of sliding under it — PLUS a gutter. The chat never notices
+// (its column is centered), but full-width plugin views (Todo, Source
+// Control) otherwise run flush against the rail's seam while the chat keeps
+// its margins. The gap is a CSS custom property so the effect and the
+// stylesheet cannot drift apart.
+assert.ok(clientSrc.includes('--mc-dock-gap'), 'docked rail reserves a gutter beside its width')
 
 // The inject list is load-bearing: cordis THROWS on a get of a service the
 // plugin did not declare, so an omission is not a soft degradation — it fails

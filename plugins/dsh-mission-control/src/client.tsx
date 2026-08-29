@@ -1119,6 +1119,13 @@ const PANEL_STYLES = `
      the rail, a size the shell ladder does not have. */
   --mc-ctl-font-sm: 11px;
   --mc-ease: var(--ds-ease-in-out, cubic-bezier(0.4, 0, 0.2, 1));
+  /* Breathing room the frame reservation adds BESIDE the rail's width (see the
+     paddingRight effect). The rail itself stays flush to the viewport edge;
+     the gap keeps docked conversation views off its seam — the centered chat
+     supplies its own margins, but full-width plugin views (Todo, Source
+     Control) would otherwise run right up against the panel. Read back
+     through getComputedStyle so the stylesheet and the effect cannot drift. */
+  --mc-dock-gap: 16px;
 }
 /* Docked right rail. The shell frame is a grid (sidebar | conversation |
    details) whose side seats are single-occupant and already filled, so this
@@ -5774,9 +5781,15 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
     frame.setAttribute('data-dshmc-reserved', '')
     const apply = (): void => {
       // Measure the rendered rail: the width is media-query dependent, so a
-      // hardcoded 400 would be wrong on a narrow viewport.
+      // hardcoded 400 would be wrong on a narrow viewport. The reservation is
+      // the rail's width PLUS --mc-dock-gap: without the gutter a full-width
+      // conversation view (a plugin tab such as Todo or Source Control) ends
+      // flush against the rail's seam, while the centered chat keeps its
+      // margins — the panel then reads as sitting on top of the tab's
+      // components even though nothing geometrically overlaps.
       const w = panel.getBoundingClientRect().width
-      frame.style.paddingRight = w > 0 ? `${Math.round(w)}px` : ''
+      const gap = parseFloat(getComputedStyle(panel).getPropertyValue('--mc-dock-gap')) || 0
+      frame.style.paddingRight = w > 0 ? `${Math.round(w + gap)}px` : ''
     }
     apply()
     const ro = new ResizeObserver(apply)

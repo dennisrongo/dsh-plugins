@@ -56,7 +56,12 @@ Two surfaces share one component tree, and that is why control sizing is tokenis
 than hardcoded:
 
 - **The docked panel** — a 400px right rail the shell reflows around. Compact controls are
-  appropriate here.
+  appropriate here. The frame reservation pads the shell by the rail's width PLUS
+  `--mc-dock-gap` (16px): the centered chat supplies its own margins, but full-width
+  `conversation.view` plugins (Todo, Source Control) would otherwise run flush against
+  the rail's seam and read as if the panel sits on top of their components. The effect
+  reads the gap back through `getComputedStyle`, so the stylesheet and the reservation
+  cannot drift; `test/smoke.mjs` pins the marker.
 - **Stage** — a full-screen takeover (`inset: 0`) holding a live grid of tiles. It is
   layered *over* the panel modes and is deliberately **not** a fourth mode, so exiting
   restores the tab you came from. Membership *and order* come from `stageRows`:
