@@ -1102,9 +1102,22 @@ const PANEL_STYLES = `
   --mc-blue: var(--dsw-alias-state-business-primary, #4176e6);
   --mc-scrollbar: var(--dsw-alias-scrollbar-bg-l2, #545557);
   --mc-scrollbar-hover: var(--dsw-alias-scrollbar-hover-l2, #65676b);
-  /* One message text size across every tile surface — grid + stage, all kinds. */
+  /* One message text size across every tile surface — grid + stage, all kinds.
+     The small and large steps are stated rather than derived with calc(±1px):
+     arithmetic on a scale step lands BETWEEN rungs (11px - 1px = 10px), which
+     is one of the ways this panel drifted off the shell ladder. */
   --mc-msg-size: 11px;
+  --mc-msg-sm: 11px;
+  --mc-msg-lg: 12px;
   --mc-msg-line: 1.45;
+  /* The close button's multiplication-sign glyph draws much smaller than its
+     font-size, so it takes its own ladder step instead of deriving one from the
+     control font — deriving it produced 18.5px. */
+  --mc-close-glyph: 20px;
+  /* Caption step for meta chips and footers. Stated for the same reason as the
+     message steps: subtracting 2px from the control font resolved to 10px on
+     the rail, a size the shell ladder does not have. */
+  --mc-ctl-font-sm: 11px;
   --mc-ease: var(--ds-ease-in-out, cubic-bezier(0.4, 0, 0.2, 1));
 }
 /* Docked right rail. The shell frame is a grid (sidebar | conversation |
@@ -1194,7 +1207,7 @@ body[data-ds-dark-theme] .dshmc {
      are appropriate; Stage is a full-screen surface, so it overrides these to
      comfortable sizes rather than inheriting the rail's cramped ones. */
   --mc-ctl-h: 28px;
-  --mc-ctl-font: 11.5px;
+  --mc-ctl-font: 12px;
 }
 .dshmc-stage {
   --mc-ctl-h: 32px;
@@ -1202,7 +1215,9 @@ body[data-ds-dark-theme] .dshmc {
   /* Message text too: 11px is tuned for the 400px rail's narrow tiles, and on a
      full-screen grid of 420px-wide tiles it reads as undersized next to the
      standard-size controls. Overridden here so the panel keeps its own scale. */
-  --mc-msg-size: 13.5px;
+  --mc-msg-size: 14px;
+  --mc-msg-sm: 13px;
+  --mc-msg-lg: 16px;
   --mc-msg-line: 1.55;
 }
 body.dsh-desktop-windows-titlebar-layout .dshmc,
@@ -1216,7 +1231,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   padding: calc(8px + var(--mc-titlebar-h)) 10px 8px;
   border-bottom: 1px solid var(--mc-border-subtle);
 }
-.dshmc-sub { color: var(--mc-text-3); font-size: 11.5px; margin-top: 1px; }
+.dshmc-sub { color: var(--mc-text-3); font-size: 12px; margin-top: 1px; }
 .dshmc-sub b { color: var(--mc-text-2); font-weight: 500; }
 /* Stage-bar exit button only — the panel header no longer has a close button
    (it collapses via the panel-right icon instead). The Stage bar supplies its
@@ -1231,7 +1246,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   /* The multiplication-sign glyph draws much smaller than its font-size, so it
      needs a deliberate bump to look the same weight as the text controls it
      sits beside — matching their font-size alone leaves it visibly small. */
-  font-size: calc(var(--mc-ctl-font) + 7px); line-height: 1;
+  font-size: var(--mc-close-glyph); line-height: 1;
   transition: background 0.15s var(--mc-ease), color 0.15s var(--mc-ease);
 }
 .dshmc-close:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
@@ -1298,7 +1313,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   justify-content: space-between;
 }
 .dshmc-settings-label {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--mc-text-2);
   min-width: 0;
 }
@@ -1312,12 +1327,12 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   border: 1px solid var(--mc-border);
   border-radius: 7px;
   padding: 3px 7px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-family: inherit;
   cursor: pointer;
 }
 .dshmc-settings-select:focus-visible { outline: 2px solid var(--mc-accent); outline-offset: 1px; }
-.dshmc-settings-hint { margin-top: 5px; font-size: 10.5px; color: var(--mc-text-4); }
+.dshmc-settings-hint { margin-top: 5px; font-size: 11px; color: var(--mc-text-4); }
 
 /* "Show N more" affordance under a trimmed workspace group */
 .dshmc-group-more {
@@ -1433,7 +1448,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10.5px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--mc-text-4);
@@ -1459,7 +1474,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   50% { transform: scale(1.25); box-shadow: 0 0 0 4px color-mix(in srgb, var(--mc-pomo-hue) 0%, transparent); }
 }
 .dshmc-pomo-clock {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 500;
   color: var(--mc-text-3);
   font-variant-numeric: tabular-nums;
@@ -1556,7 +1571,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   border: 1px solid var(--mc-border);
   border-radius: 7px;
   padding: 3px 7px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-family: inherit;
   font-variant-numeric: tabular-nums;
 }
@@ -1580,7 +1595,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   margin: 9px 0 7px;
   border-top: 1px solid var(--mc-border-subtle);
   padding-top: 8px;
-  font-size: 10.5px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--mc-text-4);
@@ -1602,7 +1617,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
   border: 0; border-radius: 7px;
   background: transparent;
   color: var(--mc-text-3);
-  font: inherit; font-size: 11.5px; font-weight: 500;
+  font: inherit; font-size: 12px; font-weight: 500;
   padding: 4px 10px;
   text-align: center;
   cursor: pointer;
@@ -1613,7 +1628,7 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
 body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); box-shadow: none; }
 .dshmc-mode-badge {
   margin-left: 4px;
-  font-size: 9.5px;
+  font-size: 11px;
   color: var(--mc-amber-label);
   font-variant-numeric: tabular-nums;
 }
@@ -1635,11 +1650,11 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
   transition: border-color 0.25s var(--mc-ease), box-shadow 0.25s var(--mc-ease);
 }
 .dshmc-stat-value {
-  font-weight: 500; font-size: 15px; letter-spacing: -0.01em;
+  font-weight: 500; font-size: 16px; letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
   transition: color 0.25s var(--mc-ease);
 }
-.dshmc-stat-label { color: var(--mc-text-4); font-size: 10.5px; margin-top: 2px; }
+.dshmc-stat-label { color: var(--mc-text-4); font-size: 11px; margin-top: 2px; }
 .dshmc-stat.is-live { border-color: color-mix(in srgb, var(--mc-green) 35%, transparent); }
 .dshmc-stat.is-live .dshmc-stat-value { color: var(--mc-green); }
 .dshmc-stat.is-waiting-live { border-color: color-mix(in srgb, var(--mc-amber) 35%, transparent); }
@@ -1719,7 +1734,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
 
 /* Section labels */
 .dshmc-section {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--mc-text-4);
   text-transform: uppercase;
@@ -1745,7 +1760,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
 .dshmc-group-header:hover { background: var(--mc-surface-hover); }
 .dshmc-caret {
   color: var(--mc-text-4);
-  font-size: 9px;
+  font-size: 11px;
   transition: transform 0.18s var(--mc-ease);
   display: inline-block;
 }
@@ -1755,12 +1770,12 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .dshmc-group-count {
-  font-size: 10px; color: var(--mc-text-4);
+  font-size: 11px; color: var(--mc-text-4);
   background: var(--mc-surface-hover);
   border-radius: 999px; padding: 1px 7px;
   font-variant-numeric: tabular-nums;
 }
-.dshmc-group-live { font-size: 10px; color: var(--mc-green); margin-left: 1px; font-weight: 500; position: relative; }
+.dshmc-group-live { font-size: 11px; color: var(--mc-green); margin-left: 1px; font-weight: 500; position: relative; }
 .dshmc-group-live::before {
   content: '';
   width: 5px; height: 5px; border-radius: 50%;
@@ -1903,7 +1918,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
   border: none;
   background: transparent;
   color: var(--mc-text-4);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1;
   cursor: pointer;
   border-radius: 4px;
@@ -1935,13 +1950,13 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
 }
 .dshmc-time {
   flex: none;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--mc-text-4);
   font-variant-numeric: tabular-nums;
 }
 .dshmc-tag {
   flex: none;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   padding: 1.5px 7px;
   border-radius: 999px;
@@ -1958,7 +1973,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
 }
 .dshmc-rate {
   flex: none;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--mc-green);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
@@ -2015,7 +2030,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
 .dshmc-inbox-item.is-attention .dshmc-inbox-kind { color: var(--mc-red); }
 .dshmc-inbox-note {
   color: var(--mc-text-4);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.45;
   margin: 6px 2px 0;
 }
@@ -2026,7 +2041,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
 .dshmc-q { margin: 7px 0 9px; }
 .dshmc-q + .dshmc-q { border-top: 1px solid var(--mc-border-subtle); padding-top: 9px; }
 .dshmc-q-header {
-  font-size: 10.5px; font-weight: 500;
+  font-size: 11px; font-weight: 500;
   color: var(--mc-text-4);
   text-transform: uppercase; letter-spacing: 0.04em;
   margin-bottom: 2px;
@@ -2042,7 +2057,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
   color: var(--mc-text-2);
   border-radius: 7px;
   padding: 6px 9px;
-  font: inherit; font-size: 11.5px;
+  font: inherit; font-size: 12px;
   cursor: pointer;
   transition: border-color 0.12s var(--mc-ease), background 0.12s var(--mc-ease);
 }
@@ -2055,7 +2070,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
 }
 .dshmc-q-option:disabled { opacity: 0.55; cursor: default; }
 .dshmc-q-option-label { font-weight: 500; }
-.dshmc-q-option-desc { color: var(--mc-text-3); font-size: 10.5px; line-height: 1.4; }
+.dshmc-q-option-desc { color: var(--mc-text-3); font-size: 11px; line-height: 1.4; }
 .dshmc-q-custom {
   width: 100%;
   box-sizing: border-box;
@@ -2064,7 +2079,7 @@ body[data-ds-dark-theme] .dshmc-mode.on { background: var(--mc-surface-active); 
   color: var(--mc-text-2);
   border-radius: 7px;
   padding: 5px 8px;
-  font: inherit; font-size: 11.5px;
+  font: inherit; font-size: 12px;
   margin-top: 2px;
 }
 .dshmc-q-custom:focus { outline: none; border-color: var(--mc-accent); }
@@ -2148,7 +2163,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-rowmenu-item.danger { color: var(--mc-red); }
 .dshmc-rowmenu-item.danger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger, rgba(239,68,68,0.08)); color: var(--mc-red); }
 .dshmc-rowmenu-divider { height: 1px; margin: 4px 6px; background: var(--mc-border-subtle); }
-.dshmc-rowmenu-note { padding: 6px 8px 4px; color: var(--mc-text-4); font-size: 10.5px; }
+.dshmc-rowmenu-note { padding: 6px 8px 4px; color: var(--mc-text-4); font-size: 11px; }
 .dshmc-rowmenu-error { padding: 6px 8px 4px; color: var(--mc-red); font-size: 11px; }
 .dshmc-rowmenu-send {
   display: flex; flex-direction: column; gap: 6px;
@@ -2169,13 +2184,13 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-rowmenu-send textarea:focus,
 .dshmc-rename-input:focus { outline: none; border-color: var(--mc-accent); }
 .dshmc-rowmenu-send-row { display: flex; align-items: center; gap: 6px; }
-.dshmc-rowmenu-send-mode { color: var(--mc-text-4); font-size: 10.5px; }
+.dshmc-rowmenu-send-mode { color: var(--mc-text-4); font-size: 11px; }
 .dshmc-rowmenu-send-btn {
   margin-left: auto;
   border: 0; border-radius: 7px;
   background: var(--dsw-alias-button-info-fill, var(--mc-accent));
   color: var(--mc-on-accent);
-  font: inherit; font-size: 11.5px; font-weight: 500;
+  font: inherit; font-size: 12px; font-weight: 500;
   padding: 4px 10px;
   cursor: pointer;
 }
@@ -2191,7 +2206,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   border-radius: 9px;
   background: var(--mc-input);
   color: var(--mc-text);
-  font: inherit; font-size: 12.5px;
+  font: inherit; font-size: 13px;
   padding: 6px 10px;
 }
 .dshmc-search-input::placeholder { color: var(--mc-text-4); }
@@ -2203,8 +2218,8 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   cursor: pointer;
 }
 .dshmc-search-result:hover { background: var(--mc-surface-hover); }
-.dshmc-search-result-title { font-size: 12.5px; color: var(--mc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dshmc-search-result-snippet { font-size: 10.5px; color: var(--mc-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dshmc-search-result-title { font-size: 13px; color: var(--mc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dshmc-search-result-snippet { font-size: 11px; color: var(--mc-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Event feed */
 .dshmc-feed { display: flex; flex-direction: column; padding: 4px 2px 14px; }
@@ -2221,13 +2236,13 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-feed-item:hover { background: var(--mc-surface-hover); }
 .dshmc-feed-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .dshmc-feed-title {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--mc-text-2);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .dshmc-feed-item:hover .dshmc-feed-title { color: var(--mc-text); }
 .dshmc-feed-verb {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--mc-text-4);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -2302,19 +2317,19 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
    the same conversation. Everything scales with the surface now. */
 .dshmc-md h1, .dshmc-md h2, .dshmc-md h3, .dshmc-md h4 {
   margin: 8px 0 4px;
-  font-size: calc(var(--mc-msg-size) + 1px);
+  font-size: var(--mc-msg-lg);
   line-height: 1.4;
 }
 .dshmc-md ul, .dshmc-md ol { margin: 4px 0; padding-left: 18px; }
-.dshmc-md pre { margin: 6px 0; font-size: calc(var(--mc-msg-size) - 1px); }
-.dshmc-md code { font-size: calc(var(--mc-msg-size) - 1px); }
-.dshmc-md table { font-size: calc(var(--mc-msg-size) - 1px); }
+.dshmc-md pre { margin: 6px 0; font-size: var(--mc-msg-sm); }
+.dshmc-md code { font-size: var(--mc-msg-sm); }
+.dshmc-md table { font-size: var(--mc-msg-sm); }
 .dshmc-tile-foot {
   display: flex; align-items: center; gap: 6px;
   padding: 5px 9px;
   border-top: 1px solid var(--mc-border-subtle);
   color: var(--mc-text-4);
-  font-size: 10px;
+  font-size: 11px;
 }
 .dshmc-tile-foot .dshmc-time { margin-left: auto; }
 /* Live LLM activity line: phase + elapsed (+ tok/s) under a tile's body */
@@ -2322,7 +2337,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   display: flex; align-items: center; gap: 6px;
   padding: 3px 9px;
   border-top: 1px solid var(--mc-border-subtle);
-  font-size: 10px; line-height: 1.4;
+  font-size: 11px; line-height: 1.4;
   color: var(--mc-text-3);
   min-width: 0;
 }
@@ -2344,10 +2359,10 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-tool-head:focus-visible { outline: 1px solid var(--mc-accent); outline-offset: -1px; }
 .dshmc-tool-caret { flex: none; width: 1em; color: var(--mc-text-4); }
 .dshmc-tool-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dshmc-tool-badge { margin-left: auto; flex: none; color: var(--mc-text-4); font-size: 10px; font-variant-numeric: tabular-nums; }
+.dshmc-tool-badge { margin-left: auto; flex: none; color: var(--mc-text-4); font-size: 11px; font-variant-numeric: tabular-nums; }
 .dshmc-tool-badge.running { color: var(--mc-amber-label); }
 .dshmc-tool-badge.failed { color: var(--mc-red); }
-.dshmc-tool-subs { flex: none; color: var(--mc-text-4); font-size: 10px; }
+.dshmc-tool-subs { flex: none; color: var(--mc-text-4); font-size: 11px; }
 .dshmc-tool-body {
   display: flex; flex-direction: column; gap: 4px;
   border-top: 1px solid var(--mc-border-subtle);
@@ -2355,18 +2370,18 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 }
 .dshmc-tool-args, .dshmc-tool-result {
   margin: 0; white-space: pre-wrap; word-break: break-word;
-  font-family: var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
-  font-size: 10px; line-height: 1.45; color: var(--mc-text-2);
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 11px; line-height: 1.45; color: var(--mc-text-2);
   max-height: 140px; overflow-y: auto;
   scrollbar-width: thin; scrollbar-color: var(--mc-scrollbar) transparent;
 }
-.dshmc-tool-error { color: var(--mc-red); font-size: 10px; word-break: break-word; }
-.dshmc-tool-none { color: var(--mc-text-4); font-size: 10px; }
+.dshmc-tool-error { color: var(--mc-red); font-size: 11px; word-break: break-word; }
+.dshmc-tool-none { color: var(--mc-text-4); font-size: 11px; }
 .dshmc-tile-stop {
   border: 0; border-radius: 6px;
   background: color-mix(in srgb, var(--mc-red) 14%, transparent);
   color: var(--mc-red);
-  font: inherit; font-size: 10px; font-weight: 500;
+  font: inherit; font-size: 11px; font-weight: 500;
   padding: 1px 7px;
   cursor: pointer;
 }
@@ -2450,7 +2465,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   scrollbar-width: thin;
   scrollbar-color: var(--mc-scrollbar) transparent;
 }
-.dshmc-stage-empty { color: var(--mc-text-4); font-size: 12.5px; padding: 24px 16px; }
+.dshmc-stage-empty { color: var(--mc-text-4); font-size: 13px; padding: 24px 16px; }
 .dshmc-stage-tile {
   display: flex;
   flex-direction: column;
@@ -2483,7 +2498,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   border-radius: 6px;
   padding: 1px 6px;
   color: var(--mc-text-4);
-  font-size: calc(var(--mc-ctl-font) - 2px);
+  font-size: var(--mc-ctl-font-sm);
 }
 /* To-do strip: docked directly above the composer, mirroring where the stock
    chat renders its to-do panel. Border is on TOP because it now separates the
@@ -2500,7 +2515,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-todos-head {
   display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
   border: 0; background: none; color: var(--mc-text-2);
-  font: inherit; font-size: calc(var(--mc-msg-size) - 1px); text-align: left;
+  font: inherit; font-size: var(--mc-msg-sm); text-align: left;
   padding: 5px 12px; cursor: pointer;
 }
 .dshmc-todos-head:hover { background: var(--mc-surface-hover); }
@@ -2521,7 +2536,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 }
 .dshmc-todo-item {
   display: flex; align-items: baseline; gap: 6px;
-  font-size: calc(var(--mc-msg-size) - 1px); line-height: var(--mc-msg-line);
+  font-size: var(--mc-msg-sm); line-height: var(--mc-msg-line);
   color: var(--mc-text-3);
 }
 .dshmc-todo-glyph { flex: none; width: 1em; text-align: center; }
@@ -2586,7 +2601,7 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   padding: 6px 12px;
   border-top: 1px solid var(--mc-border-subtle);
   color: var(--mc-text-4);
-  font-size: calc(var(--mc-ctl-font) - 2px);
+  font-size: var(--mc-ctl-font-sm);
   flex: none;
 }
 /* A wait rendered inside its tile — reuses the inbox card, re-scoped to the

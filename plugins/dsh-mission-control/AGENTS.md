@@ -196,6 +196,20 @@ a new `./typert` export still needs a full profile restart.
 
 ## Gotchas
 
+- **Text sizes are on the repo type scale (11/12/13/14/16), not the panel's old dense one.**
+  This panel had drifted to 9–15px with half-pixel steps (10.5, 11.5, 12.5) — smaller than
+  anything dsh itself ships and off its ladder entirely, so beside the shell's chrome it read
+  as a different application rather than a denser one. 42 literal declarations were rounded to
+  the nearest step, and a second pass caught four more hiding behind indirection —
+  `--mc-ctl-font: 11.5px` and `--mc-msg-size: 13.5px` consumed as `font-size: var(…)`, plus
+  seven `calc(var(…) ± Npx)` derivations that landed between rungs by construction (11px − 1px
+  is 10px). Derived steps are now their own custom properties (`--mc-msg-sm`, `--mc-msg-lg`,
+  `--mc-ctl-font-sm`, `--mc-close-glyph`) rather than arithmetic. The 400px rail was
+  re-measured afterwards: 73 elements, zero horizontal overflow.
+  Do not "restore" the tighter sizes to win back a few pixels:
+  `scripts/check-type-scale.mjs` fails the build and the pre-commit hook. Line-height is not
+  policed, so that is the lever for density — several rows already use unitless values that
+  scale with the size.
 - CSS classes are namespaced `dshmc-`. `test/installed-copy.mjs` asserts on specific marker
   strings (`dshmc-stats`, `dshmc-tool-head`, `--mc-msg-size`, …), so renaming a class breaks
   tests by design — update both together. Removing a feature means removing its markers too:
