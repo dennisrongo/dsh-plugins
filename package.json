@@ -8,7 +8,11 @@
   "scripts": {
     "build": "pnpm -r --if-present run build",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "pnpm -r --if-present run test",
+    "test": "node scripts/check-type-scale.mjs && node scripts/check-tokens.mjs && pnpm -r --if-present run test",
+    "// check:type-scale": "Every plugin's UI text must sit on the harness's 11/12/13/14/16/20/24 ladder. Each plugin ships its own inline CSS, so nothing structural keeps them together.",
+    "check:type-scale": "node scripts/check-type-scale.mjs",
+    "// check:tokens": "Every var(--dsw-*) a plugin uses must be a token the harness defines. A misspelt name silently uses its fallback forever and stops following the theme.",
+    "check:tokens": "node scripts/check-tokens.mjs",
     "// prepare": "Point git at the versioned hooks. .git/hooks is not cloned, so without this a fresh clone silently has no pre-commit gate. Tolerates non-repo checkouts (tarball installs) rather than failing the install.",
     "prepare": "git config core.hooksPath .githooks || true"
   }

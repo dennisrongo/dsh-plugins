@@ -43,6 +43,15 @@ after=$(mktemp)
 trap "rm -f '$before' '$after'" EXIT
 git diff --name-only | sort > "$before"
 
+# --- One type scale across every plugin. Each ships its own inline CSS, so
+# nothing structural stops them drifting apart; this is what keeps a new
+# plugin (or a new rule) on the harness's 11/12/13/14/16 ladder.
+node scripts/check-type-scale.mjs
+
+# --- A misspelt --dsw-* token never errors; it silently falls back to its
+# hardcoded second argument and stops following the theme forever.
+node scripts/check-tokens.mjs
+
 pnpm -r --if-present run typecheck
 # Each plugin's `test` script builds first, so this also regenerates lib/.
 pnpm -r --if-present run test
