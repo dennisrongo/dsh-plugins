@@ -63,7 +63,7 @@ than hardcoded:
   reads the gap back through `getComputedStyle`, so the stylesheet and the reservation
   cannot drift; `test/smoke.mjs` pins the marker.
 - **Stage** — a full-screen takeover (`inset: 0`) holding a live grid of tiles. It is
-  layered *over* the panel modes and is deliberately **not** a fourth mode, so exiting
+  layered *over* the panel modes and is deliberately **not** a third mode, so exiting
   restores the tab you came from. Membership *and order* come from `stageRows`:
   running/waiting roots plus anything touched inside the activity window (`30m`/`2h`), most
   active first. A tile answers a pending permission **in place** through the same

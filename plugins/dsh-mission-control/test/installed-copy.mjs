@@ -118,6 +118,9 @@ async function checkInstall({ dir: installed, name: profileName }) {
   // sparkline were removed: the four-card stats strip replaced the counts, and
   // token burn now reads as a live tok/s rate rather than a retained series.
   assert.ok(!code.includes('dshmc-burn-'), 'installed bundle has no leftover burn block')
+  // The activity feed tab was removed along with its diff logic.
+  assert.ok(!code.includes('dshmc-feed'), 'installed bundle has no leftover feed styles')
+  assert.ok(!code.includes('diffFleetEvents'), 'installed bundle has no leftover feed diff logic')
   assert.ok(code.includes('dshmc-stats'), 'installed bundle has the stats strip')
   assert.ok(code.includes('dshmc-stat-value'), 'installed bundle renders stat cards')
   assert.ok(code.includes('dshmc-rate'), 'installed bundle reports the fleet output rate')

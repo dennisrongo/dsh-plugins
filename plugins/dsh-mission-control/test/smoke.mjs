@@ -71,6 +71,11 @@ assert.ok(clientSrc.includes('dshMissionControl'), 'client mounts the host state
 // its margins. The gap is a CSS custom property so the effect and the
 // stylesheet cannot drift apart.
 assert.ok(clientSrc.includes('--mc-dock-gap'), 'docked rail reserves a gutter beside its width')
+// The activity feed (Feed tab, FeedView, diffFleetEvents) was removed: pin its
+// absence so the markers cannot rot back in the way dshmc-burn-row once did.
+assert.ok(!clientSrc.includes('dshmc-feed'), 'no leftover feed styles in the bundle')
+assert.ok(!clientSrc.includes('diffFleetEvents'), 'no leftover feed diff logic in the bundle')
+assert.equal(typeof exports.diffFleetEvents, 'undefined', 'diffFleetEvents is no longer exported')
 
 // The inject list is load-bearing: cordis THROWS on a get of a service the
 // plugin did not declare, so an omission is not a soft degradation — it fails
@@ -911,77 +916,6 @@ assert.equal(exports.fmtMs(90_000), '1.5m')
   assert.equal(exports.parseSettings('{}').fleetSort, 'recent', 'legacy prefs gain the default order')
   assert.equal(exports.parseSettings('{"fleetSort":"bogus"}').fleetSort, 'recent', 'corrupt order falls back')
 }
-
-// diffFleetEvents: prime, edge-triggered transitions, precedence, gone
-{
-  const mk = (entries) => new Map(entries)
-  const A = { running: false, pending: undefined, completed: false, title: 'A' }
-  assert.deepEqual(exports.diffFleetEvents(null, mk([['a', A]]), 1), [], 'prime emits nothing')
-
-  let ev = exports.diffFleetEvents(
-    mk([['a', A]]),
-    mk([['a', { ...A }], ['b', { running: true, pending: undefined, completed: false, title: 'B' }]]),
-    2,
-  )
-  assert.equal(ev.length, 1)
-  assert.equal(ev[0].kind, 'new')
-
-  ev = exports.diffFleetEvents(
-    mk([['a', { running: false, pending: undefined, completed: false, title: 'A' }]]),
-    mk([['a', { running: true, pending: undefined, completed: false, title: 'A' }]]),
-    3,
-  )
-  assert.equal(ev.length, 1)
-  assert.equal(ev[0].kind, 'run')
-
-  ev = exports.diffFleetEvents(
-    mk([['a', { running: true, pending: undefined, completed: false, title: 'A' }]]),
-    mk([['a', { running: false, pending: 'approval', completed: false, title: 'A' }]]),
-    4,
-  )
-  assert.equal(ev.length, 1)
-  assert.equal(ev[0].kind, 'wait')
-  assert.equal(ev[0].detail, 'approval')
-
-  ev = exports.diffFleetEvents(
-    mk([['a', { running: true, pending: undefined, completed: false, title: 'A' }]]),
-    mk([['a', { running: false, pending: undefined, completed: false, title: 'A' }]]),
-    5,
-  )
-  assert.equal(ev[0].kind, 'idle')
-
-  ev = exports.diffFleetEvents(
-    mk([['a', { running: true, pending: undefined, completed: false, title: 'A' }]]),
-    mk([['a', { running: false, pending: undefined, completed: true, title: 'A' }]]),
-    6,
-  )
-  assert.equal(ev[0].kind, 'done')
-
-  ev = exports.diffFleetEvents(
-    mk([['a', { running: false, pending: 'question', completed: false, title: 'A' }]]),
-    mk([['a', { running: true, pending: undefined, completed: false, title: 'A' }]]),
-    7,
-  )
-  assert.equal(ev[0].kind, 'wait-done')
-  assert.equal(ev[0].detail, 'resumed')
-
-  ev = exports.diffFleetEvents(mk([['a', A]]), mk([]), 8)
-  assert.equal(ev.length, 1)
-  assert.equal(ev[0].kind, 'gone')
-}
-
-  // mountAt suppression: pre-existing sessions hydrated late stay silent
-  const mk = (entries) => new Map(entries)
-  const OLD = { running: false, pending: undefined, completed: false, title: 'Old', updatedAt: 100 }
-  const FRESH = { running: false, pending: undefined, completed: false, title: 'Fresh', updatedAt: 900 }
-  const ev2 = exports.diffFleetEvents(mk([]), mk([['old', OLD], ['fresh', FRESH]]), 1000, 500)
-  assert.equal(ev2.length, 1, 'only the post-mount session emits new')
-  assert.equal(ev2[0].kind, 'new')
-  assert.equal(ev2[0].sessionId, 'fresh')
-  // default mountAt=0 keeps legacy behavior (samples without updatedAt)
-  const ev3 = exports.diffFleetEvents(mk([]), mk([['old', OLD]]), 1000)
-  assert.equal(ev3.length, 1)
-  assert.equal(ev3[0].kind, 'new')
 
 // lastErrorOf: trailing-node rule
 {

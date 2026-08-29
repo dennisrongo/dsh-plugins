@@ -63,7 +63,6 @@ __export(client_exports, {
   computeRate: () => computeRate,
   countDescendants: () => countDescendants,
   countFleet: () => countFleet,
-  diffFleetEvents: () => diffFleetEvents,
   displayNow: () => displayNow,
   elapsedSince: () => elapsedSince,
   estimateCost: () => estimateCost,
@@ -14734,31 +14733,6 @@ function newWaitKeys(waits, seen) {
   }
   return fresh;
 }
-function diffFleetEvents(prev, next, now, mountAt = 0) {
-  if (prev === null) return [];
-  const events = [];
-  let seq = 0;
-  const push = (kind, sessionId, title, detail) => {
-    events.push({ id: `${now}:${seq++}:${sessionId}`, at: now, kind, sessionId, title, detail });
-  };
-  for (const [id, n] of next) {
-    const p = prev.get(id);
-    if (p === void 0) {
-      if (n.updatedAt !== void 0 && n.updatedAt < mountAt) continue;
-      push("new", id, n.title, n.origin === "subagent" ? "subagent" : void 0);
-      continue;
-    }
-    if (!p.pending && n.pending) push("wait", id, n.title, n.pending);
-    else if (p.pending && !n.pending) push("wait-done", id, n.title, n.running ? "resumed" : void 0);
-    else if (!p.completed && n.completed) push("done", id, n.title);
-    else if (!p.running && n.running) push("run", id, n.title);
-    else if (p.running && !n.running) push("idle", id, n.title, "turn ended");
-  }
-  for (const [id, p] of prev) {
-    if (!next.has(id)) push("gone", id, p.title, p.origin === "subagent" ? "subagent" : void 0);
-  }
-  return events;
-}
 function sessionOutTokens(s) {
   return s?.projectionValues?.tokenUsage?.outputTokens;
 }
@@ -16252,34 +16226,6 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-search-result:hover { background: var(--mc-surface-hover); }
 .dshmc-search-result-title { font-size: 13px; color: var(--mc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dshmc-search-result-snippet { font-size: 11px; color: var(--mc-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Event feed */
-.dshmc-feed { display: flex; flex-direction: column; padding: 4px 2px 14px; }
-.dshmc-feed-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  margin: 1px 0;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s var(--mc-ease);
-}
-.dshmc-feed-item:hover { background: var(--mc-surface-hover); }
-.dshmc-feed-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.dshmc-feed-title {
-  font-size: 13px;
-  color: var(--mc-text-2);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.dshmc-feed-item:hover .dshmc-feed-title { color: var(--mc-text); }
-.dshmc-feed-verb {
-  font-size: 11px;
-  color: var(--mc-text-4);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.dshmc-feed-verb.is-wait { color: var(--mc-amber-label); }
-.dshmc-feed-verb.is-run { color: var(--mc-green); }
 
 .dshmc-tile {
   display: flex; flex-direction: column;
@@ -17790,51 +17736,6 @@ function lastErrorOf(snap) {
   if (typeof le === "string" && le !== "") return { kind: "agent error", text: le };
   return null;
 }
-var FEED_DOT = {
-  new: "dshmc-dot",
-  run: "dshmc-dot running",
-  idle: "dshmc-dot",
-  done: "dshmc-dot done",
-  wait: "dshmc-dot pending",
-  "wait-done": "dshmc-dot done",
-  gone: "dshmc-dot"
-};
-var FEED_TEXT = {
-  new: "joined the fleet",
-  run: "started running",
-  idle: "turn ended",
-  done: "completed",
-  wait: "waiting on you",
-  "wait-done": "waiting resolved",
-  gone: "left the fleet"
-};
-function FeedView({ events, onOpen, now }) {
-  const items = [...events].reverse();
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-feed", children: items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-empty", children: "No events yet \u2014 fleet activity lands here as it happens." }) : items.map((e) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-    "div",
-    {
-      className: "dshmc-feed-item",
-      role: "button",
-      tabIndex: 0,
-      onClick: () => onOpen(e.sessionId),
-      onKeyDown: (ev) => {
-        if (ev.key === "Enter" || ev.key === " ") onOpen(e.sessionId);
-      },
-      children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: FEED_DOT[e.kind] ?? "dshmc-dot" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "dshmc-feed-text", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshmc-feed-title", title: e.title, children: e.title }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: `dshmc-feed-verb${e.kind === "wait" ? " is-wait" : e.kind === "run" ? " is-run" : ""}`, children: [
-            FEED_TEXT[e.kind] ?? e.kind,
-            e.detail ? ` \xB7 ${e.detail}` : ""
-          ] })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshmc-time", children: fmtRelative(e.at, now) })
-      ]
-    },
-    e.id
-  )) });
-}
 function PendingRow({ title, kind, onJump }) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
     "div",
@@ -18558,9 +18459,6 @@ function MissionControl({ ctx }) {
   const [mode, setMode] = import_react.default.useState("fleet");
   const [stageOpen, setStageOpen] = import_react.default.useState(false);
   const [nowTick, setNowTick] = import_react.default.useState(() => Date.now());
-  const [feed, setFeed] = import_react.default.useState([]);
-  const [feedSeenAt, setFeedSeenAt] = import_react.default.useState(() => Date.now());
-  const mountAtRef = import_react.default.useRef(Date.now());
   import_react.default.useEffect(() => {
     const t = window.setInterval(() => setNowTick(Date.now()), 3e4);
     return () => window.clearInterval(t);
@@ -18679,35 +18577,6 @@ function MissionControl({ ctx }) {
   );
   const pulse = useFleetPulse(counts.active > 0, list);
   useWaitNotifications(pendingWaits);
-  const sample = import_react.default.useMemo(() => {
-    const m = /* @__PURE__ */ new Map();
-    for (const id of list.ids) {
-      const s = list.byId[id];
-      if (!s || s.blank) continue;
-      m.set(id, {
-        running: !!s.running,
-        pending: s.pendingInteraction,
-        completed: !!s.completed,
-        title: s.displayTitle,
-        origin: s.origin,
-        updatedAt: s.updatedAt
-      });
-    }
-    return m;
-  }, [list]);
-  const sampleRef = import_react.default.useRef(null);
-  import_react.default.useEffect(() => {
-    const events = diffFleetEvents(sampleRef.current, sample, Date.now(), mountAtRef.current);
-    sampleRef.current = sample;
-    if (events.length > 0) setFeed((f) => [...f, ...events].slice(-200));
-  }, [sample]);
-  import_react.default.useEffect(() => {
-    if (mode === "feed") setFeedSeenAt(Date.now());
-  }, [mode, feed]);
-  const unreadFeed = import_react.default.useMemo(
-    () => feed.filter((e) => e.at > feedSeenAt).length,
-    [feed, feedSeenAt]
-  );
   const close = () => setOpen(false);
   const reopen = () => setOpen(true);
   const panelRef = import_react.default.useRef(null);
@@ -18882,13 +18751,9 @@ function MissionControl({ ctx }) {
           "Inbox",
           pendingRows.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshmc-mode-badge", children: pendingRows.length }) : null
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { className: `dshmc-mode${mode === "feed" ? " on" : ""}`, onClick: () => setMode("feed"), children: [
-          "Feed",
-          mode !== "feed" && unreadFeed > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshmc-mode-badge", children: unreadFeed }) : null
-        ] }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "dshmc-mode", onClick: () => setStageOpen(true), title: "Full-screen live grid", children: "Stage" })
       ] }),
-      mode === "feed" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-body", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(FeedView, { events: feed, onOpen: openSession, now: nowTick }) }) : mode === "inbox" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-body", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(InboxView, { ctx, list, pendingRows, pendingWaits, counts, onOpen: openSession, now: nowTick }) }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-body", children: [
+      mode === "inbox" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-body", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(InboxView, { ctx, list, pendingRows, pendingWaits, counts, onOpen: openSession, now: nowTick }) }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-body", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SearchBox, { ctx, list, onOpen: openSession }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-stats", children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatCard, { value: counts.sessions, label: "sessions" }),

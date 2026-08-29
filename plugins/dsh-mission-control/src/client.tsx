@@ -270,67 +270,6 @@ export function newWaitKeys<T extends { key: string }>(waits: readonly T[], seen
   return fresh
 }
 
-/** One fleet event for the activity feed. */
-export type FleetEventKind = 'new' | 'run' | 'idle' | 'done' | 'wait' | 'wait-done' | 'gone'
-
-export interface FleetEvent {
-  id: string
-  at: number
-  kind: FleetEventKind
-  sessionId: string
-  title: string
-  detail?: string
-}
-
-/** The per-session fields the feed diffs on. */
-export interface SessionSample {
-  running: boolean
-  pending?: string
-  completed?: boolean
-  title: string
-  origin?: string
-  updatedAt?: number
-}
-
-/**
- * Edge-triggered diff of two fleet samples into feed events — at most one
- * event per session per tick, precedence wait > wait-done > done > run >
- * idle > new. `prev === null` primes the baseline and emits nothing.
- * `mountAt` suppresses 'new' for sessions that predate the panel (the list
- * hydrates incrementally, which would otherwise flood the feed on load).
- */
-export function diffFleetEvents(
-  prev: Map<string, SessionSample> | null,
-  next: Map<string, SessionSample>,
-  now: number,
-  mountAt = 0,
-): FleetEvent[] {
-  if (prev === null) return []
-  const events: FleetEvent[] = []
-  let seq = 0
-  const push = (kind: FleetEventKind, sessionId: string, title: string, detail?: string): void => {
-    events.push({ id: `${now}:${seq++}:${sessionId}`, at: now, kind, sessionId, title, detail })
-  }
-  for (const [id, n] of next) {
-    const p = prev.get(id)
-    if (p === undefined) {
-      if (n.updatedAt !== undefined && n.updatedAt < mountAt) continue // pre-existing, hydrated late
-      push('new', id, n.title, n.origin === 'subagent' ? 'subagent' : undefined)
-      continue
-    }
-    if (!p.pending && n.pending) push('wait', id, n.title, n.pending)
-    else if (p.pending && !n.pending) push('wait-done', id, n.title, n.running ? 'resumed' : undefined)
-    else if (!p.completed && n.completed) push('done', id, n.title)
-    else if (!p.running && n.running) push('run', id, n.title)
-    else if (p.running && !n.running) push('idle', id, n.title, 'turn ended')
-  }
-  for (const [id, p] of prev) {
-    if (!next.has(id)) push('gone', id, p.title, p.origin === 'subagent' ? 'subagent' : undefined)
-  }
-  return events
-}
-
-
 // ---------------------------------------------------------------------------
 // Derivations
 // ---------------------------------------------------------------------------
@@ -2227,34 +2166,6 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-search-result:hover { background: var(--mc-surface-hover); }
 .dshmc-search-result-title { font-size: 13px; color: var(--mc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dshmc-search-result-snippet { font-size: 11px; color: var(--mc-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Event feed */
-.dshmc-feed { display: flex; flex-direction: column; padding: 4px 2px 14px; }
-.dshmc-feed-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  margin: 1px 0;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s var(--mc-ease);
-}
-.dshmc-feed-item:hover { background: var(--mc-surface-hover); }
-.dshmc-feed-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.dshmc-feed-title {
-  font-size: 13px;
-  color: var(--mc-text-2);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.dshmc-feed-item:hover .dshmc-feed-title { color: var(--mc-text); }
-.dshmc-feed-verb {
-  font-size: 11px;
-  color: var(--mc-text-4);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.dshmc-feed-verb.is-wait { color: var(--mc-amber-label); }
-.dshmc-feed-verb.is-run { color: var(--mc-green); }
 
 .dshmc-tile {
   display: flex; flex-direction: column;
@@ -4444,63 +4355,6 @@ export function lastErrorOf(snap: ConversationSnapshotLike | undefined): { kind:
   return null
 }
 
-const FEED_DOT: Record<string, string> = {
-  new: 'dshmc-dot',
-  run: 'dshmc-dot running',
-  idle: 'dshmc-dot',
-  done: 'dshmc-dot done',
-  wait: 'dshmc-dot pending',
-  'wait-done': 'dshmc-dot done',
-  gone: 'dshmc-dot',
-}
-const FEED_TEXT: Record<string, string> = {
-  new: 'joined the fleet',
-  run: 'started running',
-  idle: 'turn ended',
-  done: 'completed',
-  wait: 'waiting on you',
-  'wait-done': 'waiting resolved',
-  gone: 'left the fleet',
-}
-
-/** Reverse-chronological activity feed; every row jumps to its session. */
-function FeedView({ events, onOpen, now }: {
-  events: readonly FleetEvent[]
-  onOpen: (id: string) => void
-  now: number
-}): React.JSX.Element {
-  const items = [...events].reverse()
-  return (
-    <div className="dshmc-feed">
-      {items.length === 0 ? (
-        <div className="dshmc-empty">No events yet — fleet activity lands here as it happens.</div>
-      ) : (
-        items.map((e) => (
-          <div
-            key={e.id}
-            className="dshmc-feed-item"
-            role="button"
-            tabIndex={0}
-            onClick={() => onOpen(e.sessionId)}
-            onKeyDown={(ev) => {
-              if (ev.key === 'Enter' || ev.key === ' ') onOpen(e.sessionId)
-            }}
-          >
-            <span className={FEED_DOT[e.kind] ?? 'dshmc-dot'} />
-            <span className="dshmc-feed-text">
-              <span className="dshmc-feed-title" title={e.title}>{e.title}</span>
-              <span className={`dshmc-feed-verb${e.kind === 'wait' ? ' is-wait' : e.kind === 'run' ? ' is-run' : ''}`}>
-                {FEED_TEXT[e.kind] ?? e.kind}{e.detail ? ` · ${e.detail}` : ''}
-              </span>
-            </span>
-            <span className="dshmc-time">{fmtRelative(e.at, now)}</span>
-          </div>
-        ))
-      )}
-    </div>
-  )
-}
-
 /** Pending row without a resolvable wait carrier (e.g. plan review). */
 function PendingRow({ title, kind, onJump }: { title: string; kind: string; onJump: () => void }): React.JSX.Element {
   return (
@@ -5501,14 +5355,11 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
   const [collapsedRows, setCollapsedRows] = React.useState<ReadonlySet<string>>(new Set())
   const [settingsOpen, setSettingsOpen] = React.useState(false)
   const [settings, updateSettings] = useSettings()
-  const [mode, setMode] = React.useState<'fleet' | 'inbox' | 'feed'>('fleet')
+  const [mode, setMode] = React.useState<'fleet' | 'inbox'>('fleet')
   // Stage is a full-screen takeover layered over the panel modes, not a panel
   // mode itself — keeping it separate preserves the tab you came from.
   const [stageOpen, setStageOpen] = React.useState(false)
   const [nowTick, setNowTick] = React.useState(() => Date.now())
-  const [feed, setFeed] = React.useState<FleetEvent[]>([])
-  const [feedSeenAt, setFeedSeenAt] = React.useState(() => Date.now())
-  const mountAtRef = React.useRef(Date.now())
   React.useEffect(() => {
     const t = window.setInterval(() => setNowTick(Date.now()), 30_000)
     return () => window.clearInterval(t)
@@ -5708,38 +5559,6 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
   const pulse = useFleetPulse(counts.active > 0, list)
   useWaitNotifications(pendingWaits)
 
-  // Fleet activity feed — diffs the session list as it changes and keeps a
-  // rolling window (survives mode switches; lost on page reload).
-  const sample = React.useMemo(() => {
-    const m = new Map<string, SessionSample>()
-    for (const id of list.ids) {
-      const s = list.byId[id]
-      if (!s || s.blank) continue
-      m.set(id, {
-        running: !!s.running,
-        pending: s.pendingInteraction,
-        completed: !!s.completed,
-        title: s.displayTitle,
-        origin: s.origin,
-        updatedAt: s.updatedAt,
-      })
-    }
-    return m
-  }, [list])
-  const sampleRef = React.useRef<Map<string, SessionSample> | null>(null)
-  React.useEffect(() => {
-    const events = diffFleetEvents(sampleRef.current, sample, Date.now(), mountAtRef.current)
-    sampleRef.current = sample
-    if (events.length > 0) setFeed((f) => [...f, ...events].slice(-200))
-  }, [sample])
-  React.useEffect(() => {
-    if (mode === 'feed') setFeedSeenAt(Date.now())
-  }, [mode, feed])
-  const unreadFeed = React.useMemo(
-    () => feed.filter((e) => e.at > feedSeenAt).length,
-    [feed, feedSeenAt],
-  )
-
   const close = () => setOpen(false)
   const reopen = () => setOpen(true)
 
@@ -5810,7 +5629,7 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
   })()
 
   // Stage mode swaps the panel for a full-screen live grid. All hooks above
-  // stay mounted, so the feed, notifications, and pulse keep running.
+  // stay mounted, so notifications and the pulse keep running.
   if (stageOpen) {
     return (
       <StageView
@@ -5952,16 +5771,9 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
           <button className={`dshmc-mode${mode === 'inbox' ? ' on' : ''}`} onClick={() => setMode('inbox')}>
             Inbox{pendingRows.length > 0 ? <span className="dshmc-mode-badge">{pendingRows.length}</span> : null}
           </button>
-          <button className={`dshmc-mode${mode === 'feed' ? ' on' : ''}`} onClick={() => setMode('feed')}>
-            Feed{mode !== 'feed' && unreadFeed > 0 ? <span className="dshmc-mode-badge">{unreadFeed}</span> : null}
-          </button>
           <button className="dshmc-mode" onClick={() => setStageOpen(true)} title="Full-screen live grid">Stage</button>
         </div>
-        {mode === 'feed' ? (
-          <div className="dshmc-body">
-            <FeedView events={feed} onOpen={openSession} now={nowTick} />
-          </div>
-        ) : mode === 'inbox' ? (
+        {mode === 'inbox' ? (
           <div className="dshmc-body">
             <InboxView ctx={ctx} list={list} pendingRows={pendingRows} pendingWaits={pendingWaits} counts={counts} onOpen={openSession} now={nowTick} />
           </div>
