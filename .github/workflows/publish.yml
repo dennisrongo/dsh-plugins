@@ -21,6 +21,10 @@ on:
         type: boolean
         required: false
         default: false
+      packages:
+        description: 'Comma-separated package names to limit the run to (default: every unpublished package)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -141,12 +145,36 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ github.event.inputs.tag || 'latest' }}
           DRY_RUN: ${{ github.event.inputs.dry-run }}
+          ONLY: ${{ github.event.inputs.packages }}
         run: |
           published=0
           skipped=0
+          # An unfiltered run publishes every package that is not on npm at its
+          # current version — including one whose version was bumped in passing
+          # and is not ready to release. `packages` narrows a run to exactly the
+          # names given, so shipping one plugin cannot ship another by accident.
+          # A name that matches nothing is a typo, not an empty release: fail
+          # rather than report a successful run that published nothing.
+          if [ -n "$ONLY" ]; then
+            for want in $(echo "$ONLY" | tr ',' ' '); do
+              found=0
+              for dir in plugins/*/; do
+                [ "$(node -p "require('./$dir/package.json').name")" = "$want" ] && found=1
+              done
+              if [ "$found" = "0" ]; then
+                echo "::error::packages names '$want', which is not a package under plugins/"
+                exit 1
+              fi
+            done
+            echo "limiting this run to: $ONLY"
+          fi
           for dir in plugins/*/; do
             name=$(node -p "require('./$dir/package.json').name")
             version=$(node -p "require('./$dir/package.json').version")
+            if [ -n "$ONLY" ] && ! echo ",$ONLY," | tr -d ' ' | grep -q ",$name,"; then
+              echo "filter  $name not named in packages"
+              continue
+            fi
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "skip    $name@$version is already published"
               skipped=$((skipped+1))
