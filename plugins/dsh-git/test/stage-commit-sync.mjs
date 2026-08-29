@@ -250,8 +250,14 @@ try {
     const box = makeService('svc-sc-all-')
     write(box, 'a.txt', 'tracked edit\n')
     write(box, 'newcomer.txt', 'untracked\n')
+    const before = box.g('rev-parse', 'HEAD').trim()
     const r = await box.svc.commit({ ...WS, message: 'sweep', all: true })
     assert.equal(r.ok, true, r.output)
+    // HEAD must MOVE. Asserting the file list alone was tautological: the seed
+    // commit also touches a.txt, so dropping -a left HEAD on the seed and the
+    // assertion still passed. A mutation sweep caught that, not review.
+    assert.notEqual(box.g('rev-parse', 'HEAD').trim(), before, 'a commit was actually made')
+    assert.equal(box.g('log', '-1', '--pretty=%s').trim(), 'sweep', 'and it is ours')
     const files = box.g('show', '--name-only', '--pretty=', 'HEAD').trim().split('\n')
     assert.deepEqual(files, ['a.txt'], 'tracked edit only')
     assert.ok(existsSync(join(box.repo, 'newcomer.txt')), 'new file left untracked')
@@ -328,6 +334,9 @@ try {
     const bare = addRemote(box)
     const r = await box.svc.sync({ ...WS, action: 'publish' })
     assert.equal(r.ok, true, r.output)
+    // Check presence first: without -u there is no upstream at all, and reading
+    // .name off undefined crashes the run instead of naming the failure.
+    assert.ok(r.status.upstream, 'publish must RECORD an upstream (-u), not just push')
     assert.equal(r.status.upstream.name, 'origin/main', 'upstream recorded')
     write(box, 'a.txt', 'second\n')
     await box.svc.stage({ ...WS, action: 'stage' })

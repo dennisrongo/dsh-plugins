@@ -741,6 +741,38 @@ Six sabotages were verified to fail it: discard restoring from HEAD, discard wid
 whole tree, dropping `--` before stage paths, accepting an empty commit message, `init`
 re-initializing an existing repository, and `sync` pushing after a failed pull.
 
+### What the integration suites are actually worth
+
+Measured, not asserted: a **20-mutation sweep** over `src/index.ts` and `src/git.ts`, each
+mutation applied to the built bundle and reverted with `git checkout -- src`. 20/20 are now
+caught, but the first pass was 16/20, and the four misses are the useful part.
+
+- **`commit`'s `all` flag could be deleted and the suite stayed green.** The test asserted
+  the committed file list was `['a.txt']` — and the SEED commit also touches `a.txt`, so
+  with no commit made at all HEAD stayed on the seed and the assertion still passed. A
+  tautology that reads like a real check. It now asserts HEAD MOVED and that the subject is
+  the one just written.
+- **`publish` losing `-u` crashed the run instead of reporting it** — `status.upstream` is
+  undefined without it, so the test died on `Cannot read properties of undefined (reading
+  'name')`. Technically red, practically useless: it names a TypeError, not the behaviour.
+  It now checks presence first with the message `publish must RECORD an upstream (-u)`.
+- **Two mutations reported "pattern not found" and were nearly written off as unreachable.**
+  Both strings appear TWICE (message-trim in `commit` and `stash`; `--force` in worktree
+  `add` and `remove`), so the edit was ambiguous, not absent. A sweep that silently skips is
+  worse than no sweep: it reports a clean bill for code it never touched.
+
+The sweep harness itself had the same class of defect — it grepped stdout for
+`AssertionError`, so a suite dying on a TypeError was recorded as SURVIVED. Read the exit
+code, not the output.
+
+**Known gaps, stated rather than implied.** These suites call service methods DIRECTLY, so
+they do not cross the Typert gateway: a `remote.ts` schema that refuses a valid request
+passes every one of them and fails only in a browser. `smoke.mjs`'s descriptor count is the
+only guard on that drift. The LLM endpoints (`suggestMessage`, `suggestBranch`) are not
+covered here at all, and the read endpoints (`diff`, `commitDiff`, `commitFiles`,
+`changeToken`) are covered at the `git.ts` layer only — the same shape of gap that hid the
+checkout-pathspec bug, still open for reads.
+
 ## Environment isolation (git's location variables)
 
 **`runGit` scrubs GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE and friends from the
