@@ -455,6 +455,25 @@ For the same reason `.dsh` is deliberately NOT in the watcher's `IGNORED_DIRS`: 
 project DOES track `todo.db`, ignoring it would stop the Changes tab live-updating as
 tasks change.
 
+**No Remove button on the main worktree or the current one, and it is OMITTED rather than
+disabled.** Both are operations git refuses, and it refuses them badly — measured on git
+2.50: removing the main tree is `fatal: ... is a main working tree`, and removing the tree
+you are sitting in fails on Windows with `error: failed to delete ...: Permission denied`
+from the file lock, which reads like a bug in this tab rather than a rule. The first
+version rendered a greyed button on the main row with a title explaining why; a control
+that can never become live is noise on every row forever, so the `main` and `current` tags
+carry the explanation instead.
+
+Note `current` is NOT always `main`: open the tab on a linked worktree and that one is
+current while main is a different row. Gating on `main` alone would leave the Remove
+button live on the worktree the user is inside.
+
+**A worktree cannot check out a branch that is already checked out somewhere else.** Git
+refuses with `fatal: 'main' is already used by worktree at ...`, so "just use the current
+branch" is not an option the UI could offer even if it wanted to — which is why an empty
+branch box creates a NEW branch from the generated name rather than reusing HEAD's branch.
+The new branch still STARTS at the current HEAD, so the worktree opens on the same commit.
+
 **The worktree path is PREFILLED with a real value, not shown as a placeholder.** Opening
 the form generates a readable `adjective-noun` name (`generateWorktreeName`) and fills the
 path with `../<project>-<name>`, so the common case — "give me a worktree" — needs no

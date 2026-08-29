@@ -44,6 +44,7 @@ function treeRow(i) {
     LT + 'span class="dshgit-code R">W' + LT + '/span>' +
     LT + 'span class="dshgit-rowmain">feature/some-branch' + LT + '/span>' +
     LT + 'span class="dshgit-rowmeta">C:/Users/me/projects/some-worktree-' + i + LT + '/span>' +
+    LT + 'span class="dshgit-tag">main' + LT + '/span>' +
     LT + 'span class="dshgit-tag ok">current' + LT + '/span>' +
     LT + 'span class="dshgit-tag warn">missing' + LT + '/span>' +
     LT + 'span class="dshgit-rowbtns">' + LT + 'button class="dshgit-icon danger">' + LT + '/button>' + LT + '/span>' +

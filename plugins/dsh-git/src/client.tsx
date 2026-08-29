@@ -2262,6 +2262,7 @@ function RepoPane({
               <span className="dshgit-rowmeta" title={tree.path}>
                 {tree.path}
               </span>
+              {tree.main ? <span className="dshgit-tag">main</span> : null}
               {tree.current ? <span className="dshgit-tag ok">current</span> : null}
               {tree.prunable ? <span className="dshgit-tag warn">missing</span> : null}
               {tree.locked ? <span className="dshgit-tag">locked</span> : null}
@@ -2280,17 +2281,27 @@ function RepoPane({
                     <Icon path={ICON.open} />
                   </button>
                 ) : null}
-                {/* The main worktree cannot be removed, and git refuses it —
-                    disabling here explains why instead of offering a dead click. */}
-                <button
-                  className="dshgit-icon danger"
-                  title={tree.main ? 'The main worktree cannot be removed' : 'Remove this worktree'}
-                  aria-label={'Remove worktree ' + tree.path}
-                  disabled={busy !== null || tree.main}
-                  onClick={() => onWorktree('remove', tree.path)}
-                >
-                  <Icon path={ICON.trash} />
-                </button>
+                {/* No Remove button for the main worktree or the one you are in.
+                    Both are things git will not do, and it says so badly:
+                    removing the main tree is "fatal: ... is a main working tree",
+                    and removing the tree you are sitting in fails on Windows with
+                    "Permission denied" from the file lock — an error that reads
+                    like a bug in this tab rather than a rule. Both were measured.
+
+                    The button is OMITTED rather than disabled: a greyed control
+                    that can never become live is noise on every row forever. The
+                    "main" and "current" tags carry the explanation instead. */}
+                {tree.main || tree.current ? null : (
+                  <button
+                    className="dshgit-icon danger"
+                    title={'Remove this worktree'}
+                    aria-label={'Remove worktree ' + tree.path}
+                    disabled={busy !== null}
+                    onClick={() => onWorktree('remove', tree.path)}
+                  >
+                    <Icon path={ICON.trash} />
+                  </button>
+                )}
               </span>
             </li>
           ))}
