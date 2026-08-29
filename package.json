@@ -14,6 +14,8 @@
     "// check:tokens": "Every var(--dsw-*) a plugin uses must be a token the harness defines. A misspelt name silently uses its fallback forever and stops following the theme.",
     "check:tokens": "node scripts/check-tokens.mjs",
     "// prepare": "Point git at the versioned hooks. .git/hooks is not cloned, so without this a fresh clone silently has no pre-commit gate. Tolerates non-repo checkouts (tarball installs) rather than failing the install.",
-    "prepare": "git config core.hooksPath .githooks || true"
+    "prepare": "git config core.hooksPath .githooks || true",
+    "// postinstall": "pnpm replaces profile links with frozen copies on every install. This re-runs the platform's dev-link (junctions on Windows, symlinks on macOS/Linux) right where the damage happens. Non-fatal — see scripts/dev-link.mjs.",
+    "postinstall": "node scripts/dev-link.mjs"
   }
 }
