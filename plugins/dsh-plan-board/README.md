@@ -12,7 +12,7 @@ What it does not do is **keep** the plan. The markdown exists only inside the to
 
 ## What you get
 
-**A window when a plan is presented.** It opens by itself, shows the plan rendered at readable width, and closes on Esc or the Close button. Closing is per-plan, so dismissing one does not suppress the next.
+**A panel that docks beside the chat when a plan is presented.** It opens by itself, takes the right half of the conversation column and *pushes the chat aside* rather than covering it, and closes on Esc or the X. Closing is per-plan, so dismissing one does not suppress the next, and the chat gets its full width back the moment it closes.
 
 **A Plans tab** beside Chat, Trajectory and Todo: every plan for the workspace, newest first, each with a status pill — *Awaiting review* · *Approved* · *Kept planning* — and, on a rejected plan, the reviewer's own words.
 
@@ -41,7 +41,9 @@ The metadata is JSON-per-line rather than YAML. It reads the same, but the write
 
 The capture point is `tools/execute`, the around-dispatch waterfall. `next()` runs the tool body — the call that blocks on the human — so wrapping it is what makes the *outcome* observable: the plan is written `pending` before `next()`, and the same file is settled to `approved` or `rejected` after, with the rejection feedback lifted out of the error the tool threw. `tools/pre-execute` was the obvious alternative and sees the plan but never the outcome.
 
-The window is a `shell.overlay` entry, not a `conversation.view` tab, and that is not a style choice. Views are rendered one-at-a-time by the session body (`only: <active id>`), so an inactive tab is not mounted and cannot open itself when a plan appears. An overlay is shell-scoped and always mounted, so "a window opens when a plan is created" is something this plugin can actually guarantee. The tab exists too — it is the history browser, opened by hand.
+The dock is a `shell.overlay` entry, not a `conversation.view` tab, and that is not a style choice. Views are rendered one-at-a-time by the session body (`only: <active id>`), so an inactive tab is not mounted and cannot open itself when a plan appears. An overlay is shell-scoped and always mounted, so "show the plan the moment there is one" is something this plugin can actually guarantee. The tab exists too — it is the history browser, opened by hand.
+
+`shell.overlay` is not a layout sibling of the chat, so the panel cannot simply occupy half a column: it is `position: fixed`, measures the conversation column, and applies an inline `padding-right` to push it aside by exactly the dock's width. Three details make that survivable. It anchors on **`[data-slot="conversation"]`** — slot names are the documented plugin API, while the class names beside them are hashed CSS-module identifiers that change on any harness build. The padding is applied **inline**, because the column's own class selector has the same specificity as an attribute selector and which stylesheet lands last is not this plugin's to decide. And a `MutationObserver` re-applies both if a React re-render drops them, so the failure mode is a moment of overlap rather than a chat stuck at half width. If the column cannot be found at all the panel still renders against the viewport edge and simply overlays — a plan you can read on top of the conversation beats no plan.
 
 Freshness rides a **change token**, the same shape `dsh-git` uses, for the same reason: the UI needs to notice a new plan without re-reading everything. Here the token is a plain in-memory counter, because this process is the only writer — no `fs.watch`, no handle per workspace. Polling stops while the document is hidden and re-reads immediately on focus, so a background tab costs nothing.
 

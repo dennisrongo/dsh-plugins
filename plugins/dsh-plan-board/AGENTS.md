@@ -11,10 +11,10 @@ src/types.ts        PlanMeta/PlanRecord, limits, firstHeading/slugify/stamp
 src/store.ts        markdown-file storage, JSON frontmatter, change token, pruning
 src/index.ts        PlanService: the exit_plan_mode wrapper and the endpoints
 src/markdown.tsx    dependency-free markdown → React elements
-src/client.tsx      shell.overlay window + conversation.view history tab + CSS
+src/client.tsx      shell.overlay DOCK (measures + pushes the chat) + history tab + CSS
 src/remote.ts       Typert descriptors (shared by both faces)
 src/typert.host.ts  the ./typert manifest the loader imports
-test/smoke.mjs      18 checks against BUILT lib/, on real files in a temp dir
+test/smoke.mjs      20 checks against BUILT lib/, on real files in a temp dir
 ```
 
 ## Build and verify
@@ -88,3 +88,33 @@ curl -s localhost:38111/api/dshPlans/list -H 'content-type: application/json' -d
 ```
 
 `200` means the `./typert` export registered; `404` means it did not.
+
+## The dock's coupling to harness DOM
+
+The plan panel is `position: fixed` in `shell.overlay` and pushes the
+conversation column aside. That is the only way to get a real split from a seat
+that is not a layout sibling of the chat, and it buys three obligations:
+
+- **Anchor on `[data-slot="conversation"]`, never on a class.** Slot names are
+  the documented plugin API; the classes beside them (`wSkVaW_root`,
+  `pI_x6G_centerCol`) are hashed CSS-module identifiers that change on any
+  harness build. The slot host is `display: contents` and cannot be measured or
+  padded — the element that lays out is its single child, reached by structure.
+- **Push with an INLINE `padding-right`.** An attribute selector and the
+  column's own class selector have equal specificity, and which stylesheet is
+  appended last is not this plugin's to decide. Inline wins; the stylesheet rule
+  only carries the transition.
+- **Re-apply on mutation.** A React re-render that drops the attribute or the
+  style would leave the chat un-pushed with the panel still over it. The
+  `MutationObserver` in `useDock` watches exactly those two and re-syncs, so the
+  worst case is a frame of overlap rather than a stuck layout.
+
+Two more things `useDock` handles that look like paranoia and are not. It retries
+on `requestAnimationFrame` until the column has a non-zero width, because a panel
+that mounts before layout measures 0 and would otherwise stay hidden until
+something else resized. And it degrades to the viewport edge when the column
+cannot be found at all — overlaying the chat beats showing no plan.
+
+`.dshpb-dock` must keep `pointer-events: auto`: the shell's overlay layer is
+`pointer-events: none` so it cannot swallow clicks meant for the app, and a child
+that does not opt back in renders perfectly and does nothing.

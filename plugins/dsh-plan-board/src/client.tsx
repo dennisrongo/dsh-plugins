@@ -1,18 +1,26 @@
 /**
- * Browser half of dsh-plan-board: the window that opens when a plan is
- * presented, and the tab that keeps every plan the workspace has produced.
+ * Browser half of dsh-plan-board: the panel that docks beside the conversation
+ * when a plan is presented, and the tab that keeps every plan the workspace has
+ * produced.
  *
  * ## Two seats, for two different jobs
  *
- * The **window** is a `shell.overlay` entry. That seat is shell-scoped and
- * always mounted, which is the whole reason it is used: a `conversation.view`
- * tab is rendered one-at-a-time by the session body (`only: <active id>`), so a
- * tab cannot mount itself when a plan appears — only the already-active view is
- * running. An overlay is owned end to end by this plugin, so "open a window
- * when a plan is created" is something it can actually guarantee.
+ * The **dock** is a `shell.overlay` entry. That seat is shell-scoped and always
+ * mounted, which is the whole reason it is used: a `conversation.view` tab is
+ * rendered one-at-a-time by the session body (`only: <active id>`), so a tab
+ * cannot mount itself when a plan appears — only the already-active view is
+ * running. An overlay is owned end to end by this plugin, so "show the plan the
+ * moment there is one" is something it can actually guarantee.
+ *
+ * `shell.overlay` is not a layout sibling of the chat, though, so the panel
+ * cannot simply take half a column: it is `position: fixed`, measures the
+ * conversation column, and pushes it aside by its own width. See {@link useDock}
+ * for why that is anchored to `data-slot` rather than to the class names beside
+ * it, and for the two observers that keep it honest.
  *
  * The **tab** is a `conversation.view` entry: the history browser, opened by
- * hand, listing every plan for the workspace with its outcome.
+ * hand, listing every plan for the workspace with its outcome. The dock shows
+ * the plan in play; the tab is for the ones that already settled.
  *
  * ## What this window will not do
  *
@@ -215,6 +223,159 @@ function when(at: number): string {
  * @param props.onClose - dismiss handler.
  * @returns the overlay panel.
  */
+/**
+ * The conversation column, addressed by the one hook the harness makes stable.
+ *
+ * Every slot host carries `data-slot="<slot name>"`, and slot names ARE the
+ * documented plugin API — unlike the class names beside them, which are hashed
+ * CSS-module identifiers (`wSkVaW_composerStack`) that change on any harness
+ * build. Anchoring to the attribute is the difference between a dock that
+ * survives a dsh upgrade and one that silently detaches.
+ * @returns the conversation column element, or null before the session mounts.
+ */
+function conversationColumn(): HTMLElement | null {
+  const host = document.querySelector<HTMLElement>('[data-slot="conversation"]')
+  if (host === null) return null
+  // The slot host itself is `display: contents` — a zero-size wrapper that
+  // cannot be measured or padded. The element that actually lays out is its
+  // single child (the column's flex root). Reaching it by structure rather than
+  // by class name is the point: the classes beside it are hashed CSS-module
+  // identifiers that change on any harness build.
+  return (host.firstElementChild as HTMLElement | null) ?? host.parentElement
+}
+
+/** Attribute this plugin sets on the column while the dock is open. */
+const DOCK_ATTR = 'data-dshpb-docked'
+/** Custom property carrying the dock's current width to the column's padding. */
+const DOCK_WIDTH_VAR = '--dshpb-dock-w'
+
+/** Narrowest useful dock, in px — below this the markdown stops being readable. */
+const DOCK_MIN = 280
+/** Widest dock, in px, so a maximised window does not give the plan 900px of line length. */
+const DOCK_MAX = 720
+
+/**
+ * Dock the panel against the conversation column and keep it there.
+ *
+ * The panel is `position: fixed` (it lives in `shell.overlay`, which is not a
+ * layout sibling of the chat), so its geometry has to be measured rather than
+ * inherited. Two observers keep it honest: a `ResizeObserver` on the column for
+ * sidebar toggles, window resizes and panel transitions, and a
+ * `MutationObserver` for the case that actually bites — React re-rendering the
+ * column and dropping the attribute this plugin set on it, which would leave the
+ * chat un-shrunk with the dock still covering it. Re-applying on mutation makes
+ * that self-healing instead of a stuck layout.
+ *
+ * Degrading is deliberate: if the column cannot be found at all, the panel still
+ * renders against the viewport edge and simply overlays the chat rather than
+ * pushing it. A plan you can read on top of the conversation beats no plan.
+ * @param open - whether the dock is currently showing.
+ * @returns the measured geometry to position the panel with.
+ */
+function useDock(open: boolean): { top: number; height: number; right: number; width: number } | null {
+  const [box, setBox] = React.useState<{ top: number; height: number; right: number; width: number } | null>(null)
+
+  React.useEffect(() => {
+    const column = conversationColumn()
+
+    if (!open) {
+      // Always release the column, even if it was found on a previous pass.
+      if (column) {
+        column.removeAttribute(DOCK_ATTR)
+        column.style.removeProperty(DOCK_WIDTH_VAR)
+        column.style.removeProperty('padding-right')
+      }
+      setBox(null)
+      return
+    }
+
+    if (column === null) {
+      // No column to dock against — fall back to the viewport's right edge.
+      const apply = () => {
+        setBox({
+          top: 0,
+          height: window.innerHeight,
+          right: 0,
+          width: Math.max(DOCK_MIN, Math.min(DOCK_MAX, window.innerWidth * 0.5)),
+        })
+      }
+      apply()
+      window.addEventListener('resize', apply)
+      return () => window.removeEventListener('resize', apply)
+    }
+
+    // A dock that mounts before the column has been laid out measures 0 and has
+    // nothing to position against. ResizeObserver is not a reliable rescue here
+    // — the panel can mount into a subtree that is display:none and gains size
+    // without the observer firing usefully — so an explicit frame retry runs
+    // until the first real measurement. Bounded, because a column that is still
+    // 0 after a second is not coming.
+    let frames = 0
+    let raf = 0
+
+    /** Measure the column and push it aside by exactly the dock's width. */
+    const sync = () => {
+      const rect = column.getBoundingClientRect()
+      if (rect.width === 0) {
+        if (frames < 90) {
+          frames += 1
+          raf = requestAnimationFrame(sync)
+        }
+        return
+      }
+      frames = 0
+      const width = Math.round(Math.max(DOCK_MIN, Math.min(DOCK_MAX, rect.width * 0.5)))
+      column.setAttribute(DOCK_ATTR, '')
+      // Inline, not a stylesheet rule. The column's own class selector has the
+      // same specificity as an attribute selector, and which stylesheet lands
+      // last is not this plugin's to decide — an inline declaration is the only
+      // one that reliably wins. The MutationObserver below re-applies it if a
+      // React re-render wipes the style attribute.
+      column.style.setProperty(DOCK_WIDTH_VAR, `${width}px`)
+      column.style.paddingRight = `${width}px`
+      setBox((prev) => {
+        const next = {
+          top: Math.round(rect.top),
+          height: Math.round(rect.height),
+          right: Math.round(window.innerWidth - rect.right),
+          width,
+        }
+        return prev &&
+          prev.top === next.top &&
+          prev.height === next.height &&
+          prev.right === next.right &&
+          prev.width === next.width
+          ? prev
+          : next
+      })
+    }
+
+    sync()
+    const resize = new ResizeObserver(sync)
+    resize.observe(column)
+    // The column's own attributes, not its subtree: a React re-render that
+    // strips DOCK_ATTR is the failure this is here for, and watching children
+    // would fire on every streamed token.
+    const mutation = new MutationObserver(() => {
+      if (!column.hasAttribute(DOCK_ATTR) || column.style.paddingRight === '') sync()
+    })
+    mutation.observe(column, { attributes: true, attributeFilter: [DOCK_ATTR, 'style'] })
+    window.addEventListener('resize', sync)
+
+    return () => {
+      if (raf !== 0) cancelAnimationFrame(raf)
+      resize.disconnect()
+      mutation.disconnect()
+      window.removeEventListener('resize', sync)
+      column.removeAttribute(DOCK_ATTR)
+      column.style.removeProperty(DOCK_WIDTH_VAR)
+      column.style.removeProperty('padding-right')
+    }
+  }, [open])
+
+  return box
+}
+
 function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }): React.ReactElement {
   // Esc closes, matching every other dismissible surface in the shell.
   React.useEffect(() => {
@@ -239,10 +400,25 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
       })
   }, [plan.body])
 
+  const dock = useDock(true)
+  const style: React.CSSProperties =
+    dock === null
+      ? { display: 'none' }
+      : { top: dock.top, height: dock.height, right: dock.right, width: dock.width }
+
   return (
-    <div className="dshpb-window" role="dialog" aria-label={`Plan: ${plan.title}`}>
+    <aside
+      className="dshpb-dock"
+      style={style}
+      // Complementary, not a dialog: the chat beside it stays live and
+      // interactive — the approve control is over there. `role="dialog"` would
+      // tell a screen reader the rest of the app is inert, which is a lie.
+      role="complementary"
+      aria-label={`Plan: ${plan.title}`}
+    >
       <div className="dshpb-head">
         <div className="dshpb-headline">
+          <div className="dshpb-eyebrow">Plan</div>
           <div className="dshpb-title">{plan.title}</div>
           <div className="dshpb-meta">
             <StatusPill status={plan.status} />
@@ -253,8 +429,22 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
           <button type="button" className="dshpb-btn" onClick={copy}>
             {copied ? 'Copied' : 'Copy'}
           </button>
-          <button type="button" className="dshpb-btn" onClick={onClose} aria-label="Close plan window">
-            Close
+          <button
+            type="button"
+            className="dshpb-close"
+            onClick={onClose}
+            aria-label="Close the plan panel"
+            title="Close (Esc)"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
         </div>
       </div>
@@ -265,7 +455,7 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
 
       <div className="dshpb-foot">
         {plan.status === 'pending' ? (
-          // Say plainly where the control is. A reading window with no approve
+          // Say plainly where the control is. A reading panel with no approve
           // button reads like a broken approve button unless it explains itself.
           <span>Approve or keep planning from the review prompt in the conversation.</span>
         ) : plan.feedback !== undefined && plan.feedback !== '' ? (
@@ -274,7 +464,7 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
           <span>Saved to .dsh/plans/{plan.id}.md</span>
         )}
       </div>
-    </div>
+    </aside>
   )
 }
 
@@ -475,31 +665,65 @@ export function injectStyles(): () => void {
 }
 
 const CSS = `
-.dshpb-window {
+/* The conversation column gives up exactly the dock's width while it is open.
+   Keyed on the attribute this plugin sets, so nothing changes for anyone who
+   never opens a plan — and if the harness ever re-renders the column and drops
+   the attribute, the rule simply stops applying and the panel overlays instead
+   of stranding a permanent gap. */
+/* Padding is applied inline by the dock (specificity); this only animates it. */
+[data-dshpb-docked] {
+  transition: padding-right 160ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-dshpb-docked] { transition: none; }
+}
+
+.dshpb-dock {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
-  width: min(560px, calc(100vw - 48px));
-  max-height: min(72vh, 760px);
   display: flex;
   flex-direction: column;
   background: var(--dsw-specific-menu);
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  box-shadow: var(--dsw-shadow-lv3);
+  /* Only the inner edge is drawn: the panel is flush with the column's right
+     side, so a full border would double up against the shell's own chrome. */
+  border-left: 1px solid var(--dsw-alias-border-l2);
   font-family: var(--dsw-font-family);
   color: var(--dsw-alias-label-primary);
-  z-index: 60;
+  z-index: 40;
   overflow: hidden;
+  opacity: 1;
+  /* The shell's overlay layer is pointer-events: none so it cannot swallow
+     clicks meant for the app underneath. A child that wants to be clickable —
+     this panel's Close button — has to opt back in, or it renders perfectly and
+     does nothing. */
+  pointer-events: auto;
+  animation: dshpb-slide 160ms ease;
+}
+/* Transform only. An opacity keyframe leaves the panel invisible whenever the
+   animation is reverted or never runs (a tab that mounts while the window is
+   hidden), which is indistinguishable from the panel being broken. */
+@keyframes dshpb-slide {
+  from { transform: translateX(12px); }
+  to { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dshpb-dock { animation: none; }
 }
 .dshpb-head {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 14px 16px 12px;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 .dshpb-headline { flex: 1 1 auto; min-width: 0; }
+.dshpb-eyebrow {
+  font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dsw-alias-label-tertiary);
+  margin-bottom: 3px;
+}
 .dshpb-title {
   font-size: 14px;
   font-weight: 600;
@@ -508,14 +732,34 @@ const CSS = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.dshpb-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+.dshpb-close:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
 .dshpb-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 5px;
   font-size: 11px;
+  line-height: 1.4;
   color: var(--dsw-alias-label-tertiary);
+  min-width: 0;
 }
+.dshpb-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dshpb-actions { display: flex; gap: 6px; flex: 0 0 auto; }
 .dshpb-btn {
   font-family: inherit;
@@ -531,13 +775,17 @@ const CSS = `
 .dshpb-btn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .dshpb-pill {
   display: inline-block;
+  flex: 0 0 auto;
+  /* The dock is half a column wide, so "Awaiting review" wraps to two lines and
+     the pill grows into a box. It is a label, not a paragraph. */
+  white-space: nowrap;
   font-size: 11px;
   line-height: 1;
   padding: 3px 7px;
   border-radius: 999px;
   border: 1px solid currentColor;
 }
-.dshpb-body { flex: 1 1 auto; overflow: auto; padding: 14px 16px; }
+.dshpb-body { flex: 1 1 auto; overflow: auto; padding: 16px; }
 .dshpb-foot {
   flex: 0 0 auto;
   padding: 10px 16px;
