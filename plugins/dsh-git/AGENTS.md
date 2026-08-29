@@ -54,7 +54,7 @@ Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `worktree-integration.mjs` + `branch-merge-stash.mjs` + `stage-commit-sync.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
+`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `worktree-integration.mjs` + `branch-merge-stash.mjs` + `stage-commit-sync.mjs` + `read-endpoints.mjs` + `wire-contract.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
 
 Profiles materialise `file:` deps as copies **frozen at install time**, so a rebuild does not reach them. `scripts/dev-link.ps1` at the repo root replaces those copies with junctions: client-half edits then deploy on **browser refresh**, host-half edits need a **profile restart**.
 
@@ -235,7 +235,8 @@ things here are load-bearing:
 - **The stale-patch effect is scoped to `mode === 'changes'`.** It closes a diff whose
   file has left the working tree — correct there, but a commit's paths are history, not
   working-tree entries, so unscoped it closes every commit diff the instant it opens.
-- **`commitFiles` returns a discriminated outcome, never a bare array.** It must not
+- **`commitFiles` returns a discriminated outcome, never a bare array** — in the CLIENT.
+  The host sends a bare list; see "The wire, and the read endpoints" below. It must not
   reject (that strands the clicked row in "Reading commit…" forever), but collapsing a
   failure into `[]` is worse: "this commit changed nothing" and "we could not ask" then
   render identically as an empty expansion. That is exactly how a stale host half — one
@@ -765,13 +766,71 @@ The sweep harness itself had the same class of defect — it grepped stdout for
 `AssertionError`, so a suite dying on a TypeError was recorded as SURVIVED. Read the exit
 code, not the output.
 
-**Known gaps, stated rather than implied.** These suites call service methods DIRECTLY, so
-they do not cross the Typert gateway: a `remote.ts` schema that refuses a valid request
-passes every one of them and fails only in a browser. `smoke.mjs`'s descriptor count is the
-only guard on that drift. The LLM endpoints (`suggestMessage`, `suggestBranch`) are not
-covered here at all, and the read endpoints (`diff`, `commitDiff`, `commitFiles`,
-`changeToken`) are covered at the `git.ts` layer only — the same shape of gap that hid the
-checkout-pathspec bug, still open for reads.
+**These suites call service methods DIRECTLY and do not cross the Typert gateway** — which
+was a real gap until `wire-contract.mjs` closed it; see the next section. The read endpoints
+were likewise `git.ts`-layer only until `read-endpoints.mjs`.
+
+### The wire, and the read endpoints
+
+Both gaps named above are now closed.
+
+**`wire-contract.mjs` pushes every request and reply through the real zod codecs in
+`remote.ts`.** The service suites call methods DIRECTLY, so a descriptor that refuses a valid
+request — or silently drops a field — passed all of them and failed only in a browser.
+
+Both codecs are `mode: 'strict'`, and **zod objects STRIP unknown keys rather than
+rejecting them**, which is the dangerous direction: a request field the schema does not
+declare never reaches the host (the feature silently does nothing), and a result field it
+does not declare never reaches the browser (the tab renders a stale shape forever). Neither
+throws and neither logs, so every check asserts a LOSSLESS round trip — parse and
+deep-equal — rather than that parsing merely succeeded. `assert.doesNotThrow` would pass in
+both failure modes.
+
+Sabotage-verified against exactly that: dropping `status.stashCount` or `status.merging`
+from the result schema, and `worktree.startPoint` from the request schema, each fail with
+`the result/request codec DROPPED a field`. Flipping one descriptor to `src-json` fails on
+the strictness check — that one matters because `src-json` works on the HOST and makes the
+CLIENT's `$mount` throw, so the tab silently never registers.
+
+Its first run flagged `suggestMessage` dropping `scope`, which turned out to be **my error,
+not the code's**: `scope` is on `SuggestResult`, the reply. The request field is `staged`,
+and the schema declares it. The suite now pins both directions, including that a field
+outside the contract is refused.
+
+**`commitFiles` does NOT discriminate on the host, and the note above about it describes the
+CLIENT.** `GitService.commitFiles` returns `{ files: [] }` both for a sha git refused and
+for a directory that is not a repository, so "this commit changed nothing" and "we could not
+read it" are identical on the wire. `CommitFilesOutcome` in `client.tsx` adds the ok/error
+split, and it separates a thrown or 404'd bridge — which is the case it was built for — not
+a failed read. Pinned as characterization, with a well-formed but unresolvable sha asserted
+to come back as an empty list.
+
+**`read-endpoints.mjs` covers the CONTENT the codecs only shape.** status keeping BOTH the
+index and worktree codes on ONE row (the tab derives its two sections by filtering that row
+twice, so collapsing them empties a section), a rename carrying `origPath` under the NEW
+path with no phantom second row, conflicted versus untracked as distinct flags, real
+ahead/behind counts against a bare remote, `recent[]` shape; `diff` returning DIFFERENT
+patches for the staged and worktree sides of one file, synthesizing a `/dev/null` patch for
+an untracked file, flagging binary rather than dumping bytes, and refusing an escaping path;
+`commitFiles` on a MERGE commit (the `--first-parent` case); `commitDiff` scoped to one path
+excluding the others; hostile shas refused by both commit endpoints; and `changeToken`
+answering 0 outside a repository, non-zero inside, and NOT advancing on an idle repo.
+
+Five sabotages verified to fail it: `diff` ignoring the staged selector, `commitFiles`
+dropping `--first-parent`, status collapsing the worktree code, a rename losing `origPath`,
+and `commitDiff` ignoring its path scope.
+
+Two of those five first reported "pattern not found" and were nearly recorded as passes.
+They were ambiguous or reformatted strings, not unreachable code — the same trap as the
+earlier sweep. **A skip is not a pass.**
+
+`read-endpoints.mjs` ends with an explicit `process.exit(0)`: `changeToken` starts a real
+`fs.watch`, which holds OS handles and would otherwise leave the runner hanging after the
+last check rather than reporting.
+
+What remains uncovered, still stated plainly: the LLM endpoints (`suggestMessage`,
+`suggestBranch`) are exercised for request and reply SHAPE only — the model path needs
+credentials and is verified by hand against a running harness.
 
 ## Environment isolation (git's location variables)
 
