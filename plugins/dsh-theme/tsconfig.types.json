@@ -1,0 +1,19 @@
+{
+  // Declaration emit for the HOST half only.
+  //
+  // package.json's `.` export promises `lib/types/index.d.ts`. esbuild does not
+  // emit declarations, so without this the exports map points at a file that
+  // never existed and every TypeScript consumer resolves types to nothing —
+  // the defect dsh-mission-control shipped for a while. The base config is
+  // `noEmit` and spans all of src (including the client half, whose types are
+  // not part of the `.` export), so declarations get their own narrow config.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "lib/types",
+    "rootDir": "src"
+  },
+  "include": ["src/index.ts"]
+}

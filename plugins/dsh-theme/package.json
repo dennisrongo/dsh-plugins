@@ -1,0 +1,64 @@
+{
+  "name": "@dennisrongo/dsh-theme",
+  "version": "0.1.0",
+  "description": "Themes, accents and font pairings for DeepSeek Harness (dsh) — ten curated palettes as ctx.theme override layers, with live whole-app preview in Settings",
+  "type": "module",
+  "license": "MIT",
+  "author": "Dennis Rongo",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "!lib/client.body.cjs",
+    "!lib/*.test.mjs",
+    "README.md",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "node build/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node build/build.mjs && node test/themes.mjs && node test/smoke.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "immediately": true
+    }
+  },
+  "devDependencies": {
+    "@fontsource/geist-mono": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0",
+    "@types/react": "^18.3.0",
+    "esbuild": "^0.24.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "typescript": "^5.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dennisrongo/dsh-plugins.git",
+    "directory": "plugins/dsh-theme"
+  },
+  "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-theme#readme",
+  "bugs": {
+    "url": "https://github.com/dennisrongo/dsh-plugins/issues"
+  }
+}

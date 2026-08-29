@@ -1,0 +1,65 @@
+import type { ThemeSpec } from '../types.ts'
+
+/**
+ * Warm paper and clay, after Anthropic's palette for Claude: ivory grounds,
+ * near-black warm text, and the coral the product uses as its one accent.
+ */
+export const claude: ThemeSpec = {
+  id: 'claude',
+  label: 'Claude',
+  blurb: 'Warm ivory and clay — paper grounds with a coral accent.',
+  variants: {
+    dark: {
+      bg: '#1f1e1d',
+      surface: '#262624',
+      overlay: '#30302e',
+      sidebar: '#191817',
+      fg: '#f5f4ef',
+      muted: '#d3d1c7',
+      faint: '#9a978d',
+      border: '#3d3b37',
+      accent: '#d97757',
+      info: '#7aa2c4',
+      error: '#d4635a',
+      success: '#8fa876',
+      warn: '#d9a441',
+      code: {
+        bg: '#191817',
+        comment: '#8a877d',
+        keyword: '#d97757',
+        string: '#8fa876',
+        constant: '#d9a441',
+        function: '#7aa2c4',
+        parameter: '#c99a6e',
+        punctuation: '#d3d1c7',
+        link: '#7aa2c4',
+      },
+    },
+    light: {
+      bg: '#f0eee6',
+      surface: '#faf9f5',
+      overlay: '#ffffff',
+      sidebar: '#e8e5da',
+      fg: '#141413',
+      muted: '#3d3b37',
+      faint: '#6b6b69',
+      border: '#dcd8cb',
+      accent: '#c05f36',
+      info: '#3f6f99',
+      error: '#a63d33',
+      success: '#5a7a45',
+      warn: '#a3792f',
+      code: {
+        bg: '#e8e5da',
+        comment: '#6f6c62',
+        keyword: '#b3532c',
+        string: '#4f6b3a',
+        constant: '#8a5b2a',
+        function: '#3f6f99',
+        parameter: '#8a5b2a',
+        punctuation: '#3d3b37',
+        link: '#3f6f99',
+      },
+    },
+  },
+}

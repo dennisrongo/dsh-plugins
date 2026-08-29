@@ -1,0 +1,63 @@
+import type { ThemeSpec } from '../types.ts'
+
+/** Atom's One Dark and One Light. */
+export const one: ThemeSpec = {
+  id: 'one',
+  label: 'One',
+  blurb: 'The Atom editor pair — slate blues, familiar syntax hues.',
+  variants: {
+    dark: {
+      bg: '#282c34',
+      surface: '#31353f',
+      overlay: '#3b4048',
+      sidebar: '#21252b',
+      fg: '#dcdfe4',
+      muted: '#abb2bf',
+      faint: '#8a919e',
+      border: '#3e4451',
+      accent: '#61afef',
+      info: '#56b6c2',
+      error: '#e06c75',
+      success: '#98c379',
+      warn: '#e5c07b',
+      code: {
+        bg: '#21252b',
+        comment: '#7f8794',
+        keyword: '#c678dd',
+        string: '#98c379',
+        constant: '#d19a66',
+        function: '#61afef',
+        parameter: '#e06c75',
+        punctuation: '#abb2bf',
+        link: '#56b6c2',
+      },
+    },
+    light: {
+      bg: '#fafafa',
+      surface: '#ffffff',
+      overlay: '#ffffff',
+      sidebar: '#f0f0f1',
+      fg: '#383a42',
+      muted: '#4f525e',
+      faint: '#7c7f8a',
+      border: '#dcdde0',
+      accent: '#4078f2',
+      info: '#0184bc',
+      error: '#e45649',
+      success: '#50a14f',
+      warn: '#c18401',
+      code: {
+        bg: '#f0f0f1',
+        comment: '#83858c',
+        keyword: '#a626a4',
+        // One Light's green and gold are a shade under 3:1 on its code fill.
+        string: '#4b974a',
+        constant: '#b57c01',
+        function: '#4078f2',
+        parameter: '#986801',
+        punctuation: '#383a42',
+        link: '#0184bc',
+      },
+    },
+  },
+}
