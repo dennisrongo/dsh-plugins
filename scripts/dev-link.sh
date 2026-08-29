@@ -89,6 +89,10 @@ link_one() {
     fi
     dest="$profileDir/node_modules/@dennisrongo/$p"
     mkdir -p "$(dirname "$dest")"
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$pluginRoot/$p" ]; then
+      echo "ALREADY  $label @dennisrongo/$p"
+      continue
+    fi
     if [ -L "$dest" ]; then
       rm "$dest"
     elif [ -d "$dest" ]; then
