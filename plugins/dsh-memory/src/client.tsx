@@ -27,15 +27,32 @@ export { MEMORY_REMOTE }
  */
 export const inject = ['slots', 'remote', 'workspaces']
 
+/**
+ * Every mounted remote call resolves to an ENVELOPE, never the bare payload.
+ *
+ * The gateway returns `{ ok: true, value }` or `{ ok: false, error }`, and it
+ * resolves rather than rejects on a host-side failure. Typing the payload
+ * directly compiles fine and then reads `undefined` off every reply at
+ * runtime — which is silent, because the promise still succeeds: the view
+ * simply never leaves its loading state. Declaring the envelope is what makes
+ * the compiler force each call site to unwrap.
+ */
+type Reply<T> = { ok: true; value: T } | { ok: false; error: { message?: string } }
+
+/** Message from a failed envelope, for display. */
+function replyError(reply: { ok: false; error: { message?: string } }): string {
+  return reply.error?.message ?? 'the host rejected the request'
+}
+
 /** The host contract as this half calls it. */
 interface MemoryRemote {
-  inspect(request: { workspaceId: string }): Promise<{ report: InstructionReport }>
+  inspect(request: { workspaceId: string }): Promise<Reply<{ report: InstructionReport }>>
   remember(request: {
     workspaceId: string
     fact: string
     scope: MemoryScope
-  }): Promise<{ ok: true; path: string; line: string } | { ok: false; reason: string }>
-  read(request: { workspaceId: string; absolutePath: string }): Promise<{ text?: string }>
+  }): Promise<Reply<{ ok: true; path: string; line: string } | { ok: false; reason: string }>>
+  read(request: { workspaceId: string; absolutePath: string }): Promise<Reply<{ text?: string }>>
 }
 
 /** Minimal shape of the client's observable workspace list. */
@@ -64,12 +81,25 @@ function size(bytes: number): string {
 
 /**
  * The Memory tab.
- * @param props.ctx - client root context.
+ *
+ * `remote` arrives as a PROP rather than being read off the context here.
+ * Resolving a cordis service is context-sensitive, and a React render is not
+ * the fiber that `$mount` published into — reading `ctx.remote.dshMemory`
+ * during render yields `undefined`, the load effect returns early, and the tab
+ * sits on "Reading…" forever with no error to show for it. The slot's `inject`
+ * callback runs in the ready context, so it resolves the service once and
+ * hands it down; this is the same shape `dsh-todo` uses.
+ * @param props.remote - the mounted host contract.
  * @param props.workspaceId - workspace to inspect, or null outside one.
  * @returns the tab body.
  */
-function MemoryTab({ ctx, workspaceId }: { ctx: ClientContext; workspaceId: string | null }): React.ReactElement {
-  const remote = (ctx as unknown as { remote: Record<string, MemoryRemote | undefined> }).remote?.dshMemory
+function MemoryTab({
+  remote,
+  workspaceId,
+}: {
+  remote: MemoryRemote | undefined
+  workspaceId: string | null
+}): React.ReactElement {
   const [report, setReport] = React.useState<InstructionReport | undefined>(undefined)
   const [error, setError] = React.useState<string | undefined>(undefined)
   const [fact, setFact] = React.useState('')
@@ -91,7 +121,11 @@ function MemoryTab({ ctx, workspaceId }: { ctx: ClientContext; workspaceId: stri
       .inspect({ workspaceId })
       .then((reply) => {
         if (cancelled) return
-        setReport(reply.report)
+        if (!reply.ok) {
+          setError(replyError(reply))
+          return
+        }
+        setReport(reply.value.report)
         setError(undefined)
       })
       .catch((err: unknown) => {
@@ -111,7 +145,7 @@ function MemoryTab({ ctx, workspaceId }: { ctx: ClientContext; workspaceId: stri
     void remote
       .read({ workspaceId, absolutePath: open })
       .then((reply) => {
-        if (!cancelled) setBody(reply.text)
+        if (!cancelled) setBody(reply.ok ? reply.value.text : replyError(reply))
       })
       .catch(() => {
         if (!cancelled) setBody(undefined)
@@ -129,14 +163,23 @@ function MemoryTab({ ctx, workspaceId }: { ctx: ClientContext; workspaceId: stri
     void remote
       .remember({ workspaceId, fact: trimmed, scope })
       .then((reply) => {
-        if (reply.ok) {
+        // Two `ok` flags stack here and they mean different things: the
+        // envelope's says the CALL reached the host, the value's says the host
+        // ACCEPTED the fact. Reading the outer one as the verdict would report
+        // a refused memory as written.
+        if (!reply.ok) {
+          setNotice(replyError(reply))
+          return
+        }
+        const result = reply.value
+        if (result.ok) {
           setFact('')
           // Name the exact file. "Saved" leaves the user guessing which of four
           // candidate files in the hierarchy it landed in.
-          setNotice(`Wrote to ${reply.path}`)
+          setNotice(`Wrote to ${result.path}`)
           setRevision((n) => n + 1)
         } else {
-          setNotice(reply.reason)
+          setNotice(result.reason)
         }
       })
       .catch((err: unknown) => setNotice(err instanceof Error ? err.message : String(err)))
@@ -446,6 +489,19 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
     const fiber = anyCtx.inject(['remote.dshMemory', 'workspaces', 'slots'], (scoped) => {
       const readyCtx = scoped as ClientContext & { workspaces: { list: WorkspaceListLike } }
+
+      // Resolve the mounted namespace ONCE, here, and close over it.
+      //
+      // Two things make this the only correct place. Reading it during a React
+      // render resolves to `undefined` — a render is not the fiber `$mount`
+      // published into. And resolving it per `inject()` call hands the view a
+      // NEW object identity on every render, so the load effect's dependency
+      // changes each time, its cleanup marks the in-flight request cancelled,
+      // and the reply is discarded forever: the tab sits on "Reading…" with no
+      // error to show for it. One lookup, one stable identity.
+      const remote = (readyCtx as unknown as { remote: Record<string, MemoryRemote | undefined> }).remote
+        ?.dshMemory
+
       readyCtx.slots.inject('conversation.view', () =>
         readyCtx.slots.register(
           {
@@ -460,11 +516,11 @@ export function apply(ctx: ClientContext): void {
               // the branded values directly reads as a type error even though
               // the runtime values are equal.
               const hit = items.find((ws) => ws.sessionIds.some((id) => String(id) === String(sessionId)))
-              return { workspaceId: hit?.workspaceId ?? null }
+              return { workspaceId: hit?.workspaceId ?? null, remote }
             },
           },
-          ({ workspaceId }: { workspaceId: string | null }) =>
-            React.createElement(MemoryTab, { ctx: readyCtx, workspaceId }),
+          ({ workspaceId, remote }: { workspaceId: string | null; remote: MemoryRemote | undefined }) =>
+            React.createElement(MemoryTab, { remote, workspaceId }),
         ),
       )
     })

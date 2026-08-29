@@ -88,7 +88,7 @@ export const PLANS_REMOTE = {
     descriptor('list', listRequestSchema, listResultSchema),
     descriptor('get', getRequestSchema, getResultSchema),
     descriptor('changeToken', listRequestSchema, tokenResultSchema),
-    descriptor('remove', getRequestSchema, removeResultSchema),
+    descriptor('discard', getRequestSchema, removeResultSchema),
   ],
 }
 

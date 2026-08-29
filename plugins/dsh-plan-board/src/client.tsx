@@ -43,12 +43,24 @@ export const inject = ['slots', 'remote', 'workspaces', 'sessions']
 /** How often the change token is polled while the tab is visible, in millis. */
 const POLL_MS = 2_000
 
+/**
+ * Every mounted remote call resolves to an ENVELOPE, never the bare payload.
+ *
+ * The gateway returns `{ ok: true, value }` or `{ ok: false, error }`, and it
+ * resolves rather than rejects on a host-side failure. Typing the payload
+ * directly compiles fine and then reads `undefined` off every reply at
+ * runtime — silently, because the promise still succeeds: the view just never
+ * leaves its loading state. Declaring the envelope forces each call site to
+ * unwrap.
+ */
+type Reply<T> = { ok: true; value: T } | { ok: false; error: { message?: string } }
+
 /** The host contract as this half calls it. */
 interface PlansRemote {
-  list(request: { workspaceId: string }): Promise<{ plans: PlanMeta[]; token: number }>
-  get(request: { workspaceId: string; id: string }): Promise<{ plan?: PlanRecord }>
-  changeToken(request: { workspaceId: string }): Promise<{ token: number; pendingId?: string }>
-  remove(request: { workspaceId: string; id: string }): Promise<{ ok: boolean; token: number }>
+  list(request: { workspaceId: string }): Promise<Reply<{ plans: PlanMeta[]; token: number }>>
+  get(request: { workspaceId: string; id: string }): Promise<Reply<{ plan?: PlanRecord }>>
+  changeToken(request: { workspaceId: string }): Promise<Reply<{ token: number; pendingId?: string }>>
+  discard(request: { workspaceId: string; id: string }): Promise<Reply<{ ok: boolean; token: number }>>
 }
 
 /** Minimal shape of the client's observable session list. */
@@ -122,8 +134,9 @@ function usePlanToken(
 
     const read = async () => {
       try {
-        const next = await remote.changeToken({ workspaceId })
-        if (cancelled) return
+        const reply = await remote.changeToken({ workspaceId })
+        if (cancelled || !reply.ok) return
+        const next = reply.value
         // Replace only on a real change, so an unchanged poll does not
         // re-render every consumer twice a second.
         setState((prev) => (prev.token === next.token && prev.pendingId === next.pendingId ? prev : next))
@@ -270,9 +283,8 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
  * @param props.ctx - client root context.
  * @returns the window, or nothing.
  */
-function PlanOverlay({ ctx }: { ctx: ClientContext }): React.ReactElement | null {
+function PlanOverlay({ ctx, remote }: { ctx: ClientContext; remote: PlansRemote | undefined }): React.ReactElement | null {
   const workspace = useCurrentWorkspace(ctx)
-  const remote = (ctx as unknown as { remote: Record<string, PlansRemote | undefined> }).remote?.dshPlans
   const { token, pendingId } = usePlanToken(remote, workspace?.workspaceId)
 
   const [plan, setPlan] = React.useState<PlanRecord | undefined>(undefined)
@@ -301,7 +313,7 @@ function PlanOverlay({ ctx }: { ctx: ClientContext }): React.ReactElement | null
     void remote
       .get({ workspaceId: workspace.workspaceId, id: openId })
       .then((reply) => {
-        if (!cancelled) setPlan(reply.plan)
+        if (!cancelled) setPlan(reply.ok ? reply.value.plan : undefined)
       })
       .catch(() => {
         if (!cancelled) setPlan(undefined)
@@ -328,8 +340,13 @@ function PlanOverlay({ ctx }: { ctx: ClientContext }): React.ReactElement | null
  * @param props.workspaceId - workspace whose plans to list.
  * @returns the tab body.
  */
-function PlansTab({ ctx, workspaceId }: { ctx: ClientContext; workspaceId: string | null }): React.ReactElement {
-  const remote = (ctx as unknown as { remote: Record<string, PlansRemote | undefined> }).remote?.dshPlans
+function PlansTab({
+  remote,
+  workspaceId,
+}: {
+  remote: PlansRemote | undefined
+  workspaceId: string | null
+}): React.ReactElement {
   const { token } = usePlanToken(remote, workspaceId ?? undefined)
   const [plans, setPlans] = React.useState<PlanMeta[]>([])
   const [selected, setSelected] = React.useState<PlanRecord | undefined>(undefined)
@@ -345,7 +362,11 @@ function PlansTab({ ctx, workspaceId }: { ctx: ClientContext; workspaceId: strin
       .list({ workspaceId })
       .then((reply) => {
         if (cancelled) return
-        setPlans(reply.plans)
+        if (!reply.ok) {
+          setError(reply.error?.message ?? 'the host rejected the request')
+          return
+        }
+        setPlans(reply.value.plans)
         setError(undefined)
       })
       .catch((err: unknown) => {
@@ -365,7 +386,7 @@ function PlansTab({ ctx, workspaceId }: { ctx: ClientContext; workspaceId: strin
     void remote
       .get({ workspaceId, id: selectedId })
       .then((reply) => {
-        if (!cancelled) setSelected(reply.plan)
+        if (!cancelled) setSelected(reply.ok ? reply.value.plan : undefined)
       })
       .catch(() => {
         if (!cancelled) setSelected(undefined)
@@ -665,9 +686,17 @@ export function apply(ctx: ClientContext): void {
         workspaces: { list: WorkspaceListLike }
       }
 
+      // Resolve the mounted namespace ONCE, here in the ready context. Reading
+      // `ctx.remote.dshPlans` during a React render resolves it to `undefined`
+      // — a render is not the fiber `$mount` published into — which leaves
+      // every load effect returning early and the UI stuck on its empty state
+      // with no error to show for it.
+      const remote = (readyCtx as unknown as { remote: Record<string, PlansRemote | undefined> }).remote
+        ?.dshPlans
+
       readyCtx.slots.inject('shell.overlay', () =>
         readyCtx.slots.register({ name: 'shell.overlay', id: 'dsh-plan-board' }, () =>
-          React.createElement(PlanOverlay, { ctx: readyCtx }),
+          React.createElement(PlanOverlay, { ctx: readyCtx, remote }),
         ),
       )
 
@@ -687,11 +716,11 @@ export function apply(ctx: ClientContext): void {
               // entries carry the same brand — `includes` across the two reads
               // as a type error even though the runtime values are equal.
               const hit = items.find((ws) => ws.sessionIds.some((id) => String(id) === String(sessionId)))
-              return { workspaceId: hit?.workspaceId ?? null }
+              return { workspaceId: hit?.workspaceId ?? null, remote }
             },
           },
-          ({ workspaceId }: { workspaceId: string | null }) =>
-            React.createElement(PlansTab, { ctx: readyCtx, workspaceId }),
+          ({ workspaceId, remote: r }: { workspaceId: string | null; remote: PlansRemote | undefined }) =>
+            React.createElement(PlansTab, { remote: r, workspaceId }),
         ),
       )
     })

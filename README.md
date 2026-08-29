@@ -25,7 +25,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox, pomodoro timer | host + client | `dshMissionControl/load`, `save` |
 | [`dsh-theme`](plugins/dsh-theme) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-theme) | twelve themes, eight accents, contrast and scale sliders, and three fonts with two bundled, live preview | client + tiny host | — |
 | [`dsh-hooks`](plugins/dsh-hooks) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-hooks) | Claude Code-compatible hook lifecycle — shell commands at eight lifecycle points | host | `dshHooks/describe`, `recent` |
-| [`dsh-plan-board`](plugins/dsh-plan-board) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-plan-board) | durable plans — captures every `exit_plan_mode` plan to disk, opens a review window, keeps the history | host + client | `dshPlans/list`, `get`, `changeToken`, `remove` |
+| [`dsh-plan-board`](plugins/dsh-plan-board) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-plan-board) | durable plans — captures every `exit_plan_mode` plan to disk, opens a review window, keeps the history | host + client | `dshPlans/list`, `get`, `changeToken`, `discard` |
 | [`dsh-memory`](plugins/dsh-memory) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-memory) | `/remember` into the AGENTS.md hierarchy, plus a tab showing which instruction files the loader kept | host + client | `dshMemory/inspect`, `remember`, `read` |
 
 ---

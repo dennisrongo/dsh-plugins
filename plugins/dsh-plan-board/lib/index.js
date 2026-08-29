@@ -338,7 +338,7 @@ function writeAtomic(path, text) {
 __name(writeAtomic, "writeAtomic");
 
 // src/index.ts
-var _remove_dec, _changeToken_dec, _get_dec, _list_dec, _a, _init, _b;
+var _discard_dec, _changeToken_dec, _get_dec, _list_dec, _a, _init, _b;
 var _PlanService = class _PlanService extends (_b = TypertRemoteService) {
   /**
    * @param ctx - host context carrying the tool registry and workspace registry.
@@ -351,7 +351,7 @@ var _PlanService = class _PlanService extends (_b = TypertRemoteService) {
     __publicField(this, "dirs", /* @__PURE__ */ new Map());
   }
   /** Wrap `exit_plan_mode`'s dispatch so the plan and its outcome are kept. */
-  async [(_a = Service.init, _list_dec = [Remote], _get_dec = [Remote], _changeToken_dec = [Remote], _remove_dec = [Remote], _a)]() {
+  async [(_a = Service.init, _list_dec = [Remote], _get_dec = [Remote], _changeToken_dec = [Remote], _discard_dec = [Remote], _a)]() {
     this.ctx.on(
       "tools/execute",
       async (exec, next) => {
@@ -430,7 +430,7 @@ var _PlanService = class _PlanService extends (_b = TypertRemoteService) {
       ...pending !== void 0 ? { pendingId: pending.id } : {}
     };
   }
-  async remove(request) {
+  async discard(request) {
     const dir = this.dirOf(request?.workspaceId);
     const ok = await this.store.enqueue(dir, () => this.store.remove(dir, request?.id));
     return { ok, token: this.store.token(dir) };
@@ -440,7 +440,7 @@ _init = __decoratorStart(_b);
 __decorateElement(_init, 1, "list", _list_dec, _PlanService);
 __decorateElement(_init, 1, "get", _get_dec, _PlanService);
 __decorateElement(_init, 1, "changeToken", _changeToken_dec, _PlanService);
-__decorateElement(_init, 1, "remove", _remove_dec, _PlanService);
+__decorateElement(_init, 1, "discard", _discard_dec, _PlanService);
 __decoratorMetadata(_init, _PlanService);
 __name(_PlanService, "PlanService");
 __publicField(_PlanService, "inject", ["tools", "workspaceRegistry"]);

@@ -58,7 +58,7 @@ var PLANS_REMOTE = {
     descriptor("list", listRequestSchema, listResultSchema),
     descriptor("get", getRequestSchema, getResultSchema),
     descriptor("changeToken", listRequestSchema, tokenResultSchema),
-    descriptor("remove", getRequestSchema, removeResultSchema)
+    descriptor("discard", getRequestSchema, removeResultSchema)
   ]
 };
 
@@ -98,8 +98,8 @@ var TYPERT = {
           },
           {
             kind: "method",
-            name: "remove",
-            signature: "@Remote remove(request: PlanGetRequest): Promise<PlanRemoveResult>",
+            name: "discard",
+            signature: "@Remote discard(request: PlanGetRequest): Promise<PlanRemoveResult>",
             summary: "Delete one plan file."
           }
         ],

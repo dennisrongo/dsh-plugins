@@ -244,7 +244,7 @@ export class PlanService extends TypertRemoteService {
    * @returns whether a file was removed, and the new token.
    */
   @Remote
-  async remove(request: PlanGetRequest): Promise<PlanRemoveResult> {
+  async discard(request: PlanGetRequest): Promise<PlanRemoveResult> {
     const dir = this.dirOf(request?.workspaceId)
     const ok = await this.store.enqueue(dir, () => this.store.remove(dir, request?.id))
     return { ok, token: this.store.token(dir) }

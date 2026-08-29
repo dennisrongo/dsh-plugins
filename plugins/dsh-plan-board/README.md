@@ -58,9 +58,11 @@ Three storage details are deliberate. Writes go through a temp file and `rename`
 | `dshPlans/list` | `{ workspaceId }` | `{ plans, token }` — metadata only |
 | `dshPlans/get` | `{ workspaceId, id }` | `{ plan? }` — with the markdown body |
 | `dshPlans/changeToken` | `{ workspaceId }` | `{ token, pendingId? }` — the polled endpoint |
-| `dshPlans/remove` | `{ workspaceId, id }` | `{ ok, token }` |
+| `dshPlans/discard` | `{ workspaceId, id }` | `{ ok, token }` |
 
-All take a single parameter named `request`.
+All take a single parameter named `request`, and each reply is an **envelope** — `{ ok: true, value }` or `{ ok: false, error }` — never the bare payload.
+
+Two naming constraints are not obvious and both fail silently. A method may not be called `remove` (nor `has`, `install`, `installDirect`, `installScoped`, `ctx`, `empty`, `invokeRemote`, `methods`, `name`, `namespace`): the client's `RemoteNamespaceService` already owns those, and `$mount` **throws** on a collision, so the namespace never appears and every seat the plugin registers quietly fails to exist. And a client that reads the payload directly instead of unwrapping `value` gets `undefined` from a promise that resolved successfully, so the view sits on its loading state with no error to show. The smoke test pins the first; the client's types pin the second.
 
 ## Install
 

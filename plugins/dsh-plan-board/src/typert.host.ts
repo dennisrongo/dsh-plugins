@@ -61,8 +61,8 @@ export const TYPERT = {
           },
           {
             kind: 'method' as const,
-            name: 'remove',
-            signature: '@Remote remove(request: PlanGetRequest): Promise<PlanRemoveResult>',
+            name: 'discard',
+            signature: '@Remote discard(request: PlanGetRequest): Promise<PlanRemoveResult>',
             summary: 'Delete one plan file.',
           },
         ],

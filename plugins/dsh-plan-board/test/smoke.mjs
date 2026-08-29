@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const lib = await import('../lib/index.js')
+// The SHIPPED manifest — what the loader registers and the browser mounts.
+const { TYPERT } = await import('../lib/typert.host.js')
 const { PlanStore, parse, serialize, isSafeId, firstHeading, slugify, stamp, PlanService, MAX_PLANS } = lib
 
 let passed = 0
@@ -61,6 +63,40 @@ test('exports the documented surface', () => {
   // `workspaceRegistry` because every endpoint is addressed by workspace id.
   assert.deepEqual(PlanService.inject, ['tools', 'workspaceRegistry'])
   assert.equal(typeof PlanStore, 'function')
+})
+
+// ── the wire contract ──────────────────────────────────────────────────────
+
+/**
+ * Method names the client's `RemoteNamespaceService` already owns.
+ *
+ * `assertMethodAvailable` refuses any descriptor whose method collides with a
+ * field or a prototype member of that class, and the refusal happens inside
+ * `$mount` — which is a THROW, not a warning. It takes down the whole mount, so
+ * the namespace never appears, the `inject(['remote.dshPlans', ...])` fiber
+ * never runs, and every seat this plugin registers silently fails to exist.
+ * `remove` shipped once and cost exactly that: no Plans tab, no window, one
+ * console line.
+ */
+const RESERVED_METHODS = new Set([
+  'ctx', 'empty', 'invokeRemote', 'methods', 'name', 'namespace',
+  'constructor', 'has', 'install', 'installDirect', 'installScoped', 'remove',
+])
+
+test('no descriptor collides with the client namespace service', () => {
+  for (const d of TYPERT.invocations) {
+    assert.equal(
+      RESERVED_METHODS.has(d.method),
+      false,
+      `method "${d.method}" is reserved by RemoteNamespaceService — $mount would throw and every seat would vanish`,
+    )
+  }
+})
+
+test('the manifest and the wire agree on every method', () => {
+  const wire = TYPERT.invocations.map((d) => d.method).sort()
+  const manifest = TYPERT.model.services[0].members.map((m) => m.name).sort()
+  assert.deepEqual(manifest, wire, 'the ./typert manifest drifted from the mounted descriptors')
 })
 
 // ── helpers ────────────────────────────────────────────────────────────────
