@@ -36,6 +36,55 @@ const MAX_BUFFER = 32 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 30_000
 
 /**
+ * Git environment variables that choose WHICH repository a command operates on.
+ *
+ * Git reads these BEFORE it considers cwd, so any one of them silently
+ * overrides the directory this module was asked to work in — turning every
+ * result into a confident answer about the wrong repository. Since git exports
+ * them to every hook it runs, a harness launched from a pre-commit hook, from
+ * `git rebase --exec`, or from a CI step nested inside a git operation inherits
+ * them and reports another repo's files as the workspace's own.
+ *
+ * This is a DENYLIST, not a blanket scrub of GIT_*, and that distinction is
+ * load-bearing in the opposite direction from the watcher's allowlist: transport
+ * and credential settings (GIT_SSH_COMMAND, GIT_ASKPASS, GIT_CONFIG_GLOBAL, the
+ * proxy variables) are how users configure push and pull, and wiping them would
+ * trade this silent bug for a different silent bug.
+ */
+const REPO_LOCATION_ENV = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_GRAFT_FILE',
+  'GIT_PREFIX',
+  'GIT_INDEX_VERSION',
+]
+
+/**
+ * Build the environment for one git child process.
+ *
+ * Copies `process.env` rather than mutating it — the scrub must not be visible
+ * to the rest of the host, which shares this process.
+ * @returns the child environment, with repository-location variables removed.
+ */
+function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  for (const name of REPO_LOCATION_ENV) delete env[name]
+  // Never let git stop for credentials or an editor: this runs with no
+  // attached TTY, so an interactive prompt would hang the request until
+  // the timeout instead of failing with a message the tab can show.
+  env.GIT_TERMINAL_PROMPT = '0'
+  env.GIT_EDITOR = 'true'
+  env.GIT_PAGER = 'cat'
+  env.GIT_OPTIONAL_LOCKS = '0'
+  return env
+}
+/**
  * Run one git command in `cwd`.
  *
  * A non-zero exit is returned, not thrown: git uses exit codes for ordinary
@@ -57,16 +106,7 @@ export function runGit(cwd: string, args: string[], timeoutMs = DEFAULT_TIMEOUT_
         timeout: timeoutMs,
         maxBuffer: MAX_BUFFER,
         windowsHide: true,
-        env: {
-          ...process.env,
-          // Never let git stop for credentials or an editor: this runs with no
-          // attached TTY, so an interactive prompt would hang the request until
-          // the timeout instead of failing with a message the tab can show.
-          GIT_TERMINAL_PROMPT: '0',
-          GIT_EDITOR: 'true',
-          GIT_PAGER: 'cat',
-          GIT_OPTIONAL_LOCKS: '0',
-        },
+        env: gitEnv(),
       },
       (error, stdout, stderr) => {
         const out = typeof stdout === 'string' ? stdout : String(stdout ?? '')

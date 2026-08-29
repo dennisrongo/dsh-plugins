@@ -307,6 +307,40 @@ commit.
 branch and the partial-staging case (stage one of two files, assert the other
 does NOT appear in the text).
 
+## Environment isolation (git's location variables)
+
+**`runGit` scrubs GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE and friends from the
+child environment, and that is load-bearing.** Git resolves WHICH repository a
+command operates on from the environment *before* it looks at `cwd`, so a single
+inherited variable silently redirects every call in this package — turning the
+service's whole contract ("run git in the workspace directory resolved through
+`workspaceRegistry`") into a confident answer about somebody else's repository.
+Measured here: with `GIT_INDEX_FILE` leaked, `readStatus` on a 2-file throwaway
+repo reported **190 changed files**.
+
+This is not exotic. Git EXPORTS these variables to every hook it runs, so a
+harness launched from a pre-commit hook, from `git rebase --exec`, or from a CI
+step nested inside a git operation inherits them. That is exactly how it was
+found: this repo's own pre-commit hook made `host-ops.mjs` report 5 files where
+it expected 2.
+
+The scrub is a **denylist**, deliberately — the inverse of the watcher's
+allowlist reasoning. `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_CONFIG_GLOBAL` and
+the proxy variables are how users configure push and pull; a blanket wipe of
+`GIT_*` would trade one silent bug for another. `test/env-isolation.mjs` pins
+both halves: five location variables must not redirect the repo, and a
+non-location setting must survive.
+
+**The tests need the same scrub, and for a worse reason.** They build fixtures
+with `execFileSync('git', ...)` directly, which never passes through `runGit`.
+Under a hook, `git init` in a fixture resolves `GIT_DIR` before `cwd` and
+re-initializes the OUTER repository: observed setting `core.bare = true` on this
+working repo and overwriting its user identity with a test fixture's, which
+makes every subsequent git command fail with `fatal: this operation must be run
+in a work tree`. `test/git-env.mjs` is a side-effecting import that scrubs the
+variables once at process start; every test that spawns git imports it FIRST.
+Removing that import makes `pnpm test` destructive rather than merely wrong.
+
 ## Verification
 
 ```bash

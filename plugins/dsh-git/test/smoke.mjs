@@ -8,6 +8,8 @@
  *   2. Every Remote codec is `strict`. A non-strict codec makes the browser's
  *      $mount throw, and the tab would silently never appear.
  */
+// Must come first: it scrubs inherited GIT_DIR/GIT_INDEX_FILE before any git runs.
+import './git-env.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'

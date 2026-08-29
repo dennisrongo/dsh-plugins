@@ -61,6 +61,29 @@ var RECENT_COMMITS = 15;
 import { execFile } from "node:child_process";
 var MAX_BUFFER = 32 * 1024 * 1024;
 var DEFAULT_TIMEOUT_MS = 3e4;
+var REPO_LOCATION_ENV = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_GRAFT_FILE",
+  "GIT_PREFIX",
+  "GIT_INDEX_VERSION"
+];
+function gitEnv() {
+  const env = { ...process.env };
+  for (const name of REPO_LOCATION_ENV) delete env[name];
+  env.GIT_TERMINAL_PROMPT = "0";
+  env.GIT_EDITOR = "true";
+  env.GIT_PAGER = "cat";
+  env.GIT_OPTIONAL_LOCKS = "0";
+  return env;
+}
+__name(gitEnv, "gitEnv");
 function runGit(cwd, args, timeoutMs = DEFAULT_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     execFile(
@@ -71,16 +94,7 @@ function runGit(cwd, args, timeoutMs = DEFAULT_TIMEOUT_MS) {
         timeout: timeoutMs,
         maxBuffer: MAX_BUFFER,
         windowsHide: true,
-        env: {
-          ...process.env,
-          // Never let git stop for credentials or an editor: this runs with no
-          // attached TTY, so an interactive prompt would hang the request until
-          // the timeout instead of failing with a message the tab can show.
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_EDITOR: "true",
-          GIT_PAGER: "cat",
-          GIT_OPTIONAL_LOCKS: "0"
-        }
+        env: gitEnv()
       },
       (error, stdout, stderr) => {
         const out = typeof stdout === "string" ? stdout : String(stdout ?? "");

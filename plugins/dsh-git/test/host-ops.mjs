@@ -7,6 +7,8 @@
  * The LLM path is deliberately NOT covered here — it needs credentials and a
  * live model; it is verified separately against the running server.
  */
+// Must come first: it scrubs inherited GIT_DIR/GIT_INDEX_FILE before any git runs.
+import './git-env.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'

@@ -10,6 +10,8 @@
  * It exercises the real RepoWatcher against a real repository on disk — no
  * mocks, because the whole question is whether the OS delivers the events.
  */
+// Must come first: it scrubs inherited GIT_DIR/GIT_INDEX_FILE before any git runs.
+import './git-env.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
