@@ -17,42 +17,17 @@
  */
 import './git-env.mjs'
 import assert from 'node:assert/strict'
-import { Context } from '@deepseek-ai/cordis'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, existsSync, rmSync, mkdirSync } from 'node:fs'
+import { writeFileSync, existsSync, rmSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
+import { Context } from '@deepseek-ai/cordis'
 import { GitService } from '../lib/index.js'
+// One rig, shared with branch-merge-stash.mjs: two copies of the setup drift,
+// and the drift shows up as a test that passes for the wrong reason.
+import { makeService, cleanup, makeRunner, WS, head } from './service-harness.mjs'
 
-let passed = 0
-async function test(name, fn) {
-  await fn()
-  passed += 1
-  console.log('  ok  ' + name)
-}
-
-/** Build a repo with one commit, plus a service pointed at it. */
-function makeService(prefix) {
-  const parent = mkdtempSync(join(tmpdir(), prefix))
-  const repo = join(parent, 'proj')
-  mkdirSync(repo)
-  const g = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8', stdio: ['ignore','pipe','pipe'] })
-  g('init', '-b', 'main'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'T')
-  writeFileSync(join(repo, 'a.txt'), 'seed\n')
-  g('add', '-A'); g('commit', '-m', 'seed')
-  const registered = []
-  const ctx = new Context()
-  ctx.provide('workspaceRegistry'); ctx.provide('llm'); ctx.provide('agentDefaultModel')
-  ctx.workspaceRegistry = {
-    list: () => [{ id: 'w1', path: repo }],
-    create: async (path, title) => { registered.push({ path, title }); return { id: 'new', path } },
-  }
-  return { parent, repo, g, registered, svc: new GitService(ctx) }
-}
-const head = (g) => g('rev-parse', '--abbrev-ref', 'HEAD').trim()
-const WS = { workspaceId: 'w1' }
-const boxes = []
-function fresh(prefix) { const b = makeService(prefix); boxes.push(b); return b }
+const { test, state } = makeRunner()
+const fresh = makeService
 
 try {
   // --- the bug this suite exists to catch ---------------------------------
@@ -312,7 +287,7 @@ try {
     }
   })
 } finally {
-  for (const b of boxes) { try { rmSync(b.parent, { recursive: true, force: true }) } catch {} }
+  cleanup()
 }
 
-console.log('\n' + passed + ' worktree integration checks passed')
+console.log('\n' + state.passed + ' worktree integration checks passed')

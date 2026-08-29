@@ -675,8 +675,15 @@ export class GitService extends TypertRemoteService {
   async stash(request: StashRequest): Promise<CommandResult> {
     const dir = this.workspaceDir(request?.workspaceId)
     const action = request?.action
+    // Validate whenever an index is PRESENT, whatever its type. Gating the
+    // check on `typeof === 'number'` let a malformed value (a string, say) fall
+    // through to undefined, and undefined means "the most recent stash" — so
+    // `drop` with a bad index silently destroyed stash@{0} instead of refusing.
+    // The wire schema rejects a non-number first, but this is the real boundary.
     const index =
-      typeof request?.index === 'number' ? assertSafeStashIndex(request.index) : undefined
+      request?.index === undefined || request?.index === null
+        ? undefined
+        : assertSafeStashIndex(request.index)
     const selector = index === undefined ? undefined : `stash@{${index}}`
     const message = typeof request?.message === 'string' ? request.message.trim() : ''
     const includeUntracked = request?.includeUntracked === true

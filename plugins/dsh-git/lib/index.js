@@ -1074,7 +1074,7 @@ ${body}` }],
   async stash(request) {
     const dir = this.workspaceDir(request?.workspaceId);
     const action = request?.action;
-    const index = typeof request?.index === "number" ? assertSafeStashIndex(request.index) : void 0;
+    const index = request?.index === void 0 || request?.index === null ? void 0 : assertSafeStashIndex(request.index);
     const selector = index === void 0 ? void 0 : `stash@{${index}}`;
     const message = typeof request?.message === "string" ? request.message.trim() : "";
     const includeUntracked = request?.includeUntracked === true;

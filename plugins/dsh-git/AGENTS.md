@@ -54,7 +54,7 @@ Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `worktree-integration.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
+`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `worktree-integration.mjs` + `branch-merge-stash.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
 
 Profiles materialise `file:` deps as copies **frozen at install time**, so a rebuild does not reach them. `scripts/dev-link.ps1` at the repo root replaces those copies with junctions: client-half edits then deploy on **browser refresh**, host-half edits need a **profile restart**.
 
@@ -672,6 +672,38 @@ unknown workspace, non-repository), registration (resolved absolute path reaches
 registry, a failed add registers nothing, a registry failure does not fail the git
 operation), and concurrency (three simultaneous adds all land). Both original bugs were
 verified to fail it.
+
+`branch-merge-stash.mjs` is the same treatment for the other three endpoints, on the shared
+`service-harness.mjs` rig — one copy of the setup, because two drift and the drift shows up
+as a test passing for the wrong reason. It found a fourth bug:
+
+- **A malformed stash index was silently ignored, and that was destructive.** The host read
+  `typeof request?.index === 'number' ? assertSafeStashIndex(...) : undefined`, so anything
+  that was not already a number skipped validation and fell through to `undefined` — which
+  means "the most recent stash". `drop` with a bad index therefore destroyed `stash@{0}`
+  instead of refusing. The wire schema rejects a non-number first, but the host is the real
+  boundary and it now validates whenever an index is PRESENT, whatever its type.
+
+It also corrected an assumption of mine rather than the code: an unknown action does NOT
+reject, because `withRepo` catches the throw and returns it as data. That is the right shape
+— the tab renders the reason instead of the bridge breaking — so the test asserts the
+reported failure.
+
+Coverage is branch (create / create with startPoint / createSwitch / switch / delete with the
+unmerged refusal and the `force` override / delete the checked-out branch / rename and the
+duplicate-name refusal / hostile names across every action), merge (fast-forward, `noFF`
+producing a real two-parent commit, a conflict leaving `merging: true` with `mergeHead`
+named, `continue` refused while conflicts stand, resolve-then-continue, abort restoring the
+tree, abort with nothing to abort, an unknown branch), and stash (push, `includeUntracked`
+round-tripping a brand-new file, pop, apply keeping the entry, the index-is-a-CURSOR
+renumbering, clear, pop on an empty stack, a conflicting pop, an invalid index, and push
+with nothing to stash being a no-op rather than a failure). An unborn branch — no commits at
+all — is checked across branch, stash, merge and refs, since none of them have a HEAD to
+work from.
+
+Three sabotages were verified to fail it: ignoring a malformed stash index, turning `-d`
+into `-D` (which would delete unmerged work without the refusal the confirm dialog guards),
+and making `createSwitch` create without moving HEAD.
 
 ## Environment isolation (git's location variables)
 
