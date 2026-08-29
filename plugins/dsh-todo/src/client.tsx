@@ -28,6 +28,7 @@ import {
   STATUSES,
   normalizeDueDate,
   normalizeLabel,
+  normalizeVersionLabel,
   toPriority,
   toStatus,
   type TodoItem,
@@ -381,12 +382,35 @@ export interface TodoGroup {
 export const UNASSIGNED = 'Unassigned'
 
 /**
+ * Compare two release/sprint labels, newest first. Labels are decimal-only by
+ * contract, so they compare as NUMBERS — `1.10` sorts below `1.5` — with a
+ * localeCompare fallback for legacy labels written before the rule existed,
+ * which still display and group (no migration).
+ */
+function compareLabelsDesc(a: string, b: string): number {
+  const na = Number(a)
+  const nb = Number(b)
+  if (a !== '' && b !== '' && !Number.isNaN(na) && !Number.isNaN(nb)) return nb - na
+  return b.localeCompare(a, undefined, { numeric: true })
+}
+
+/**
+ * Whether a typed release/sprint edit may be committed: empty clears the
+ * field, a bare decimal writes, anything else is refused — the same rule the
+ * CLI enforces, so neither face of the plugin can mix alpha into a numeric
+ * label.
+ */
+export function isCommittableLabel(raw: string): boolean {
+  return normalizeLabel(raw) === undefined || normalizeVersionLabel(raw) !== undefined
+}
+
+/**
  * Break a list into ordered sections.
  *
  * Ordering is by MEANING, not alphabetical: statuses follow board order and
  * priorities follow urgency, so "In Progress" never sorts under "Backlog".
- * Release and sprint are free text, so they sort descending — the newest
- * release is the one being worked on — with `Unassigned` pinned last.
+ * Release and sprint are decimal labels, so they sort NUMERICALLY descending —
+ * the newest release is the one being worked on — with `Unassigned` pinned last.
  *
  * Empty groups are omitted, except that grouping by status keeps the board's
  * shape visible only where work exists; a section with nothing in it is noise.
@@ -423,7 +447,7 @@ export function groupItems(items: TodoItem[], by: TodoGroupBy): TodoGroup[] {
       // Unassigned is always last, regardless of how it sorts as a string.
       if (a === UNASSIGNED) return 1
       if (b === UNASSIGNED) return -1
-      return b.localeCompare(a, undefined, { numeric: true })
+      return compareLabelsDesc(a, b)
     })
     .map(([key, groupItems]) => ({ key, label: key, items: groupItems }))
 }
@@ -431,9 +455,9 @@ export function groupItems(items: TodoItem[], by: TodoGroupBy): TodoGroup[] {
 /**
  * Every distinct release (or sprint) label in use, newest first.
  *
- * This is what makes free-text labels workable: the add form and the row editor
- * offer these as suggestions, so labels converge on a shared vocabulary without
- * a releases table to maintain.
+ * This is what keeps the datalists useful: the editors offer these as
+ * suggestions, so labels converge on a shared vocabulary without a releases
+ * table to maintain.
  */
 export function knownLabels(items: TodoItem[], field: 'release' | 'sprint'): string[] {
   const seen = new Set<string>()
@@ -441,7 +465,7 @@ export function knownLabels(items: TodoItem[], field: 'release' | 'sprint'): str
     const value = item[field]
     if (value) seen.add(value)
   }
-  return [...seen].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+  return [...seen].sort(compareLabelsDesc)
 }
 
 /**
@@ -1454,8 +1478,13 @@ export function TodoModal({
                 className="dshtd-input"
                 list="dshtd-releases"
                 defaultValue={item.release ?? ''}
-                placeholder="v1.2.0"
-                onBlur={(e) => store.update((items) => updateItem(items, item.id, { release: e.target.value }))}
+                placeholder="1.5"
+                onBlur={(e) => {
+                  // Refused, never dropped: a non-decimal label reverts to the
+                  // stored value instead of being written.
+                  if (!isCommittableLabel(e.target.value)) { e.target.value = item.release ?? ''; return }
+                  store.update((items) => updateItem(items, item.id, { release: e.target.value }))
+                }}
               />
             </label>
             <label className="dshtd-modal-label">
@@ -1464,8 +1493,11 @@ export function TodoModal({
                 className="dshtd-input"
                 list="dshtd-sprints"
                 defaultValue={item.sprint ?? ''}
-                placeholder="Sprint 24"
-                onBlur={(e) => store.update((items) => updateItem(items, item.id, { sprint: e.target.value }))}
+                placeholder="24"
+                onBlur={(e) => {
+                  if (!isCommittableLabel(e.target.value)) { e.target.value = item.sprint ?? ''; return }
+                  store.update((items) => updateItem(items, item.id, { sprint: e.target.value }))
+                }}
               />
             </label>
             <label className="dshtd-modal-label">
@@ -1772,10 +1804,11 @@ function TodoDetail({
             className="dshtd-input"
             list="dshtd-releases"
             value={release}
-            placeholder="v1.2.0"
+            placeholder="1.5"
             onChange={(e) => setRelease(e.target.value)}
             onKeyDown={(e) => e.stopPropagation()}
             onBlur={() => {
+              if (!isCommittableLabel(release)) { setRelease(item.release ?? ''); return }
               if ((normalizeLabel(release) ?? '') === (item.release ?? '')) return
               store.update((items) => updateItem(items, item.id, { release }))
             }}
@@ -1787,10 +1820,11 @@ function TodoDetail({
             className="dshtd-input"
             list="dshtd-sprints"
             value={sprint}
-            placeholder="Sprint 24"
+            placeholder="24"
             onChange={(e) => setSprint(e.target.value)}
             onKeyDown={(e) => e.stopPropagation()}
             onBlur={() => {
+              if (!isCommittableLabel(sprint)) { setSprint(item.sprint ?? ''); return }
               if ((normalizeLabel(sprint) ?? '') === (item.sprint ?? '')) return
               store.update((items) => updateItem(items, item.id, { sprint }))
             }}
@@ -1814,7 +1848,7 @@ function TodoDetail({
         </label>
         <span className="dshtd-field">Created {fmtAge(item.createdAt)} ago</span>
       </div>
-      {/* Shared suggestion lists: free-text labels converge on a vocabulary
+      {/* Shared suggestion lists: decimal labels converge on a vocabulary
           without a releases table to administer. */}
       <datalist id="dshtd-releases">
         {knownReleases.map((r) => (

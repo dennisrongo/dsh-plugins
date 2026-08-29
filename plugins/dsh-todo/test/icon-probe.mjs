@@ -35,7 +35,7 @@ const html = '<!doctype html><meta charset=utf-8><style>html,body{margin:0;backg
   // the row as it is ACTUALLY rendered — chips included.
   '<span class="dshtd-chips" id="chips">' +
   '<span class="dshtd-chip p0">P0</span>' +
-  '<span class="dshtd-chip rel">v1.2.0</span>' +
+  '<span class="dshtd-chip rel">1.5</span>' +
   '<span class="dshtd-chip due-over" id="due">Mar 14</span>' +
   '<select class="dshtd-status s-in-progress" id="pill"><option>In Progress</option></select>' +
   '</span>' +

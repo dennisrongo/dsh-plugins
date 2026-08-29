@@ -549,10 +549,38 @@ assert.deepEqual(m.filterItems([], 'open'), [])
   assert.equal(roadmap[0].release, 'v1.0.0')
   assert.equal(roadmap[0].sprint, 'Sprint 1')
 
-  // knownLabels drives the datalist suggestions that keep free text convergent.
+  // knownLabels drives the datalist suggestions that keep labels convergent.
   assert.deepEqual(m.knownLabels(roadmap, 'release'), ['v1.1.0', 'v1.0.0'])
   assert.deepEqual(m.knownLabels(roadmap, 'sprint'), ['Sprint 1'])
   assert.deepEqual(m.knownLabels([], 'release'), [])
+}
+
+// Decimal labels sort NUMERICALLY, not lexicographically: "1.10" is 1.1, so it
+// sorts below "1.5" — the whole point of the decimal-only rule.
+{
+  const dec = [
+    { id: 'a', title: 'a', status: 'todo', priority: 'p2', release: '1.10', createdAt: 1 },
+    { id: 'b', title: 'b', status: 'todo', priority: 'p2', release: '1.9', createdAt: 2 },
+    { id: 'c', title: 'c', status: 'todo', priority: 'p2', release: '1.5', createdAt: 3 },
+  ]
+  assert.deepEqual(m.groupItems(dec, 'release').map((g) => g.key), ['1.9', '1.5', '1.10'],
+    'decimal releases sort as numbers, newest first')
+  assert.deepEqual(m.knownLabels(dec, 'release'), ['1.9', '1.5', '1.10'])
+}
+
+// --- decimal label gate -------------------------------------------------------
+// Release/sprint accept only bare decimals; the gate decides whether a typed
+// edit may commit, mirroring the CLI's "refused, never dropped" rule.
+{
+  assert.equal(m.isCommittableLabel('1.5'), true)
+  assert.equal(m.isCommittableLabel('24'), true)
+  assert.equal(m.isCommittableLabel(' 1.5 '), true, 'surrounding whitespace is normalized')
+  assert.equal(m.isCommittableLabel(''), true, 'an empty edit clears the field')
+  assert.equal(m.isCommittableLabel('   '), true, 'a whitespace-only edit clears the field')
+  assert.equal(m.isCommittableLabel('v1.5'), false)
+  assert.equal(m.isCommittableLabel('Sprint 24'), false)
+  assert.equal(m.isCommittableLabel('1.2.0'), false, 'only one dot — a single number')
+  assert.equal(m.isCommittableLabel('beta'), false)
 }
 
 // --- archive ----------------------------------------------------------------

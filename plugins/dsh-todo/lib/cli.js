@@ -22,6 +22,11 @@ function normalizeLabel(raw) {
   const text = raw.replace(/\s+/g, " ").trim().slice(0, MAX_LABEL);
   return text.length > 0 ? text : void 0;
 }
+var VERSION_LABEL_RE = /^\d+(\.\d+)?$/;
+function normalizeVersionLabel(raw) {
+  const label = normalizeLabel(raw);
+  return label !== void 0 && VERSION_LABEL_RE.test(label) ? label : void 0;
+}
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 function normalizeDueDate(raw) {
   if (typeof raw !== "string") return void 0;
@@ -297,8 +302,8 @@ Options
 
   --status <s>               ${STATUSES.join("|")}
   --priority <p>             ${PRIORITIES.join("|")}
-  --release <label>          e.g. v1.2.0        (empty string clears)
-  --sprint <label>           e.g. "Sprint 24"   (empty string clears)
+  --release <n[.n]>          e.g. 1.5            (empty string clears)
+  --sprint <n[.n]>           e.g. 24             (empty string clears)
   --due <YYYY-MM-DD>         Calendar day       (empty string clears)
   --description <text>       Body text          (empty string clears)
   --title <text>             Rename (update only)
@@ -309,8 +314,8 @@ Ids may be given as any unambiguous prefix.
 
 Examples
   dsh-todo list --open --json
-  dsh-todo add "Fix token refresh" --priority p0 --release v1.2.0 --due 2026-03-14
-  dsh-todo update t1a2 --status in-progress --sprint "Sprint 24"
+  dsh-todo add "Fix token refresh" --priority p0 --release 1.5 --due 2026-03-14
+  dsh-todo update t1a2 --status in-progress --sprint 24
   dsh-todo done t1a2
 `;
 function run(parsed, cwd, now = Date.now, rand = Math.random) {
@@ -358,8 +363,15 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
       const title = positional.join(" ").trim();
       if (!title) throw new CliError("add needs a title");
       const description = str(options, "description");
-      const release = normalizeLabel(str(options, "release"));
-      const sprint = normalizeLabel(str(options, "sprint"));
+      const releaseRaw = str(options, "release");
+      const sprintRaw = str(options, "sprint");
+      for (const [flag, raw] of [["--release", releaseRaw], ["--sprint", sprintRaw]]) {
+        if (raw !== void 0 && raw !== "" && normalizeVersionLabel(raw) === void 0) {
+          throw new CliError(`${flag} must be a decimal number like 1.5 (got "${raw}")`);
+        }
+      }
+      const release = normalizeVersionLabel(releaseRaw);
+      const sprint = normalizeVersionLabel(sprintRaw);
       const dueRaw = str(options, "due");
       if (dueRaw !== void 0 && dueRaw !== "" && normalizeDueDate(dueRaw) === void 0) {
         throw new CliError(`--due must be a real calendar date as YYYY-MM-DD (got "${dueRaw}")`);
@@ -391,6 +403,11 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
       if (due !== void 0 && due !== "" && normalizeDueDate(due) === void 0) {
         throw new CliError(`--due must be a real calendar date as YYYY-MM-DD (got "${due}")`);
       }
+      for (const [flag, raw] of [["--release", release], ["--sprint", sprint]]) {
+        if (raw !== void 0 && raw !== "" && normalizeVersionLabel(raw) === void 0) {
+          throw new CliError(`${flag} must be a decimal number like 1.5 (got "${raw}")`);
+        }
+      }
       if (status === void 0 && priority === void 0 && title === void 0 && description === void 0 && release === void 0 && sprint === void 0 && due === void 0) {
         throw new CliError("update needs at least one field to change");
       }
@@ -413,7 +430,7 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
           }
           for (const [key, raw] of [["release", release], ["sprint", sprint]]) {
             if (raw === void 0) continue;
-            const label = normalizeLabel(raw);
+            const label = normalizeVersionLabel(raw);
             if (label !== void 0) next[key] = label;
             else delete next[key];
           }

@@ -18,8 +18,13 @@ An item is a **task**, not a checklist line:
   **replaces the old boolean `done`**; `isDone(item)` derives it. Only `setStatus` writes it,
   so `completedAt` can never contradict the status.
 - `release` and `sprint` are **deliberately separate axes** — what ships together vs. when it
-  is worked — and both are free text, not entities. Grouping and filtering need no releases
-  table, and `knownLabels()` feeds a `<datalist>` so labels converge without one.
+  is worked — and both are **decimal-only labels** (`normalizeVersionLabel` in `types.ts`:
+  `1`, `1.5`, `24` pass; `v1.5`, `Sprint 24`, `1.2.0` are refused), so they sort
+  numerically and never mix alpha with numeric. Enforcement is at the write paths only — CLI
+  `add`/`update` throw, the UI editors revert on blur — while READ paths
+  (`db.ts`, `sanitizeItems`, `coerceItems`) still pass legacy labels through, because
+  there is no migration and pre-rule data must keep loading. Grouping and filtering need no
+  releases table, and `knownLabels()` feeds a `<datalist>` so labels converge without one.
 - `title` caps at `MAX_TEXT` (500); `description` has its own `MAX_DESC` (5000), because
   reusing 500 silently truncates acceptance criteria. Labels cap at `MAX_LABEL` (60).
 - `dueDate` is a `YYYY-MM-DD` **calendar day, not an epoch** — "due the 14th" must read as the
@@ -98,8 +103,8 @@ shell out and manage the tasks you see in the tab. Scoped to a workspace DIRECTO
 
 ```bash
 dsh-todo list --open --json
-dsh-todo add "Fix token refresh" --priority p0 --release v1.2.0 --due 2026-03-14
-dsh-todo update <id> --status in-progress --sprint "Sprint 24"
+dsh-todo add "Fix token refresh" --priority p0 --release 1.5 --due 2026-03-14
+dsh-todo update <id> --status in-progress --sprint 24
 dsh-todo done|reopen|rm|show <id>
 dsh-todo archive [<id>]        # no id = every completed task
 ```
@@ -130,8 +135,10 @@ stays clean JSON regardless.
   way to distinguish "unset this" from "leave it alone". **PowerShell strips empty arguments**
   before Node sees them, turning that into a bare `--release` flag that clears nothing — use
   `--release=`, which the parser splits on `=` and which survives every shell.
-- **Invalid values are refused, never dropped.** `--due 2026-02-31` exits non-zero instead of
-  silently storing nothing, because an agent would otherwise never learn it was ignored.
+- **Invalid values are refused, never dropped.** `--due 2026-02-31` and
+  `--release v1.5` exit non-zero instead of silently storing nothing, because an agent would
+  otherwise never learn it was ignored. Release/sprint accept only bare decimals
+  (`normalizeVersionLabel`); an empty value still CLEARS the field.
 - **Exit codes are distinct**: `2` usage, `3` not-found, `0` ok — so a script can branch on
   why a command failed. `--json` prints JSON on the ERROR path too.
 - **The shebang comes from the esbuild `banner`, not the source.** One in each makes the

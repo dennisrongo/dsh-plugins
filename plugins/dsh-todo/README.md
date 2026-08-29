@@ -31,8 +31,10 @@ next to the code it describes.
   standup actually asks about: what is moving, and what is stuck.
 - **Priority** — `P0`–`P3`, shown as a chip. Only P0/P1 are coloured, so the
   list flags what is urgent instead of turning into a rainbow.
-- **Release and sprint** — two independent labels: what ships together
-  (`v1.2.0`) and when it is worked (`Sprint 24`). A task can be in both.
+- **Release and sprint** — two independent decimal labels: what ships
+  together (`1.5`) and when it is worked (`24`). A task can be in both.
+  Decimal-only (`1`, `1.5`, `24` — never `v1.5`), so labels sort
+  numerically and never mix alpha with numeric.
 - **Group by** — None · Status · Release · Sprint · Priority, with collapsible
   section headers carrying their own `done/total` and progress bar. Grouping by
   status gives you a kanban board without drag-and-drop.
@@ -55,7 +57,7 @@ next to the code it describes.
   restored (↩) or permanently deleted from the Archive view.
 - **Full editing** — add, check off, click-to-edit the title, edit the
   description and labels, reorder (▲/▼), archive, and delete. Release and sprint
-  inputs suggest labels already in use, so free text converges on a shared
+  inputs suggest labels already in use, so values converge on a shared
   vocabulary without a releases table to administer.
 - **Themed** — colors come only from the shell's `--dsw-*` tokens, so it follows
   light/dark automatically. Respects `prefers-reduced-motion`.
@@ -181,14 +183,14 @@ experimental-feature warning on stderr; it is harmless, and `2>/dev/null` silenc
 ```bash
 cd ~/projects/my-app          # the workspace IS the current directory
 
-dsh-todo add "Fix token refresh" --priority p0 --release v1.2.0 --due 2026-03-14
-dsh-todo add "Write migration guide" --sprint "Sprint 24"
+dsh-todo add "Fix token refresh" --priority p0 --release 1.5 --due 2026-03-14
+dsh-todo add "Write migration guide" --sprint 24
 dsh-todo list
 ```
 
 ```text
-[ ] tmtcfbutukp4j todo        p0 Fix token refresh  (release=v1.2.0 due=2026-03-14)
-[ ] tmtcfbuxr5y9x todo        p2 Write migration guide  (sprint=Sprint 24)
+[ ] tmtcfbutukp4j todo        p0 Fix token refresh  (release=1.5 due=2026-03-14)
+[ ] tmtcfbuxr5y9x todo        p2 Write migration guide  (sprint=24)
 [ ] tmtcfbv071e6w in-progress p2 Ship it
 ```
 
@@ -198,7 +200,7 @@ That is the whole display contract — it stays greppable and diffable.
 Move work along, then file it away:
 
 ```bash
-dsh-todo update tmtcfbut --status in-progress --sprint "Sprint 24"
+dsh-todo update tmtcfbut --status in-progress --sprint 24
 dsh-todo show tmtcfbut                  # everything about one task
 dsh-todo done tmtcfbut
 dsh-todo archive                        # archive EVERY completed task
@@ -231,15 +233,15 @@ dsh-todo --workspace ~/projects/other list --open
 | `--json` | all | Machine-readable output, **including on errors** |
 | `--status <s>` | add, update, list | `backlog` · `todo` · `in-progress` · `blocked` · `done` |
 | `--priority <p>` | add, update, list | `p0`–`p3` (default `p2`) |
-| `--release <label>` | add, update, list | e.g. `v1.2.0` |
-| `--sprint <label>` | add, update, list | e.g. `"Sprint 24"` |
+| `--release <n[.n]>` | add, update, list | Decimal only, e.g. `1.5`; `v1.5` is refused |
+| `--sprint <n[.n]>` | add, update, list | Decimal only, e.g. `24`; `"Sprint 24"` is refused |
 | `--due <YYYY-MM-DD>` | add, update | A calendar day; impossible dates are refused |
 | `--description <text>` | add, update | Body text — acceptance criteria, repro steps |
 | `--title <text>` | update | Rename |
 | `--open` | list | Everything unfinished, whatever stage |
 | `--archived` | list | Show archived tasks *instead of* active ones |
 
-Filters combine, so `list --open --priority p0 --release v1.2.0` is an AND across all three.
+Filters combine, so `list --open --priority p0 --release 1.5` is an AND across all three.
 `--key value` and `--key=value` are both accepted.
 
 ### Driving it from a script or an agent
@@ -260,7 +262,7 @@ dsh-todo list --open --json
       "title": "Fix token refresh",
       "status": "todo",
       "priority": "p0",
-      "release": "v1.2.0",
+      "release": "1.5",
       "dueDate": "2026-03-14",
       "createdAt": 1787889639378
     }
@@ -338,14 +340,18 @@ list. That is the designed reconciliation, not lost data.
 | `description` | The body: acceptance criteria, repro steps, links. Its own 5000 cap, because reusing the title's 500 would silently truncate real notes. |
 | `status` | `backlog \| todo \| in-progress \| blocked \| done`. **The source of truth** — there is no separate `done` flag to fall out of sync. |
 | `priority` | `p0`–`p3`, default `p2` so an unranked task sits mid-pile rather than jumping the queue. |
-| `release` | What ships together, e.g. `v1.2.0`. |
-| `sprint` | When it is worked, e.g. `Sprint 24`. |
+| `release` | What ships together, e.g. `1.5`. Decimal only. |
+| `sprint` | When it is worked, e.g. `24`. Decimal only. |
 | `dueDate` | `YYYY-MM-DD`. A calendar day, not an instant — an epoch would bind it to a timezone and let one task read as two different days. Impossible dates like `2025-02-31` are rejected rather than rolled forward. |
 
-**Release and sprint are separate on purpose.** A task can be worked in Sprint 24
-and ship in v1.3.0; collapsing them into one field loses the ability to answer
-either question. Both are free text rather than entities — grouping and
-filtering work with no releases table, no CRUD, and no migration to rename one.
+**Release and sprint are separate on purpose.** A task can be worked in sprint 24
+and ship in 1.3; collapsing them into one field loses the ability to answer
+either question. Both are **decimal-only labels** (`^\d+(\.\d+)?$` — `1`,
+`1.5`, `24` pass; `v1.5`, `Sprint 24`, and `1.2.0` are refused at every
+write path, CLI and UI alike) rather than entities — grouping and filtering work
+with no releases table, no CRUD, and no migration to rename one. Decimal-only
+means the labels sort as numbers and never mix alpha with numeric. Labels stored
+before the rule still load, group, and display unchanged.
 
 `completedAt` is written only by the status transition, so it can never claim a
 task is finished that isn't. Absent optional fields are absent *keys*, never

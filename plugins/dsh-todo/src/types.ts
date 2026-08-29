@@ -53,15 +53,18 @@ export interface TodoItem {
   status: TodoStatus
   priority: TodoPriority
   /**
-   * What ships together, e.g. `"v1.2.0"`. Free text on purpose: a release is
-   * modelled as a LABEL rather than an entity, so grouping and filtering work
-   * with no releases table, no CRUD, and no migration when one is renamed.
+   * What ships together, e.g. `"1.5"`. Decimal-only (`1`, `1.5`, `24`),
+   * enforced at every write path — a numeric label sorts numerically and never
+   * mixes alpha with numeric the way `"v1.5"` or `"Sprint 24"` would. Still
+   * modelled as a LABEL rather than an entity: grouping and filtering work with
+   * no releases table, no CRUD, and no migration when one is renamed.
    */
   release?: string
   /**
-   * When it is worked on, e.g. `"Sprint 24"`. Deliberately a separate axis from
-   * {@link TodoItem.release}: a task can be worked in Sprint 24 and ship in
-   * v1.3.0, and collapsing the two loses the ability to answer either question.
+   * When it is worked on, e.g. `"24"`. Same decimal-only rule as
+   * {@link TodoItem.release}, and deliberately a separate axis from it: a task
+   * can be worked in sprint 24 and ship in 1.3, and collapsing the two loses
+   * the ability to answer either question.
    */
   sprint?: string
   /**
@@ -161,6 +164,26 @@ export function normalizeLabel(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined
   const text = raw.replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL)
   return text.length > 0 ? text : undefined
+}
+
+/**
+ * A decimal label: digits with at most one dot, e.g. `1`, `1.5`, `24`.
+ * Multi-part versions (`1.2.0`) are rejected on purpose — only one dot sorts
+ * correctly as a single number.
+ */
+const VERSION_LABEL_RE = /^\d+(\.\d+)?$/
+
+/**
+ * Coerce untrusted input to a valid release/sprint label, or `undefined`.
+ *
+ * Returns the normalized label only when it is a bare decimal — `1.5` passes,
+ * `v1.5` and `Sprint 24` do not — so release/sprint stay numeric and sort
+ * without mixing alpha and numeric. Callers refuse on `undefined` rather than
+ * dropping the input, the same contract as {@link normalizeDueDate}.
+ */
+export function normalizeVersionLabel(raw: unknown): string | undefined {
+  const label = normalizeLabel(raw)
+  return label !== undefined && VERSION_LABEL_RE.test(label) ? label : undefined
 }
 
 /** Matches a `YYYY-MM-DD` calendar date. */

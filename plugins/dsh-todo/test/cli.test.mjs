@@ -94,14 +94,40 @@ const cli = await import(pathToFileURL(join(root, 'lib/cli.js')).href)
   const go = (argv) => cli.run(cli.parseArgs(argv), ws, now, rand)
 
   // add
-  const added = go(['add', 'Ship', 'login', '--priority', 'p0', '--release', 'v1.2.0', '--due', '2026-03-14'])
+  const added = go(['add', 'Ship', 'login', '--priority', 'p0', '--release', '1.5', '--due', '2026-03-14'])
   const id = added.json.item.id
   assert.equal(added.json.item.title, 'Ship login', 'positionals join into the title')
   assert.equal(added.json.item.priority, 'p0')
-  assert.equal(added.json.item.release, 'v1.2.0')
+  assert.equal(added.json.item.release, '1.5')
   assert.equal(added.json.item.dueDate, '2026-03-14')
   assert.equal(added.json.item.status, 'todo', 'a new task defaults to todo')
   assert.ok(existsSync(join(ws, '.dsh', 'todo.db')), 'the database is created on first write')
+
+  // release/sprint are decimal-only labels, so they sort numerically and never
+  // mix alpha with numeric — invalid values are REFUSED, never dropped.
+  for (const bad of ['v1.5', 'Sprint 24', '1.2.0', 'beta']) {
+    assert.throws(
+      () => go(['add', 'Bad release', '--release', bad]),
+      /--release must be a decimal number/,
+      `add refuses --release "${bad}"`,
+    )
+    assert.throws(
+      () => go(['add', 'Bad sprint', '--sprint', bad]),
+      /--sprint must be a decimal number/,
+      `add refuses --sprint "${bad}"`,
+    )
+    assert.throws(
+      () => go(['update', id, '--release', bad]),
+      /--release must be a decimal number/,
+      `update refuses --release "${bad}"`,
+    )
+    assert.throws(
+      () => go(['update', id, '--sprint', bad]),
+      /--sprint must be a decimal number/,
+      `update refuses --sprint "${bad}"`,
+    )
+  }
+  assert.equal(go(['show', id]).json.release, '1.5', 'a refused update leaves the field untouched')
 
   // The revision must advance on every write, or the running UI would never
   // learn its cached list is stale.
@@ -114,9 +140,9 @@ const cli = await import(pathToFileURL(join(root, 'lib/cli.js')).href)
   assert.equal(go(['list', '--priority', 'p0']).json.count, 1, 'filters reach the list command')
 
   // update, including clearing a field with an empty string
-  const upd = go(['update', id, '--status', 'in-progress', '--sprint', 'Sprint 24'])
+  const upd = go(['update', id, '--status', 'in-progress', '--sprint', '24'])
   assert.equal(upd.json.item.status, 'in-progress')
-  assert.equal(upd.json.item.sprint, 'Sprint 24')
+  assert.equal(upd.json.item.sprint, '24')
   assert.equal(upd.json.item.completedAt, undefined, 'in-progress must not stamp completion')
   const cleared = go(['update', id, '--release', ''])
   assert.ok(!('release' in cleared.json.item), 'an empty value CLEARS the field')

@@ -52,7 +52,7 @@ const runner = process.platform === 'win32'
   ? { cmd: 'powershell', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File'] }
   : { cmd: 'bash', args: [] }
 
-const res = spawnSync(runner.cmd, [...runner.args, script, ...process.argv.slice(2)], {
+const res = spawnSync(runner.cmd, [...runner.args, script, ...extraArgs, ...process.argv.slice(2)], {
   stdio: ['ignore', 'pipe', 'pipe'],
   encoding: 'utf8',
   timeout: 120_000,
