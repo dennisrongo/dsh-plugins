@@ -1,0 +1,15 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack, so
+# `dsh plugin add` mounts it without hand-editing the profile's own
+# cordis.patch.yml. Both id: and name: are required — a bare id: is an
+# id-targeted override of an existing row and silently no-ops.
+#
+# `maxBytes` MUST match the `agent-instructions` row's own maxBytes, or the
+# inspector reports omissions against the wrong budget. The shipped `code`
+# preset uses 65536, which is this plugin's default; override both together:
+#
+#   - id: dsh-memory
+#     config:
+#       maxBytes: 131072
+- insert:
+    - id: dsh-memory
+      name: '@dennisrongo/dsh-memory'
