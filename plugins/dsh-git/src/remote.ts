@@ -102,6 +102,14 @@ const diffResultSchema = z.object({ patch: z.string(), binary: z.boolean() })
  */
 const shaSchema = z.string().regex(/^[0-9a-fA-F]{4,40}$/)
 
+const stashFileSchema = z.object({
+  path: z.string(),
+  origPath: z.string().optional(),
+  status: statusCodeSchema,
+  // Only stashFiles sets this, for a path that was untracked when stashed.
+  untracked: z.boolean().optional(),
+})
+
 const commitFileSchema = z.object({
   path: z.string(),
   origPath: z.string().optional(),
@@ -204,6 +212,9 @@ const stashSchema = z.object({
   message: z.string(),
   branch: z.string().optional(),
   date: z.number().optional(),
+  // Optional so a host booted before stashes carried one still decodes; the
+  // client hides the open affordance rather than sending an empty sha.
+  sha: shaSchema.optional(),
 })
 
 const worktreeSchema = z.object({
@@ -287,6 +298,23 @@ const suggestBranchResultSchema = z.object({ name: refSchema })
 
 const PACKAGE = '@dennisrongo/dsh-git'
 
+const stashFilesRequestSchema = z.object({
+  workspaceId: z.string(),
+  sha: shaSchema,
+})
+const stashFilesResultSchema = z.object({ files: z.array(stashFileSchema) })
+
+const stashDiffRequestSchema = z.object({
+  workspaceId: z.string(),
+  sha: shaSchema,
+  path: z.string().optional(),
+  untracked: z.boolean().optional(),
+})
+const stashDiffResultSchema = z.object({
+  patch: z.string(),
+  binary: z.boolean(),
+})
+
 /**
  * Build one direct, single-`request`-parameter descriptor.
  * @param method - host method name, which is also the wire method.
@@ -344,6 +372,8 @@ export const GIT_REMOTE = {
     descriptor('stash', stashRequestSchema, commandResultSchema),
     descriptor('worktree', worktreeRequestSchema, commandResultSchema),
     descriptor('suggestBranch', suggestBranchRequestSchema, suggestBranchResultSchema),
+    descriptor('stashFiles', stashFilesRequestSchema, stashFilesResultSchema),
+    descriptor('stashDiff', stashDiffRequestSchema, stashDiffResultSchema),
   ],
 }
 

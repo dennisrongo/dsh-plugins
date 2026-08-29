@@ -63,6 +63,13 @@ var diffRequestSchema = z.object({
 });
 var diffResultSchema = z.object({ patch: z.string(), binary: z.boolean() });
 var shaSchema = z.string().regex(/^[0-9a-fA-F]{4,40}$/);
+var stashFileSchema = z.object({
+  path: z.string(),
+  origPath: z.string().optional(),
+  status: statusCodeSchema,
+  // Only stashFiles sets this, for a path that was untracked when stashed.
+  untracked: z.boolean().optional()
+});
 var commitFileSchema = z.object({
   path: z.string(),
   origPath: z.string().optional(),
@@ -126,7 +133,10 @@ var stashSchema = z.object({
   index: z.number(),
   message: z.string(),
   branch: z.string().optional(),
-  date: z.number().optional()
+  date: z.number().optional(),
+  // Optional so a host booted before stashes carried one still decodes; the
+  // client hides the open affordance rather than sending an empty sha.
+  sha: shaSchema.optional()
 });
 var worktreeSchema = z.object({
   path: z.string(),
@@ -189,6 +199,21 @@ var suggestBranchRequestSchema = z.object({
 });
 var suggestBranchResultSchema = z.object({ name: refSchema });
 var PACKAGE = "@dennisrongo/dsh-git";
+var stashFilesRequestSchema = z.object({
+  workspaceId: z.string(),
+  sha: shaSchema
+});
+var stashFilesResultSchema = z.object({ files: z.array(stashFileSchema) });
+var stashDiffRequestSchema = z.object({
+  workspaceId: z.string(),
+  sha: shaSchema,
+  path: z.string().optional(),
+  untracked: z.boolean().optional()
+});
+var stashDiffResultSchema = z.object({
+  patch: z.string(),
+  binary: z.boolean()
+});
 function descriptor(method2, request, result) {
   return {
     id: `${PACKAGE}#dshGit/${method2}`,
@@ -237,7 +262,9 @@ var GIT_REMOTE = {
     descriptor("merge", mergeRequestSchema, commandResultSchema),
     descriptor("stash", stashRequestSchema, commandResultSchema),
     descriptor("worktree", worktreeRequestSchema, commandResultSchema),
-    descriptor("suggestBranch", suggestBranchRequestSchema, suggestBranchResultSchema)
+    descriptor("suggestBranch", suggestBranchRequestSchema, suggestBranchResultSchema),
+    descriptor("stashFiles", stashFilesRequestSchema, stashFilesResultSchema),
+    descriptor("stashDiff", stashDiffRequestSchema, stashDiffResultSchema)
   ]
 };
 
@@ -277,7 +304,9 @@ var TYPERT = {
           method("merge", "@Remote merge(request: MergeRequest): Promise<CommandResult>", "Merge a branch, or abort/continue a merge in progress."),
           method("stash", "@Remote stash(request: StashRequest): Promise<CommandResult>", "Push, pop, apply, drop or clear stash entries."),
           method("worktree", "@Remote worktree(request: WorktreeRequest): Promise<CommandResult>", "Add, remove or prune a worktree."),
-          method("suggestBranch", "@Remote suggestBranch(request: SuggestBranchRequest): Promise<SuggestBranchResult>", "Draft a branch name from a short description via the LLM.")
+          method("suggestBranch", "@Remote suggestBranch(request: SuggestBranchRequest): Promise<SuggestBranchResult>", "Draft a branch name from a short description via the LLM."),
+          method("stashFiles", "@Remote stashFiles(request: StashFilesRequest): Promise<StashFilesResult>", "List every path a stash holds, tracked edits and untracked additions alike."),
+          method("stashDiff", "@Remote stashDiff(request: StashDiffRequest): Promise<StashDiffResult>", "The patch a stash holds, optionally narrowed to one path.")
         ],
         types: [
           {
@@ -306,7 +335,19 @@ var TYPERT = {
           },
           {
             name: "Stash",
-            declaration: "export interface Stash {\n    index: number;\n    message: string;\n    branch?: string;\n    date?: number;\n}"
+            declaration: "export interface Stash {\n    index: number;\n    message: string;\n    branch?: string;\n    date?: number;\n    sha?: string;\n}"
+          },
+          {
+            name: "StashFile",
+            declaration: "export interface StashFile {\n    path: string;\n    origPath?: string;\n    status: StatusCode;\n    untracked?: boolean;\n}"
+          },
+          {
+            name: "StashFilesResult",
+            declaration: "export interface StashFilesResult {\n    files: StashFile[];\n}"
+          },
+          {
+            name: "StashDiffResult",
+            declaration: "export interface StashDiffResult {\n    patch: string;\n    binary: boolean;\n}"
           },
           {
             name: "Worktree",

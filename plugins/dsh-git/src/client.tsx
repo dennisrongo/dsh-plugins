@@ -781,6 +781,49 @@ export class GitStore {
     }
   }
 
+
+  /**
+   * List every path a stash holds, tracked edits and untracked additions alike.
+   *
+   * Same discriminated outcome as {@link GitStore.commitFiles}, for the same
+   * reason: a stale host half 404s this endpoint, and collapsing that into an
+   * empty list would render as "this stash is empty" rather than "restart the
+   * profile".
+   * @param sha - the stash's own commit sha.
+   * @returns the paths, or the reason the lookup failed.
+   */
+  async stashFiles(sha: string): Promise<StashFilesOutcome> {
+    try {
+      const reply = await this.remote.stashFiles({ workspaceId: this.workspaceId, sha })
+      if (!reply.ok) return { ok: false, error: reply.error.message }
+      return { ok: true, files: reply.value.files }
+    } catch (error) {
+      return { ok: false, error: describe(error) }
+    }
+  }
+
+  /**
+   * Fetch the patch a stash holds, for one path or in full.
+   * @param sha - the stash's own commit sha.
+   * @param path - repo-relative path, or undefined for the whole stash.
+   * @param untracked - read the untracked side rather than the tracked one.
+   * @returns the patch text, or a short failure notice.
+   */
+  async stashDiff(sha: string, path: string | undefined, untracked: boolean): Promise<string> {
+    try {
+      const reply = await this.remote.stashDiff({
+        workspaceId: this.workspaceId,
+        sha,
+        ...(path !== undefined ? { path } : {}),
+        ...(untracked ? { untracked: true } : {}),
+      })
+      if (!reply.ok) return `Could not read stash: ${reply.error.message}`
+      return reply.value.patch
+    } catch (error) {
+      return `Could not read stash: ${describe(error)}`
+    }
+  }
+
   /**
    * Fetch the patch one commit introduced, for one path or in full.
    * @param sha - the commit to read.
@@ -850,6 +893,16 @@ export interface GitRemote {
     sha: string
     path?: string
   }) => Promise<RemoteReply<{ patch: string; binary: boolean }>>
+  stashFiles: (request: {
+    workspaceId: string
+    sha: string
+  }) => Promise<RemoteReply<{ files: GitCommitFile[] }>>
+  stashDiff: (request: {
+    workspaceId: string
+    sha: string
+    path?: string
+    untracked?: boolean
+  }) => Promise<RemoteReply<{ patch: string; binary: boolean }>>
   stage: (request: {
     workspaceId: string
     action: StageAction
@@ -916,6 +969,11 @@ type RemoteReply<T> = { ok: true; value: T } | { ok: false; error: { code: strin
  * empty-list version threw away.
  */
 export type CommitFilesOutcome =
+  | { ok: true; files: GitCommitFile[] }
+  | { ok: false; error: string }
+
+/** The result of asking for one stash's files; see {@link CommitFilesOutcome}. */
+export type StashFilesOutcome =
   | { ok: true; files: GitCommitFile[] }
   | { ok: false; error: string }
 
@@ -1049,6 +1107,56 @@ const VIEW_STYLES = `
   padding: 5px 8px 5px 28px; color: var(--g-caption); font-size: 12px; line-height: 20px;
 }
 .dshgit-loadingrow.err { color: var(--g-danger); }
+/* The ADD-WORKTREE form is a grid, not the shared flex line.
+
+   Seven controls on one row left every field too narrow to read a path in --
+   and a path is the one thing this form exists to show. Three columns: a label,
+   the field that grows, and a trailing control. Below the container query's
+   breakpoint the rows go full width, where a 3-column grid would squeeze the
+   inputs to nothing. */
+.dshgit-form.wtform {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+}
+.dshgit-flabel {
+  font-size: 12px; line-height: 18px; color: var(--g-caption);
+  justify-self: end; white-space: nowrap;
+}
+/* Overrides the shared "flex: 1 1 160px", which means nothing in a grid and
+   would otherwise leave the intrinsic width fighting the column. */
+.dshgit-form.wtform input[type='text'].dshgit-fgrow { flex: none; width: 100%; }
+.dshgit-fromsel {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; line-height: 18px; color: var(--g-caption); white-space: nowrap;
+}
+/* The preview and the action row span every column. */
+.dshgit-form.wtform .dshgit-hint,
+.dshgit-form.wtform .dshgit-factions { grid-column: 1 / -1; }
+.dshgit-factions { display: flex; align-items: center; gap: 8px; }
+@container dshgit (max-width: 719px) {
+  /* Narrow: labels sit above their field rather than stealing its width. */
+  .dshgit-form.wtform { grid-template-columns: minmax(0, 1fr); }
+  .dshgit-flabel { justify-self: start; }
+  .dshgit-form.wtform .dshgit-btn.ai, .dshgit-fromsel { justify-self: start; }
+}
+
+/* A stash's expanded file list, indented like a commit's for the same reason:
+   it must read as belonging to the row above rather than as another stash. */
+.dshgit-stashfile { padding-left: 28px; }
+/* The stash message doubles as the expander, so it has to look pressable
+   without becoming a fourth button box in a row that already has three. */
+.dshgit-rowmain.link {
+  border: 0; background: transparent; padding: 0; cursor: pointer;
+  color: inherit; font: inherit; text-align: left;
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dshgit-rowmain.link:hover { color: var(--g-primary); text-decoration: underline; }
+.dshgit-rowmain.link:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary, #6b7280); outline-offset: 1px;
+}
+
 
 /* ---- commit box ---- */
 .dshgit-commit { flex: none; padding: 12px 20px; border-bottom: 1px solid var(--g-border); }
@@ -2140,10 +2248,25 @@ function RepoPane({
   onWorktree,
   onAddWorktree,
   onOpenWorktree,
+  openStash,
+  stashFiles,
+  onOpenStash,
+  onOpenStashFile,
+  selected,
 }: {
   refs: RefsResult | null
   loading: boolean
   busy: string | null
+  /** Sha of the stash whose file list is expanded, or null. */
+  openStash: string | null
+  /** Files of the expanded stash; null while the read is in flight. */
+  stashFiles: StashFilesOutcome | null
+  /** Expand or collapse a stash's file list. */
+  onOpenStash: (sha: string) => void
+  /** Open one path of a stash in the diff pane. */
+  onOpenStashFile: (sha: string, path: string, untracked: boolean) => void
+  /** The diff pane's current selection key, for row highlighting. */
+  selected: string | null
   onStash: (action: StashAction, index?: number) => void
   onWorktree: (action: WorktreeAction, path?: string, force?: boolean) => void
   onAddWorktree: () => void
@@ -2194,13 +2317,31 @@ function RepoPane({
         ) : (
           <ul className="dshgit-list">
             {stashes.map((stash) => (
-              <li className="dshgit-row" key={stash.index}>
+              <React.Fragment key={stash.sha ?? String(stash.index)}>
+              <li className="dshgit-row">
                 <span className="dshgit-code A" aria-hidden="true">
                   <Icon path={ICON.stash} />
                 </span>
-                <span className="dshgit-rowmain" title={stash.message}>
-                  {stash.message}
-                </span>
+                {/* The MESSAGE is the toggle, not the whole row: this row already
+                    holds pop/apply/drop buttons and a row-level button would nest
+                    them. A stash with no sha comes from a host booted before
+                    stashes carried one — it still applies and drops, it just
+                    cannot be opened, so it stays plain text rather than a control
+                    that does nothing. */}
+                {stash.sha !== undefined ? (
+                  <button
+                    className="dshgit-rowmain link"
+                    aria-expanded={openStash === stash.sha}
+                    title={'Show what this stash holds\n' + stash.message}
+                    onClick={() => onOpenStash(stash.sha as string)}
+                  >
+                    {stash.message}
+                  </button>
+                ) : (
+                  <span className="dshgit-rowmain" title={stash.message}>
+                    {stash.message}
+                  </span>
+                )}
                 {stash.date !== undefined ? (
                   <span className="dshgit-rowmeta">{fmtAge(stash.date)}</span>
                 ) : null}
@@ -2234,6 +2375,47 @@ function RepoPane({
                   </button>
                 </span>
               </li>
+              {openStash === stash.sha && stash.sha !== undefined ? (
+                stashFiles === null ? (
+                  <li className="dshgit-loadingrow">Reading this stash…</li>
+                ) : !stashFiles.ok ? (
+                  /* Same reasoning as the commit expander: a failed read and an
+                     empty stash must not render identically. */
+                  <li className="dshgit-loadingrow err">
+                    Couldn't read this stash — {stashFiles.error}
+                  </li>
+                ) : stashFiles.files.length === 0 ? (
+                  <li className="dshgit-loadingrow">This stash holds no changes.</li>
+                ) : (
+                  stashFiles.files.map((file) => (
+                    <li
+                      className={`dshgit-row dshgit-stashfile${
+                        selected === `stash:${stash.sha}:${file.path}` ? ' active' : ''
+                      }`}
+                      key={(file.untracked === true ? 'u:' : 't:') + file.path}
+                    >
+                      <span className={'dshgit-code ' + file.status} aria-hidden="true">
+                        {file.status}
+                      </span>
+                      <button
+                        className="dshgit-rowmain link"
+                        title={file.path}
+                        onClick={() =>
+                          onOpenStashFile(
+                            stash.sha as string,
+                            file.path,
+                            file.untracked === true,
+                          )
+                        }
+                      >
+                        {file.path}
+                      </button>
+                      {file.untracked === true ? <span className="dshgit-tag">new</span> : null}
+                    </li>
+                  ))
+                )
+              ) : null}
+              </React.Fragment>
             ))}
           </ul>
         )}
@@ -2494,6 +2676,70 @@ export function GitView({
       requestSeq.current += 1
       const seq = requestSeq.current
       void store.commitDiff(sha, path).then((text) => {
+        if (seq !== requestSeq.current) return
+        setPatch(text.trim().length === 0 ? 'No textual changes.' : text)
+        setLoading(false)
+      })
+    },
+    [store, selected],
+  )
+
+  /** Sha of the stash whose file list is open, and that list once it arrives. */
+  const [openStash, setOpenStash] = React.useState<string | null>(null)
+  const [stashFiles, setStashFiles] = React.useState<StashFilesOutcome | null>(null)
+
+  /**
+   * Expand or collapse a stash's file list.
+   *
+   * Keyed by SHA rather than index: an index shifts the moment an earlier stash
+   * is dropped, so an expansion held by index would silently re-point at a
+   * different stash.
+   */
+  const toggleStash = React.useCallback(
+    (sha: string) => {
+      if (!store) return
+      if (openStash === sha) {
+        setOpenStash(null)
+        setStashFiles(null)
+        return
+      }
+      setOpenStash(sha)
+      setStashFiles(null)
+      void store.stashFiles(sha).then((outcome) => {
+        // Discard a slower reply for a stash the user has already closed.
+        setOpenStash((current) => {
+          if (current === sha) setStashFiles(outcome)
+          return current
+        })
+      })
+    },
+    [store, openStash],
+  )
+
+  /**
+   * Load one path of a stash into the diff pane.
+   *
+   * Keyed `stash:<sha>:<path>` so it cannot collide with a commit's
+   * `<sha>:<path>` — a stash IS a commit, so the two share a sha namespace and
+   * an unprefixed key would let a stash row light up a commit row.
+   */
+  const openStashDiff = React.useCallback(
+    (sha: string, path: string, untracked: boolean) => {
+      if (!store) return
+      const key = `stash:${sha}:${path}`
+      if (selected === key) {
+        requestSeq.current += 1
+        setSelected(null)
+        setPatch('')
+        setLoading(false)
+        return
+      }
+      setSelected(key)
+      setPatch('')
+      setLoading(true)
+      requestSeq.current += 1
+      const seq = requestSeq.current
+      void store.stashDiff(sha, path, untracked).then((text) => {
         if (seq !== requestSeq.current) return
         setPatch(text.trim().length === 0 ? 'No textual changes.' : text)
         setLoading(false)
@@ -2893,22 +3139,21 @@ export function GitView({
       ) : null}
 
       {worktreeForm !== null ? (
-        <div className="dshgit-form">
+        /* A GRID, not the single flex line this used to be: seven controls on one
+           row left every field too narrow to read a path in, which is the one
+           thing this form exists to show. Branch comes FIRST because the branch
+           drives the path, so the order matches the causality. */
+        <div className="dshgit-form wtform">
+          <label className="dshgit-flabel" htmlFor="dshgit-wt-branch">
+            Branch
+          </label>
           <input
+            id="dshgit-wt-branch"
+            className="dshgit-fgrow"
             type="text"
-            value={worktreeForm.path}
             autoFocus
-            placeholder={suggestWorktreePath(status.root, 'my-branch')}
-            aria-label="Worktree directory"
-            onChange={(e) =>
-              setWorktreeForm({ ...worktreeForm, path: e.target.value, pathTouched: true })
-            }
-            onKeyDown={(e) => e.stopPropagation()}
-          />
-          <input
-            type="text"
             value={worktreeForm.branch}
-            placeholder={'branch, or describe the work for ✦ (else ' + worktreeForm.generated + ')'}
+            placeholder={'name it, or describe the work for ✦ — else ' + worktreeForm.generated}
             aria-label="Branch for the new worktree, or a description for the AI button"
             onChange={(e) => {
               const branch = e.target.value
@@ -2955,7 +3200,22 @@ export function GitView({
             )}
             {busy === 'suggestBranch' ? 'Naming…' : 'AI name'}
           </button>
-          <label className="dshgit-check">
+
+          <label className="dshgit-flabel" htmlFor="dshgit-wt-path">
+            Folder
+          </label>
+          <input
+            id="dshgit-wt-path"
+            className="dshgit-fgrow"
+            type="text"
+            value={worktreeForm.path}
+            aria-label="Worktree directory"
+            onChange={(e) =>
+              setWorktreeForm({ ...worktreeForm, path: e.target.value, pathTouched: true })
+            }
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+          <label className="dshgit-fromsel">
             from
             <select
               className="dshgit-select"
@@ -2975,14 +3235,20 @@ export function GitView({
                 ))}
             </select>
           </label>
-          <label className="dshgit-check">
-            <input
-              type="checkbox"
-              checked={worktreeForm.register}
-              onChange={(e) => setWorktreeForm({ ...worktreeForm, register: e.target.checked })}
-            />
-            Open it after creating
-          </label>
+
+          <div className="dshgit-factions">
+            <label className="dshgit-check">
+              <input
+                type="checkbox"
+                checked={worktreeForm.register}
+                onChange={(e) => setWorktreeForm({ ...worktreeForm, register: e.target.checked })}
+              />
+              Open it after creating
+            </label>
+            <span className="dshgit-spacer" />
+            <button className="dshgit-btn" onClick={() => setWorktreeForm(null)}>
+              Cancel
+            </button>
           <button
             className="dshgit-btn primary"
             disabled={busy !== null || worktreeForm.path.trim().length === 0 || worktreePreview.inside}
@@ -3011,9 +3277,7 @@ export function GitView({
           >
             Add worktree
           </button>
-          <button className="dshgit-btn" onClick={() => setWorktreeForm(null)}>
-            Cancel
-          </button>
+          </div>
           {/* Show where it will actually land. "Where does ../x go?" is not a
               question a user should have to answer by trying it. */}
           <div className={'dshgit-preview' + (worktreePreview.inside ? ' err' : '')}>
@@ -3137,6 +3401,11 @@ export function GitView({
                   void workspaceLink?.remove(linked.workspaceId)
                 })
               }}
+              openStash={openStash}
+              stashFiles={stashFiles}
+              onOpenStash={toggleStash}
+              onOpenStashFile={openStashDiff}
+              selected={selected}
               onAddWorktree={() => {
                 // Prefill a REAL value, not a placeholder: the common case is
                 // "give me a worktree" and that should need no typing.

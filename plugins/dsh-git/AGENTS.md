@@ -20,6 +20,8 @@ Source-control ("Source Control") tab for DeepSeek Harness. Two halves in one pa
 - `merge` — `{ workspaceId, action, from?, noFF? }`; action is merge | abort | continue
 - `stash` — `{ workspaceId, action, index?, message?, includeUntracked? }`; action is push | pop | apply | drop | clear
 - `worktree` — `{ workspaceId, action, path?, branch?, newBranch?, startPoint?, force?, register? }`; action is add | remove | prune
+- `stashFiles` — `{ workspaceId, sha }` → `{ files }`; every path a stash holds, untracked additions flagged
+- `stashDiff` — `{ workspaceId, sha, path?, untracked? }` → `{ patch, binary }`; `untracked` picks which parent to read
 - `suggestBranch` — `{ workspaceId, hint }` → `{ name }`; drafts a branch name from a typed description via the LLM. Fails soft — the form stays usable with no provider configured
 - `changeToken` — `{ workspaceId }` → `{ token }`; the POLLING endpoint. Answers from an `fs.watch` counter and **never spawns git** (measured 52 ms vs `status`'s 141 ms). `token: 0` means "not a repository", which is the client's signal to stop polling. A token is comparable only against an earlier token for the same workspace.
 
@@ -831,6 +833,53 @@ last check rather than reporting.
 What remains uncovered, still stated plainly: the LLM endpoints (`suggestMessage`,
 `suggestBranch`) are exercised for request and reply SHAPE only — the model path needs
 credentials and is verified by hand against a running harness.
+
+## Viewing a stash
+
+**A stash IS a commit**, with a hex sha `assertSafeSha` accepts, so `GitStash` carries `sha`
+and the tab opens a stash the way it opens a commit. The sha rather than the index, because
+an index shifts the moment an earlier stash is dropped — an expansion held by index would
+silently re-point at a different stash.
+
+**It is a MERGE commit, and that is the whole difficulty.** Parent 1 is the base, parent 2
+the index state, and parent 3 — present only under `-u` — is a commit whose entire tree IS
+the untracked files. Three measured facts shaped the design:
+
+- **`commitFiles` with a stash sha would hide every new file.** It reads `--first-parent`,
+  correct for history and wrong here. Teaching it to fold parent 3 in automatically would
+  corrupt an OCTOPUS merge, whose third parent is a genuine parent rather than a bag of new
+  files — a real bug planted to save two descriptors. Hence separate endpoints.
+- **`git stash show` accepts NO pathspec** (`Too many revisions specified`). It sees both
+  sides but can only return one combined patch, so it cannot drive a clickable file list.
+  That killed the obvious implementation.
+- **A stash taken without `-u` has no parent 3**, and `rev-parse <sha>^3` FAILS rather than
+  returning empty. `stashUntrackedCommit` detects the absence instead of assuming it; asking
+  for the untracked side of such a stash answers in words, not an error.
+
+`untracked` is an explicit request field rather than something the host infers, because the
+same path can exist on both sides and only the clicked row knows which one it came from.
+
+**`--first-parent` on the tracked read is defensive, not load-bearing, and no test here can
+prove it.** Without it git emits a combined-diff token (`MMA`) for a stash — measured — but
+`parseCommitFiles` reads `token[0]`, so it normalizes back to `M` either way and the sabotage
+survives. It stays because the raw token is not a `GitStatusCode`, and anything that stopped
+taking just the first letter would start shipping one across a closed enum. Recorded as
+6/7 caught rather than dressed up as 7/7.
+
+The stash file list reuses the commit expander's shape, including its lesson: a failed read
+and an empty stash must not render identically, so `stashFiles` returns a discriminated
+outcome on the CLIENT and the row says "Couldn't read this stash".
+
+**The stash MESSAGE is the expander, not the row.** A stash row already holds pop, apply and
+drop buttons, and a row-level button would nest them. A stash with no `sha` — from a host
+booted before stashes carried one — stays plain text rather than becoming a control that
+does nothing.
+
+**The add-worktree form is a GRID.** Seven controls on one flex line left every field too
+narrow to read a path in, which is the one thing that form exists to show. Branch comes
+first because the branch drives the path, so the order matches the causality; below the
+container query's breakpoint the labels move above their fields, where three columns would
+squeeze the inputs to nothing.
 
 ## Environment isolation (git's location variables)
 

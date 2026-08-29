@@ -830,7 +830,7 @@ export function parseStashes(raw: string): GitStash[] {
   const out: GitStash[] = []
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue
-    const [selector, message, at] = line.split(REF_SEP)
+    const [selector, message, at, sha] = line.split(REF_SEP)
     const found = /stash@\{(\d+)\}/.exec(selector ?? '')
     if (!found) continue
     // Git writes 'WIP on main: <sha> <subject>' or 'On main: <message>'.
@@ -841,9 +841,38 @@ export function parseStashes(raw: string): GitStash[] {
       message: message ?? '',
       ...(branch ? { branch: branch[1] } : {}),
       ...(Number.isFinite(date) && date > 0 ? { date } : {}),
+      ...(sha && /^[0-9a-f]{4,40}$/.test(sha) ? { sha } : {}),
     })
   }
   return out
+}
+
+
+/**
+ * Resolve the commit holding a stash's UNTRACKED files, when there is one.
+ *
+ * A stash is a merge commit: parent 1 is the base, parent 2 the index state,
+ * and parent 3 — present only when the stash was taken with `-u` — is a commit
+ * whose whole tree IS the untracked files. Reading only the first parent
+ * therefore shows a stash's tracked edits and silently omits every new file,
+ * which matters because this tab always stashes with `-u`.
+ *
+ * A stash taken WITHOUT untracked files has no third parent, and asking for one
+ * fails with `ambiguous argument` rather than returning empty — so the absence
+ * is detected here rather than assumed.
+ *
+ * @param root - repository working-tree root.
+ * @param sha - the stash commit.
+ * @returns the untracked-files commit, or undefined when the stash has none.
+ */
+export async function stashUntrackedCommit(
+  root: string,
+  sha: string,
+): Promise<string | undefined> {
+  const run = await runGit(root, ['rev-parse', '--verify', '--quiet', `${sha}^3`])
+  if (run.code !== 0) return undefined
+  const out = run.stdout.trim()
+  return /^[0-9a-f]{40}$/.test(out) ? out : undefined
 }
 
 /**
@@ -926,7 +955,11 @@ export async function readRefs(
     runGit(root, [
       'stash',
       'list',
-      `--pretty=format:%gd${REF_SEP}%gs${REF_SEP}%at`,
+      // %H LAST: a stash entry IS a commit, and its sha is what lets the tab
+      // read the stash's contents through the same machinery commits use. The
+      // index alone cannot: it is a cursor that shifts when an earlier entry is
+      // dropped, so a request in flight would address the wrong stash.
+      `--pretty=format:%gd${REF_SEP}%gs${REF_SEP}%at${REF_SEP}%H`,
     ]),
     runGit(root, ['worktree', 'list', '--porcelain']),
   ])

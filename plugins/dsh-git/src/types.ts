@@ -172,6 +172,14 @@ export interface GitCommitFile {
   origPath?: string
   /** What the commit did to this path. */
   status: GitStatusCode
+  /**
+   * Set only by `stashFiles`, for a path that was UNTRACKED when stashed.
+   *
+   * The tracked and untracked halves of a stash live on different parents, and
+   * the same path can appear on both, so the row carries which side it came
+   * from rather than leaving the host to guess from the path.
+   */
+  untracked?: boolean
 }
 
 /** `commitFiles` request: which paths one commit touched. */
@@ -270,6 +278,42 @@ export interface SuggestResult {
   scope?: ChangeScope
 }
 
+
+/** `stashFiles` request: which stash to list. */
+export interface StashFilesRequest {
+  workspaceId: string
+  /** The stash's commit sha, from {@link GitStash.sha}. */
+  sha: string
+}
+
+/** `stashFiles` reply: every path the stash holds. */
+export interface StashFilesResult {
+  files: GitCommitFile[]
+}
+
+/** `stashDiff` request: the patch a stash holds, optionally one path of it. */
+export interface StashDiffRequest {
+  workspaceId: string
+  /** The stash's commit sha, from {@link GitStash.sha}. */
+  sha: string
+  /** Limit the patch to one path; omitted means the whole stash. */
+  path?: string
+  /**
+   * Read from the stash's UNTRACKED commit rather than its tracked diff.
+   *
+   * The two live on different parents, and a path can legitimately appear in
+   * either, so the row that was clicked says which side it came from instead of
+   * the host guessing from the path alone.
+   */
+  untracked?: boolean
+}
+
+/** `stashDiff` reply, shaped like every other patch this plugin returns. */
+export interface StashDiffResult {
+  patch: string
+  binary: boolean
+}
+
 /** Which sync operation to run against the remote. */
 export type SyncAction = 'pull' | 'push' | 'fetch' | 'sync' | 'publish'
 
@@ -344,6 +388,15 @@ export interface GitStash {
   branch?: string
   /** Epoch ms of when it was stashed. */
   date?: number
+  /**
+   * The stash's own commit sha.
+   *
+   * A stash entry IS a commit, so its contents are readable through the same
+   * machinery a commit's are. Carrying the sha is what lets the tab open a
+   * stash without addressing it by {@link GitStash.index}, which shifts the
+   * moment an earlier entry is dropped.
+   */
+  sha?: string
 }
 
 /** One worktree attached to this repository. */

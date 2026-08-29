@@ -518,7 +518,7 @@ function parseStashes(raw) {
   const out = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
-    const [selector, message, at] = line.split(REF_SEP);
+    const [selector, message, at, sha] = line.split(REF_SEP);
     const found = /stash@\{(\d+)\}/.exec(selector ?? "");
     if (!found) continue;
     const branch = /^(?:WIP on|On) ([^:]+):/.exec(message ?? "");
@@ -527,12 +527,20 @@ function parseStashes(raw) {
       index: Number(found[1]),
       message: message ?? "",
       ...branch ? { branch: branch[1] } : {},
-      ...Number.isFinite(date) && date > 0 ? { date } : {}
+      ...Number.isFinite(date) && date > 0 ? { date } : {},
+      ...sha && /^[0-9a-f]{4,40}$/.test(sha) ? { sha } : {}
     });
   }
   return out;
 }
 __name(parseStashes, "parseStashes");
+async function stashUntrackedCommit(root, sha) {
+  const run = await runGit(root, ["rev-parse", "--verify", "--quiet", `${sha}^3`]);
+  if (run.code !== 0) return void 0;
+  const out = run.stdout.trim();
+  return /^[0-9a-f]{40}$/.test(out) ? out : void 0;
+}
+__name(stashUntrackedCommit, "stashUntrackedCommit");
 function parseWorktrees(raw, currentRoot) {
   const out = [];
   const norm = /* @__PURE__ */ __name((p) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(), "norm");
@@ -587,7 +595,11 @@ async function readRefs(root) {
     runGit(root, [
       "stash",
       "list",
-      `--pretty=format:%gd${REF_SEP}%gs${REF_SEP}%at`
+      // %H LAST: a stash entry IS a commit, and its sha is what lets the tab
+      // read the stash's contents through the same machinery commits use. The
+      // index alone cannot: it is a cursor that shifts when an earlier entry is
+      // dropped, so a request in flight would address the wrong stash.
+      `--pretty=format:%gd${REF_SEP}%gs${REF_SEP}%at${REF_SEP}%H`
     ]),
     runGit(root, ["worktree", "list", "--porcelain"])
   ]);
@@ -755,7 +767,7 @@ var RepoWatcher = _RepoWatcher;
 
 // src/index.ts
 var NETWORK_TIMEOUT_MS = 12e4;
-var _suggestBranch_dec, _worktree_dec, _stash_dec, _merge_dec, _branch_dec, _refs_dec, _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _commitDiff_dec, _commitFiles_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
+var _suggestBranch_dec, _worktree_dec, _stash_dec, _merge_dec, _branch_dec, _refs_dec, _suggestMessage_dec, _sync_dec, _init_dec, _stashDiff_dec, _stashFiles_dec, _commit_dec, _stage_dec, _commitDiff_dec, _commitFiles_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
 var _GitService = class _GitService extends (_a = TypertRemoteService) {
   /**
    * @param ctx - host context carrying the workspace registry and LLM runtime.
@@ -901,6 +913,67 @@ var _GitService = class _GitService extends (_a = TypertRemoteService) {
       args.push("-m", message);
       return combined(await runGit(root, args));
     });
+  }
+  async stashFiles(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const sha = assertSafeSha(request?.sha);
+    const root = await repoRoot(dir);
+    if (root === void 0) return { files: [] };
+    const tracked = await runGit(root, [
+      "show",
+      "--name-status",
+      "-z",
+      "--no-color",
+      "--first-parent",
+      "--format=",
+      sha
+    ]);
+    const files = tracked.code === 0 ? parseCommitFiles(tracked.stdout) : [];
+    const untrackedCommit = await stashUntrackedCommit(root, sha);
+    if (untrackedCommit !== void 0) {
+      const run = await runGit(root, [
+        "show",
+        "--name-status",
+        "-z",
+        "--no-color",
+        "--format=",
+        untrackedCommit
+      ]);
+      if (run.code === 0) {
+        for (const file of parseCommitFiles(run.stdout)) {
+          files.push({ ...file, status: "A", untracked: true });
+        }
+      }
+    }
+    return { files };
+  }
+  async stashDiff(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const sha = assertSafeSha(request?.sha);
+    const root = await repoRoot(dir);
+    if (root === void 0) return { patch: "", binary: false };
+    const path = typeof request?.path === "string" && request.path.length > 0 ? assertSafePath(request.path) : void 0;
+    let target = sha;
+    const args = ["show", "--no-color", "--no-ext-diff", "--format="];
+    if (request?.untracked === true) {
+      const untrackedCommit = await stashUntrackedCommit(root, sha);
+      if (untrackedCommit === void 0) {
+        return { patch: "This stash holds no untracked files.", binary: false };
+      }
+      target = untrackedCommit;
+    } else {
+      args.push("--first-parent");
+    }
+    args.push(target);
+    if (path !== void 0) args.push("--", path);
+    const run = await runGit(root, args);
+    if (run.code !== 0) {
+      return { patch: combined(run) || "Could not read this stash.", binary: false };
+    }
+    if (run.stdout.includes("Binary files")) {
+      return { patch: "Binary file \u2014 no textual diff.", binary: true };
+    }
+    return { patch: clamp(run.stdout), binary: false };
   }
   async init(request) {
     const dir = this.workspaceDir(request?.workspaceId);
@@ -1242,7 +1315,7 @@ ${body}` }],
    * `dispose` is not a member of its Events map. Getting this wrong leaks an OS
    * watch handle per repository on every plugin reload.
    */
-  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _commitFiles_dec = [Remote], _commitDiff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], _refs_dec = [Remote], _branch_dec = [Remote], _merge_dec = [Remote], _stash_dec = [Remote], _worktree_dec = [Remote], _suggestBranch_dec = [Remote], Service.init)]() {
+  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _commitFiles_dec = [Remote], _commitDiff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _stashFiles_dec = [Remote], _stashDiff_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], _refs_dec = [Remote], _branch_dec = [Remote], _merge_dec = [Remote], _stash_dec = [Remote], _worktree_dec = [Remote], _suggestBranch_dec = [Remote], Service.init)]() {
     this.ctx.effect(() => () => {
       this.watcher.close();
     });
@@ -1256,6 +1329,8 @@ __decorateElement(_init, 1, "commitFiles", _commitFiles_dec, _GitService);
 __decorateElement(_init, 1, "commitDiff", _commitDiff_dec, _GitService);
 __decorateElement(_init, 1, "stage", _stage_dec, _GitService);
 __decorateElement(_init, 1, "commit", _commit_dec, _GitService);
+__decorateElement(_init, 1, "stashFiles", _stashFiles_dec, _GitService);
+__decorateElement(_init, 1, "stashDiff", _stashDiff_dec, _GitService);
 __decorateElement(_init, 1, "init", _init_dec, _GitService);
 __decorateElement(_init, 1, "sync", _sync_dec, _GitService);
 __decorateElement(_init, 1, "suggestMessage", _suggestMessage_dec, _GitService);

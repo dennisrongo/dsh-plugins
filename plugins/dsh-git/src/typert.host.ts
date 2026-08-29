@@ -83,6 +83,8 @@ export const TYPERT = {
           method('stash', '@Remote stash(request: StashRequest): Promise<CommandResult>', 'Push, pop, apply, drop or clear stash entries.'),
           method('worktree', '@Remote worktree(request: WorktreeRequest): Promise<CommandResult>', 'Add, remove or prune a worktree.'),
           method('suggestBranch', '@Remote suggestBranch(request: SuggestBranchRequest): Promise<SuggestBranchResult>', 'Draft a branch name from a short description via the LLM.'),
+          method('stashFiles', '@Remote stashFiles(request: StashFilesRequest): Promise<StashFilesResult>', 'List every path a stash holds, tracked edits and untracked additions alike.'),
+          method('stashDiff', '@Remote stashDiff(request: StashDiffRequest): Promise<StashDiffResult>', 'The patch a stash holds, optionally narrowed to one path.'),
         ],
         types: [
           {
@@ -116,7 +118,20 @@ export const TYPERT = {
           {
             name: 'Stash',
             declaration:
-              'export interface Stash {\n    index: number;\n    message: string;\n    branch?: string;\n    date?: number;\n}',
+              'export interface Stash {\n    index: number;\n    message: string;\n    branch?: string;\n    date?: number;\n    sha?: string;\n}',
+          },
+          {
+            name: 'StashFile',
+            declaration:
+              'export interface StashFile {\n    path: string;\n    origPath?: string;\n    status: StatusCode;\n    untracked?: boolean;\n}',
+          },
+          {
+            name: 'StashFilesResult',
+            declaration: 'export interface StashFilesResult {\n    files: StashFile[];\n}',
+          },
+          {
+            name: 'StashDiffResult',
+            declaration: 'export interface StashDiffResult {\n    patch: string;\n    binary: boolean;\n}',
           },
           {
             name: 'Worktree',

@@ -190,6 +190,89 @@ try {
     }
   })
 
+  await test('stashFiles lists tracked edits AND untracked additions', async () => {
+    // The tab always stashes with -u, so a viewer that showed only the tracked
+    // half would hide the new files essentially every time -- and you would
+    // trust it. The two halves live on DIFFERENT parents of the stash commit:
+    // tracked on parent 1, untracked on parent 3.
+    const box = makeService('read-stashfiles-')
+    // The index state must DIFFER from the worktree state, or this fixture
+    // cannot tell --first-parent from its absence: a stash is a merge commit,
+    // and without the flag git emits a COMBINED-diff token ("MMA") instead of a
+    // single status letter. Measured. That token is not a GitStatusCode, so the
+    // wire's closed enum would reject the whole reply.
+    write(box, 'a.txt', 'STAGED EDIT\n')
+    box.g('add', 'a.txt')
+    write(box, 'a.txt', 'MODIFIED\n')
+    write(box, 'new-one.txt', 'UNTRACKED ONE\n')
+    write(box, 'new-two.txt', 'UNTRACKED TWO\n')
+    await box.svc.stash({ ...WS, action: 'push', message: 'work', includeUntracked: true })
+    const stash = (await box.svc.refs(WS)).stashes[0]
+    assert.match(stash.sha, /^[0-9a-f]{40}$/, 'the stash carries its own sha')
+
+    const out = await box.svc.stashFiles({ ...WS, sha: stash.sha })
+    const byPath = new Map(out.files.map((f) => [f.path, f]))
+    assert.equal(byPath.get('a.txt').untracked, undefined, 'tracked edit')
+    assert.equal(byPath.get('a.txt').status, 'M', 'a single status letter, not a combined-diff token')
+    for (const f of out.files) {
+      assert.match(f.status, /^[MADRCU?! ]$/, f.path + ' has status ' + JSON.stringify(f.status))
+    }
+    assert.equal(byPath.get('new-one.txt').untracked, true, 'flagged as untracked')
+    assert.equal(byPath.get('new-one.txt').status, 'A', 'and reads as an addition')
+    assert.equal(byPath.get('new-two.txt').untracked, true)
+    assert.equal(out.files.length, 3, 'all three, not just the tracked one')
+  })
+
+  await test('stashDiff reads the right PARENT for each side', async () => {
+    const box = makeService('read-stashdiff-')
+    write(box, 'a.txt', 'MODIFIED\n')
+    write(box, 'fresh.txt', 'BRAND NEW LINE\n')
+    await box.svc.stash({ ...WS, action: 'push', includeUntracked: true })
+    const sha = (await box.svc.refs(WS)).stashes[0].sha
+
+    const tracked = await box.svc.stashDiff({ ...WS, sha, path: 'a.txt' })
+    assert.match(tracked.patch, /MODIFIED/)
+    assert.doesNotMatch(tracked.patch, /BRAND NEW LINE/, 'scoped to the one path')
+
+    const untracked = await box.svc.stashDiff({ ...WS, sha, path: 'fresh.txt', untracked: true })
+    assert.match(untracked.patch, /BRAND NEW LINE/, 'the untracked side is reachable')
+
+    // Asking the TRACKED side for an untracked path finds nothing, which is why
+    // the row carries which side it came from instead of the host guessing.
+    const wrongSide = await box.svc.stashDiff({ ...WS, sha, path: 'fresh.txt' })
+    assert.doesNotMatch(wrongSide.patch, /BRAND NEW LINE/)
+
+    const whole = await box.svc.stashDiff({ ...WS, sha })
+    assert.match(whole.patch, /MODIFIED/, 'no path means the whole tracked patch')
+  })
+
+  await test('a stash with NO untracked files has no third parent to read', async () => {
+    // rev-parse <sha>^3 FAILS rather than returning empty when the stash was
+    // taken without -u, so the absence has to be detected, not assumed.
+    const box = makeService('read-stashplain-')
+    write(box, 'a.txt', 'tracked only\n')
+    await box.svc.stash({ ...WS, action: 'push', message: 'plain' })
+    const sha = (await box.svc.refs(WS)).stashes[0].sha
+    const files = await box.svc.stashFiles({ ...WS, sha })
+    assert.deepEqual(files.files.map((f) => f.path), ['a.txt'])
+    assert.ok(!files.files.some((f) => f.untracked), 'nothing flagged untracked')
+    const out = await box.svc.stashDiff({ ...WS, sha, untracked: true })
+    assert.match(out.patch, /no untracked files/i, 'says so rather than erroring')
+    assert.equal(out.binary, false)
+  })
+
+  await test('the stash endpoints refuse a hostile sha and an escaping path', async () => {
+    const box = makeService('read-stashsafe-')
+    for (const sha of ['HEAD', 'stash@{0}', 'main..dev', '--output=/tmp/x']) {
+      await assert.rejects(() => box.svc.stashFiles({ ...WS, sha }), /dsh-git/, sha)
+      await assert.rejects(() => box.svc.stashDiff({ ...WS, sha }), /dsh-git/, sha)
+    }
+    await assert.rejects(
+      () => box.svc.stashDiff({ ...WS, sha: 'deadbeef', path: '../escape.txt' }),
+      /dsh-git/,
+    )
+  })
+
   await test('changeToken is 0 outside a repository, and non-zero inside', async () => {
     const plain = mkdtempSync(join(tmpdir(), 'read-token-plain-'))
     const ctx = new Context()

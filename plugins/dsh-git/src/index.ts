@@ -43,6 +43,10 @@ import {
   type RefsRequest,
   type RefsResult,
   type StashRequest,
+  type StashDiffRequest,
+  type StashDiffResult,
+  type StashFilesRequest,
+  type StashFilesResult,
   type StatusRequest,
   type StatusResult,
   type WorktreeRequest,
@@ -62,6 +66,7 @@ import {
   collectChangeDiff,
   combined,
   parseCommitFiles,
+  stashUntrackedCommit,
   readStatus,
   repoRoot,
   runGit,
@@ -342,6 +347,104 @@ export class GitService extends TypertRemoteService {
       args.push('-m', message)
       return combined(await runGit(root, args))
     })
+  }
+
+
+  /**
+   * List every path a stash holds, tracked edits and untracked additions alike.
+   *
+   * Deliberately NOT `commitFiles` with a stash's sha, and not `git stash show`:
+   *
+   *   * `commitFiles` reads `--first-parent`, which is right for history and
+   *     wrong here — it omits the untracked files that live on parent 3, and
+   *     this tab always stashes with `-u`. Teaching it to fold parent 3 in
+   *     automatically would corrupt an OCTOPUS merge, whose third parent is a
+   *     genuine parent rather than a bag of new files.
+   *   * `git stash show` sees both sides but accepts NO pathspec (measured:
+   *     `Too many revisions specified`), so it can only ever return one combined
+   *     patch — no clickable list, no per-file diff.
+   *
+   * So the two sides are read separately and unioned here.
+   * @param request - workspace and the stash's commit sha.
+   * @returns one entry per path; untracked additions are marked `A`.
+   */
+  @Remote
+  async stashFiles(request: StashFilesRequest): Promise<StashFilesResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const sha = assertSafeSha(request?.sha)
+    const root = await repoRoot(dir)
+    if (root === undefined) return { files: [] }
+
+    // --first-parent keeps the status a SINGLE letter. Without it git emits a
+    // combined-diff token ("MMA") for a stash, because a stash is a merge
+    // commit — measured. parseCommitFiles reads token[0], so it normalizes back
+    // to "M" either way, which means no test here can tell the difference: the
+    // flag is defensive rather than load-bearing at this call site. Kept because
+    // the raw token is not a GitStatusCode, and anything that stopped taking
+    // just the first letter would start shipping one across a closed enum.
+    const tracked = await runGit(root, [
+      'show', '--name-status', '-z', '--no-color', '--first-parent', '--format=', sha,
+    ])
+    const files = tracked.code === 0 ? parseCommitFiles(tracked.stdout) : []
+
+    const untrackedCommit = await stashUntrackedCommit(root, sha)
+    if (untrackedCommit !== undefined) {
+      const run = await runGit(root, [
+        'show', '--name-status', '-z', '--no-color', '--format=', untrackedCommit,
+      ])
+      if (run.code === 0) {
+        // Marked so the client can ask for the right side back, and so the row
+        // reads as an addition rather than an edit.
+        for (const file of parseCommitFiles(run.stdout)) {
+          files.push({ ...file, status: 'A', untracked: true })
+        }
+      }
+    }
+    return { files }
+  }
+
+  /**
+   * The patch a stash holds, optionally narrowed to one path.
+   *
+   * `untracked` selects which parent to read, because the same path can exist on
+   * both sides and the clicked row knows which one it came from.
+   * @param request - workspace, stash sha, optional path and side.
+   * @returns the patch, or a binary notice, in the shape every pane renders.
+   */
+  @Remote
+  async stashDiff(request: StashDiffRequest): Promise<StashDiffResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const sha = assertSafeSha(request?.sha)
+    const root = await repoRoot(dir)
+    if (root === undefined) return { patch: '', binary: false }
+
+    const path =
+      typeof request?.path === 'string' && request.path.length > 0
+        ? assertSafePath(request.path)
+        : undefined
+
+    let target = sha
+    const args = ['show', '--no-color', '--no-ext-diff', '--format=']
+    if (request?.untracked === true) {
+      const untrackedCommit = await stashUntrackedCommit(root, sha)
+      if (untrackedCommit === undefined) {
+        return { patch: 'This stash holds no untracked files.', binary: false }
+      }
+      target = untrackedCommit
+    } else {
+      args.push('--first-parent')
+    }
+    args.push(target)
+    if (path !== undefined) args.push('--', path)
+
+    const run = await runGit(root, args)
+    if (run.code !== 0) {
+      return { patch: combined(run) || 'Could not read this stash.', binary: false }
+    }
+    if (run.stdout.includes('Binary files')) {
+      return { patch: 'Binary file — no textual diff.', binary: true }
+    }
+    return { patch: clamp(run.stdout), binary: false }
   }
 
   /**

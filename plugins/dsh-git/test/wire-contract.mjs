@@ -83,7 +83,7 @@ try {
       assert.equal(typeof svc[d.method], 'function', d.method + ' has no host method')
       assert.equal(d.service, 'dshGit')
     }
-    assert.equal(GIT_REMOTE.descriptors.length, 16)
+    assert.equal(GIT_REMOTE.descriptors.length, 18)
   })
 
   await test('status survives the wire with merge, stash and worktree state', async () => {
@@ -197,6 +197,33 @@ try {
     assert.equal(out.worktrees.length, 2)
     assert.ok(out.worktrees.some((w) => w.main), 'the main flag survived')
     assert.ok(out.worktrees.some((w) => w.current), 'the current flag survived')
+  })
+
+  await test('the two stash endpoints round-trip, untracked flag included', async () => {
+    // The untracked flag is the whole point of these endpoints existing, so a
+    // codec that dropped it would leave the viewer showing only half a stash --
+    // silently, since strict codecs strip rather than reject.
+    const box = makeService('wire-stash-')
+    writeFileSync(join(box.repo, 'a.txt'), 'MODIFIED\n')
+    writeFileSync(join(box.repo, 'fresh.txt'), 'NEW\n')
+    await box.svc.stash({ ...WS, action: 'push', message: 'wired', includeUntracked: true })
+    const refs = await roundTrip(box.svc, 'refs', { workspaceId: 'w1' })
+    const sha = refs.stashes[0].sha
+    assert.match(sha, /^[0-9a-f]{40}$/, 'the sha survived the refs codec')
+
+    const files = await roundTrip(box.svc, 'stashFiles', { workspaceId: 'w1', sha })
+    assert.ok(files.files.some((f) => f.untracked === true), 'untracked survived')
+    assert.ok(files.files.some((f) => f.untracked === undefined), 'and tracked rows differ')
+
+    await roundTrip(box.svc, 'stashDiff', { workspaceId: 'w1', sha })
+    await roundTrip(box.svc, 'stashDiff', { workspaceId: 'w1', sha, path: 'a.txt' })
+    await roundTrip(box.svc, 'stashDiff', {
+      workspaceId: 'w1', sha, path: 'fresh.txt', untracked: true,
+    })
+
+    // And the wire refuses what the host would: a stash selector is not a sha.
+    assert.throws(() => encodeRequest('stashFiles', { workspaceId: 'w1', sha: 'stash@{0}' }))
+    assert.throws(() => encodeRequest('stashDiff', { workspaceId: 'w1', sha: 'HEAD' }))
   })
 
   await test('every MUTATING request shape the client sends is accepted whole', async () => {
