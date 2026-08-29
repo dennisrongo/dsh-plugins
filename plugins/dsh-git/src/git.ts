@@ -730,11 +730,21 @@ export function assertSafeStashIndex(index: unknown): number {
  * Git itself refuses to create a worktree in a non-empty directory, which is the
  * backstop against clobbering anything that already exists.
  *
+ * The containment rule applies to CREATION only. Removal names a worktree that
+ * already exists, and the main worktree's path IS the repository root — refusing
+ * it here would answer "a worktree cannot live inside the repository" to a
+ * request git explains far better as "is a main working tree".
+ *
  * @param root - repository working-tree root.
  * @param input - untrusted path from the browser.
+ * @param options - `mustBeOutside` guards creation; removal passes false.
  * @returns an absolute directory path for git.
  */
-export function resolveWorktreePath(root: string, input: unknown): string {
+export function resolveWorktreePath(
+  root: string,
+  input: unknown,
+  options: { mustBeOutside?: boolean } = {},
+): string {
   if (typeof input !== 'string' || input.trim().length === 0) {
     throw new Error('dsh-git: a worktree path is required')
   }
@@ -748,10 +758,14 @@ export function resolveWorktreePath(root: string, input: unknown): string {
   // Shared with the browser through types.ts so the preview the user reads and
   // the directory git receives cannot disagree.
   const target = resolveWorktreeTarget(root, raw)
-  if (target.inside) {
+  if (options.mustBeOutside !== false && target.inside) {
+    // Split on BOTH separators: a Windows path uses backslashes, and splitting
+    // only on '/' appends the entire absolute path after '../', suggesting
+    // something like "../C:\Users\me\proj" — advice nobody can follow.
+    const leaf = raw.split(/[\\/]/).filter((s) => s.length > 0).pop() || 'worktree'
     throw new Error(
       `dsh-git: a worktree cannot live inside the repository (${target.path}). ` +
-        `Use a path beside it, such as ../${raw.split('/').pop() || 'worktree'}.`,
+        `Use a path beside it, such as ../${leaf}.`,
     )
   }
   return target.path

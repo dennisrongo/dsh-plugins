@@ -28,7 +28,7 @@
   "scripts": {
     "build": "node build/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node build/build.mjs && node --experimental-strip-types test/smoke.mjs && node --experimental-strip-types test/host-ops.mjs && node --experimental-strip-types test/env-isolation.mjs && node --experimental-strip-types test/branch-ops.mjs && node --experimental-strip-types test/watch-probe.mjs",
+    "test": "node build/build.mjs && node --experimental-strip-types test/smoke.mjs && node --experimental-strip-types test/host-ops.mjs && node --experimental-strip-types test/env-isolation.mjs && node --experimental-strip-types test/branch-ops.mjs && node test/worktree-integration.mjs && node --experimental-strip-types test/watch-probe.mjs",
     "test:ui": "node test/verify-ui.mjs",
     "test:ai": "node test/verify-ai.mjs",
     "test:commit": "node test/verify-commit.mjs",
@@ -40,7 +40,8 @@
     "test:menu": "node test/menu-probe.mjs",
     "test:watch": "node --experimental-strip-types test/watch-probe.mjs",
     "test:env": "node --experimental-strip-types test/env-isolation.mjs",
-    "test:branch": "node --experimental-strip-types test/branch-ops.mjs"
+    "test:branch": "node --experimental-strip-types test/branch-ops.mjs",
+    "test:worktree": "node test/worktree-integration.mjs"
   },
   "dsh": {
     "bundle": {

@@ -468,7 +468,7 @@ function assertSafeStashIndex(index) {
   return index;
 }
 __name(assertSafeStashIndex, "assertSafeStashIndex");
-function resolveWorktreePath(root, input) {
+function resolveWorktreePath(root, input, options = {}) {
   if (typeof input !== "string" || input.trim().length === 0) {
     throw new Error("dsh-git: a worktree path is required");
   }
@@ -480,9 +480,10 @@ function resolveWorktreePath(root, input) {
     throw new Error("dsh-git: worktree path contains control characters");
   }
   const target = resolveWorktreeTarget(root, raw);
-  if (target.inside) {
+  if (options.mustBeOutside !== false && target.inside) {
+    const leaf = raw.split(/[\\/]/).filter((s) => s.length > 0).pop() || "worktree";
     throw new Error(
-      `dsh-git: a worktree cannot live inside the repository (${target.path}). Use a path beside it, such as ../${raw.split("/").pop() || "worktree"}.`
+      `dsh-git: a worktree cannot live inside the repository (${target.path}). Use a path beside it, such as ../${leaf}.`
     );
   }
   return target.path;
@@ -1025,19 +1026,15 @@ ${body}` }],
     return this.withRepo(dir, async (root) => {
       switch (action) {
         case "create":
-          return combined(
-            await runGit(root, ["branch", "--", name, ...startPoint ? [startPoint] : []])
-          );
+          return must(root, ["branch", "--", name, ...startPoint ? [startPoint] : []]);
         case "switch":
-          return combined(await runGit(root, ["checkout", "--", name]));
+          return must(root, ["switch", name]);
         case "createSwitch":
-          return combined(
-            await runGit(root, ["checkout", "-b", name, ...startPoint ? [startPoint] : []])
-          );
+          return must(root, ["switch", "-c", name, ...startPoint ? [startPoint] : []]);
         case "delete":
-          return combined(await runGit(root, ["branch", force ? "-D" : "-d", "--", name]));
+          return must(root, ["branch", force ? "-D" : "-d", "--", name]);
         case "rename":
-          return combined(await runGit(root, ["branch", "-m", "--", name]));
+          return must(root, ["branch", "-m", "--", name]);
         case "stashSwitch": {
           const stash = await runGit(root, [
             "stash",
@@ -1048,8 +1045,8 @@ ${body}` }],
           ]);
           const stashText = combined(stash);
           if (stash.code !== 0) return stashText;
-          const checkout = await runGit(root, ["checkout", "--", name]);
-          return [stashText, combined(checkout)].filter((s) => s.length > 0).join("\n");
+          const checkout = await must(root, ["switch", name]);
+          return [stashText, checkout].filter((s) => s.length > 0).join("\n");
         }
         default:
           throw new Error(`dsh-git: unknown branch action ${String(action)}`);
@@ -1064,19 +1061,11 @@ ${body}` }],
     return this.withRepo(dir, async (root) => {
       switch (action) {
         case "merge":
-          return combined(
-            await runGit(root, [
-              "merge",
-              "--no-edit",
-              ...noFF ? ["--no-ff"] : [],
-              "--",
-              from
-            ])
-          );
+          return must(root, ["merge", "--no-edit", ...noFF ? ["--no-ff"] : [], "--", from]);
         case "abort":
-          return combined(await runGit(root, ["merge", "--abort"]));
+          return must(root, ["merge", "--abort"]);
         case "continue":
-          return combined(await runGit(root, ["commit", "--no-edit"]));
+          return must(root, ["commit", "--no-edit"]);
         default:
           throw new Error(`dsh-git: unknown merge action ${String(action)}`);
       }
@@ -1095,23 +1084,16 @@ ${body}` }],
           const args = ["stash", "push"];
           if (includeUntracked) args.push("-u");
           if (message.length > 0) args.push("-m", message);
-          const run = await runGit(root, args);
-          return combined(run);
+          return must(root, args);
         }
         case "pop":
-          return combined(
-            await runGit(root, ["stash", "pop", ...selector ? [selector] : []])
-          );
+          return must(root, ["stash", "pop", ...selector ? [selector] : []]);
         case "apply":
-          return combined(
-            await runGit(root, ["stash", "apply", ...selector ? [selector] : []])
-          );
+          return must(root, ["stash", "apply", ...selector ? [selector] : []]);
         case "drop":
-          return combined(
-            await runGit(root, ["stash", "drop", ...selector ? [selector] : []])
-          );
+          return must(root, ["stash", "drop", ...selector ? [selector] : []]);
         case "clear":
-          return combined(await runGit(root, ["stash", "clear"]));
+          return must(root, ["stash", "clear"]);
         default:
           throw new Error(`dsh-git: unknown stash action ${String(action)}`);
       }
@@ -1138,9 +1120,8 @@ ${body}` }],
           } else if (newBranch === void 0 && branch !== void 0) {
             args.push(branch);
           }
-          const run = await runGit(root, args);
-          const output = combined(run);
-          if (run.code !== 0 || !register) return output;
+          const output = await must(root, args);
+          if (!register) return output;
           try {
             await this.ctx.workspaceRegistry.create(target, basename(target));
             return [output, `Registered ${target} as a workspace.`].filter((s) => s.length > 0).join("\n");
@@ -1149,14 +1130,14 @@ ${body}` }],
           }
         }
         case "remove": {
-          const target = resolveWorktreePath(root, request?.path);
+          const target = resolveWorktreePath(root, request?.path, { mustBeOutside: false });
           const args = ["worktree", "remove"];
           if (force) args.push("--force");
           args.push("--", target);
-          return combined(await runGit(root, args));
+          return must(root, args);
         }
         case "prune":
-          return combined(await runGit(root, ["worktree", "prune"]));
+          return must(root, ["worktree", "prune"]);
         default:
           throw new Error(`dsh-git: unknown worktree action ${String(action)}`);
       }
@@ -1288,6 +1269,13 @@ __decoratorMetadata(_init, _GitService);
 __name(_GitService, "GitService");
 __publicField(_GitService, "inject", ["workspaceRegistry", "llm", "agentDefaultModel"]);
 var GitService = _GitService;
+async function must(root, args, timeoutMs) {
+  const run = await runGit(root, args, timeoutMs);
+  const text = combined(run);
+  if (run.code !== 0) throw new Error(text.length > 0 ? text : `git ${args[0]} failed`);
+  return text;
+}
+__name(must, "must");
 async function firstRemote(root) {
   const run = await runGit(root, ["remote"]);
   if (run.code !== 0) return void 0;

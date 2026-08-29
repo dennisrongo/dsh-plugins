@@ -54,7 +54,7 @@ Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
+`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `worktree-integration.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
 
 Profiles materialise `file:` deps as copies **frozen at install time**, so a rebuild does not reach them. `scripts/dev-link.ps1` at the repo root replaces those copies with junctions: client-half edits then deploy on **browser refresh**, host-half edits need a **profile restart**.
 
@@ -627,6 +627,51 @@ The menu's clamp is NOT tested there. `menuLeft()` is exported and asserted in
 `smoke.mjs` instead: a browser probe that re-implements the arithmetic to position its own
 fixture is only testing its copy of it. Geometry that depends on CSS belongs in the probe;
 a clamp is arithmetic.
+
+## The layer the tests were missing
+
+`test/worktree-integration.mjs` drives the HOST SERVICE — real `GitService` methods against
+real repositories — and it exists because two bugs lived in that gap with every suite green.
+
+`branch-ops.mjs` exercises `git.ts` BELOW the endpoint and builds its argv by hand;
+`smoke.mjs` exercises the client store ABOVE it against a stub remote. Neither ran the code
+that turns a request into a git command, so:
+
+- **`git checkout -- <branch>` was in `branch switch` for its whole life.** `checkout` is
+  overloaded (switch branches / restore files) and `--` resolves that ambiguity toward
+  FILES, so it reported `pathspec 'topic' did not match any file(s)` and switched nothing.
+  Branch switching never worked. It now uses `git switch`, which has no ambiguity to
+  separate. Only `checkout` is affected — `branch -d|-m|--`, `merge --`, and
+  `worktree add ... --` all tolerate the separator (each measured).
+- **Every command reported `ok: true` even when git failed**, because `withRepo` sets it
+  from "the runner did not throw". Three client behaviours branch on `ok`: opening a
+  workspace after an add, unregistering after a remove, and offering "Stash changes and
+  switch" after a refused switch. All three misfired — the stash button could never appear
+  at all. `must()` now throws on a non-zero exit for the branch/merge/stash/worktree family,
+  handing git's own message to `withRepo`'s catch so the text is unchanged and only the flag
+  becomes truthful. The older endpoints keep the looser contract: `stage` and `commit` treat
+  "nothing to commit" as information, not a fault.
+
+A third bug surfaced while writing the suite: **removing the main worktree hit the
+inside-repo guard before git**, answering "a worktree cannot live inside the repository"
+with a suggestion of `../C:\Users\...\proj` — the containment rule applies to CREATION
+only, and the main worktree's path IS the repo root. `resolveWorktreePath` takes
+`mustBeOutside` and removal passes `false`, so git's own `is a main working tree` reaches
+the user. The suggestion also split on `/` alone, appending an entire Windows path after
+`../`; it splits on both separators now.
+
+The service is constructed against a plain cordis `Context` with a stub `workspaceRegistry`
+— no LLM, no gateway needed. It imports the **built** `lib/index.js`, both because this repo
+tests built output and because `--experimental-strip-types` cannot parse the `@Remote`
+decorators, which is why this file is NOT run with that flag.
+
+The suite covers the lifecycle (add / list / fork from HEAD / fork from a start point /
+remove / prune), the failure modes as DATA rather than crashes (non-empty target, dirty
+removal then `force`, main worktree, already-checked-out branch, inside-repo, hostile refs,
+unknown workspace, non-repository), registration (resolved absolute path reaches the
+registry, a failed add registers nothing, a registry failure does not fail the git
+operation), and concurrency (three simultaneous adds all land). Both original bugs were
+verified to fail it.
 
 ## Environment isolation (git's location variables)
 

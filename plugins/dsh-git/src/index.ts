@@ -581,21 +581,23 @@ export class GitService extends TypertRemoteService {
     return this.withRepo(dir, async (root: string) => {
       switch (action) {
         case 'create':
-          return combined(
-            await runGit(root, ['branch', '--', name!, ...(startPoint ? [startPoint] : [])]),
-          )
+          return must(root, ['branch', '--', name!, ...(startPoint ? [startPoint] : [])])
         case 'switch':
-          return combined(await runGit(root, ['checkout', '--', name!]))
+          // `git switch`, NOT `git checkout -- <name>`. checkout is overloaded
+          // (switch branches / restore files) and the `--` separator resolves
+          // that ambiguity toward FILES: `checkout -- topic` tries to restore a
+          // path called "topic" and reports "pathspec 'topic' did not match any
+          // file(s)". Branch switching silently never worked. `switch` only ever
+          // switches branches, so there is no ambiguity to separate.
+          return must(root, ['switch', name!])
         case 'createSwitch':
-          return combined(
-            await runGit(root, ['checkout', '-b', name!, ...(startPoint ? [startPoint] : [])]),
-          )
+          return must(root, ['switch', '-c', name!, ...(startPoint ? [startPoint] : [])])
         case 'delete':
           // -d refuses an unmerged branch; -D is the deliberate override the
           // client only sends after confirming.
-          return combined(await runGit(root, ['branch', force ? '-D' : '-d', '--', name!]))
+          return must(root, ['branch', force ? '-D' : '-d', '--', name!])
         case 'rename':
-          return combined(await runGit(root, ['branch', '-m', '--', name!]))
+          return must(root, ['branch', '-m', '--', name!])
         case 'stashSwitch': {
           // -u so a brand-new file is carried across too; leaving untracked work
           // behind is exactly the surprise this flow exists to prevent.
@@ -608,8 +610,8 @@ export class GitService extends TypertRemoteService {
           ])
           const stashText = combined(stash)
           if (stash.code !== 0) return stashText
-          const checkout = await runGit(root, ['checkout', '--', name!])
-          return [stashText, combined(checkout)].filter((s) => s.length > 0).join('\n')
+          const checkout = await must(root, ['switch', name!])
+          return [stashText, checkout].filter((s) => s.length > 0).join('\n')
         }
         default:
           throw new Error(`dsh-git: unknown branch action ${String(action)}`)
@@ -642,22 +644,16 @@ export class GitService extends TypertRemoteService {
     return this.withRepo(dir, async (root: string) => {
       switch (action) {
         case 'merge':
-          return combined(
-            await runGit(root, [
-              'merge',
-              '--no-edit',
-              ...(noFF ? ['--no-ff'] : []),
-              '--',
-              from!,
-            ]),
-          )
+          // A CONFLICT exits non-zero and is reported as a failure, which is
+          // honest: the merge did not complete. status.merging drives the
+          // banner regardless, so the user still gets Abort and Continue.
+          return must(root, ['merge', '--no-edit', ...(noFF ? ['--no-ff'] : []), '--', from!])
         case 'abort':
-          return combined(await runGit(root, ['merge', '--abort']))
+          return must(root, ['merge', '--abort'])
         case 'continue':
           // `commit --no-edit` rather than `merge --continue`: both conclude the
-          // merge, but this one reuses MERGE_MSG without involving an editor at
-          // all, and reports unresolved conflicts as plain output.
-          return combined(await runGit(root, ['commit', '--no-edit']))
+          // merge, but this one reuses MERGE_MSG without involving an editor at all.
+          return must(root, ['commit', '--no-edit'])
         default:
           throw new Error(`dsh-git: unknown merge action ${String(action)}`)
       }
@@ -691,23 +687,16 @@ export class GitService extends TypertRemoteService {
           const args = ['stash', 'push']
           if (includeUntracked) args.push('-u')
           if (message.length > 0) args.push('-m', message)
-          const run = await runGit(root, args)
-          return combined(run)
+          return must(root, args)
         }
         case 'pop':
-          return combined(
-            await runGit(root, ['stash', 'pop', ...(selector ? [selector] : [])]),
-          )
+          return must(root, ['stash', 'pop', ...(selector ? [selector] : [])])
         case 'apply':
-          return combined(
-            await runGit(root, ['stash', 'apply', ...(selector ? [selector] : [])]),
-          )
+          return must(root, ['stash', 'apply', ...(selector ? [selector] : [])])
         case 'drop':
-          return combined(
-            await runGit(root, ['stash', 'drop', ...(selector ? [selector] : [])]),
-          )
+          return must(root, ['stash', 'drop', ...(selector ? [selector] : [])])
         case 'clear':
-          return combined(await runGit(root, ['stash', 'clear']))
+          return must(root, ['stash', 'clear'])
         default:
           throw new Error(`dsh-git: unknown stash action ${String(action)}`)
       }
@@ -768,9 +757,8 @@ export class GitService extends TypertRemoteService {
             // named after the directory; naming the branch is the explicit form.
             args.push(branch)
           }
-          const run = await runGit(root, args)
-          const output = combined(run)
-          if (run.code !== 0 || !register) return output
+          const output = await must(root, args)
+          if (!register) return output
 
           // Registration is best-effort ON PURPOSE: the worktree exists on disk
           // at this point, and failing the whole command would report a
@@ -787,14 +775,17 @@ export class GitService extends TypertRemoteService {
           }
         }
         case 'remove': {
-          const target = resolveWorktreePath(root, request?.path)
+          // mustBeOutside: false — the path names an EXISTING worktree, and the
+          // main one's path IS the repo root. Git's "is a main working tree" is
+          // a far better answer than the containment rule's.
+          const target = resolveWorktreePath(root, request?.path, { mustBeOutside: false })
           const args = ['worktree', 'remove']
           if (force) args.push('--force')
           args.push('--', target)
-          return combined(await runGit(root, args))
+          return must(root, args)
         }
         case 'prune':
-          return combined(await runGit(root, ['worktree', 'prune']))
+          return must(root, ['worktree', 'prune'])
         default:
           throw new Error(`dsh-git: unknown worktree action ${String(action)}`)
       }
@@ -960,6 +951,36 @@ export class GitService extends TypertRemoteService {
       this.watcher.close()
     })
   }
+}
+
+/**
+ * Run git and treat a non-zero exit as a FAILURE, not as output.
+ *
+ * {@link GitService.withRepo} reports `ok: true` whenever the runner returns
+ * without throwing, which suits the older endpoints: `stage` and `commit` treat
+ * "nothing to commit" as information rather than a fault. It is wrong for the
+ * branch/merge/stash/worktree family, where the CLIENT BRANCHES on `ok` —
+ * opening a workspace after a worktree add, unregistering one after a remove,
+ * and offering "Stash changes and switch" after a refused switch.
+ *
+ * With every command reporting `ok: true`, all three misfired: a FAILED add
+ * tried to open a workspace at a directory git never created, a FAILED remove
+ * unregistered a worktree that still existed, and the stash-and-switch button
+ * could never appear at all because its condition was `!result.ok`.
+ *
+ * Throwing hands git's own message to withRepo's catch, so the output the user
+ * reads is unchanged — only the flag becomes truthful.
+ *
+ * @param root - repository working-tree root.
+ * @param args - argv after `git`.
+ * @param timeoutMs - wall-clock ceiling.
+ * @returns the combined output on success.
+ */
+async function must(root: string, args: string[], timeoutMs?: number): Promise<string> {
+  const run = await runGit(root, args, timeoutMs)
+  const text = combined(run)
+  if (run.code !== 0) throw new Error(text.length > 0 ? text : `git ${args[0]} failed`)
+  return text
 }
 
 /**
