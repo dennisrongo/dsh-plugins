@@ -106,3 +106,32 @@ export function makeRunner() {
   }
   return { test, state }
 }
+/**
+ * Give a rig a real remote: a bare repository beside it, wired as `origin`.
+ *
+ * A local bare repo is a REAL remote as far as git is concerned — fetch, push,
+ * upstream tracking and `--ff-only` refusals all behave exactly as they do over
+ * the network, with no network. Skipping this and mocking the remote would test
+ * the mock; skipping sync entirely would leave the one endpoint family that can
+ * lose work to a bad push completely uncovered.
+ *
+ * @param box - a rig from makeService.
+ * @returns the bare repository path, already set as origin.
+ */
+export function addRemote(box) {
+  const bare = join(box.parent, 'origin.git')
+  execFileSync('git', ['init', '--bare', '-b', 'main', bare], { stdio: 'ignore' })
+  box.g('remote', 'add', 'origin', bare)
+  return bare
+}
+
+/** A second clone of the same remote, for divergence tests. */
+export function cloneOf(box, bare, name) {
+  const dir = join(box.parent, name)
+  execFileSync('git', ['clone', bare, dir], { stdio: 'ignore' })
+  const g = (...a) =>
+    execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  g('config', 'user.email', 'b@c.d')
+  g('config', 'user.name', 'Other')
+  return { dir, g }
+}

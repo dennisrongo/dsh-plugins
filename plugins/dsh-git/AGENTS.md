@@ -54,7 +54,7 @@ Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `worktree-integration.mjs` + `branch-merge-stash.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
+`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `worktree-integration.mjs` + `branch-merge-stash.mjs` + `stage-commit-sync.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
 
 Profiles materialise `file:` deps as copies **frozen at install time**, so a rebuild does not reach them. `scripts/dev-link.ps1` at the repo root replaces those copies with junctions: client-half edits then deploy on **browser refresh**, host-half edits need a **profile restart**.
 
@@ -704,6 +704,42 @@ work from.
 Three sabotages were verified to fail it: ignoring a malformed stash index, turning `-d`
 into `-D` (which would delete unmerged work without the refusal the confirm dialog guards),
 and making `createSwitch` create without moving HEAD.
+
+`stage-commit-sync.mjs` completes the layer for the OLDEST endpoints. `host-ops.mjs` has
+checks named "init creates a repo" and "discard restores tracked files", but it imports
+`src/git.ts` and drives `runGit` itself — the same gap, wearing the same clothes.
+
+It found no host bug. It corrected TWO assumptions of mine instead, and both are now pinned:
+
+- **`discard` restores from the INDEX, not from HEAD, and that is deliberate.** A partially
+  staged file appears in both sections and the tab offers Discard on the unstaged row ONLY
+  (`section === 'unstaged' ? ... : undefined`), so discarding there must drop the newer edit
+  and keep the staged one. "Fixing" it to restore from HEAD would silently destroy staged
+  work the user deliberately kept — the sabotage for that reads `staged work survived`.
+- **The combined action is `sync`, not `both`**, and it STOPS after a failed pull rather than
+  pushing into a rejection: two errors bury the real cause under a symptom. Pinned by
+  asserting the output carries the divergence reason and does NOT carry a push rejection.
+
+**`assertSafePath` does not refuse a leading dash, and does not need to** — every stage
+command puts `--` before the paths, so git reads the value as a pathspec rather than an
+option. The separator is the protection, so the test pins the BEHAVIOUR: staging a path
+called `-A` must stage nothing. `-A` is a real flag meaning "stage everything", which makes
+the difference observable instead of just another error string.
+
+That detail matters because the first version of this test used `discard` alone and the
+`--`-removal sabotage passed clean. A test that does not cover the thing it claims to
+protect is decoration; it now exercises `stage` too and fails with
+`a path called -A must stage NOTHING, not sweep the tree`.
+
+**sync is tested against a real LOCAL BARE REPOSITORY** (`addRemote` / `cloneOf` in the
+harness). Git treats one as a genuine remote — upstream tracking, fetch, and the `--ff-only`
+refusal behave exactly as they do over a network — so publish/push/fetch/pull/sync and a
+divergent-branch refusal are all covered with no network and no mocks. Mocking the remote
+would have tested the mock.
+
+Six sabotages were verified to fail it: discard restoring from HEAD, discard widening to the
+whole tree, dropping `--` before stage paths, accepting an empty commit message, `init`
+re-initializing an existing repository, and `sync` pushing after a failed pull.
 
 ## Environment isolation (git's location variables)
 
