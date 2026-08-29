@@ -1,0 +1,46 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    // The Typert @Remote decorator is a TC39 STANDARD decorator (it uses
+    // context.addInitializer), not a legacy TypeScript one. This must stay
+    // false or the marker never registers.
+    "experimentalDecorators": false,
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      // Typecheck against the RUNNING dsh install, which is also what these
+      // peer dependencies resolve to at runtime. Mixing in a bare cordis copy
+      // produces two incompatible `Context` identities, and only the install's
+      // copy carries the service augmentations (`tools`, `subprocess`,
+      // `settings`, `agents`, `workspaceRegistry`) this plugin reads.
+      "@deepseek-ai/cordis": ["./node_modules/@deepseek-ai/cordis/lib/types/index.d.ts"],
+      "@deepseek-ai/schemastery": ["./node_modules/@deepseek-ai/schemastery/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-agent": ["./node_modules/@deepseek-ai/dsh-agent/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-llm": ["./node_modules/@deepseek-ai/dsh-llm/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-session": ["./node_modules/@deepseek-ai/dsh-session/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-settings": ["./node_modules/@deepseek-ai/dsh-settings/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-subprocess": ["./node_modules/@deepseek-ai/dsh-subprocess/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-tools": ["./node_modules/@deepseek-ai/dsh-tools/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-typert-protocol": [
+        "./node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-workspace": ["./node_modules/@deepseek-ai/dsh-workspace/lib/types/index.d.ts"],
+      // Type-only. These two contribute the `subagent/*` and `approval/request`
+      // entries to cordis' `Events` interface; nothing is imported from them at
+      // runtime, so they are NOT package.json peers. anchor.mjs reads this map
+      // as well as the manifest, so listing them here is what links them.
+      "@deepseek-ai/dsh-subagent": ["./node_modules/@deepseek-ai/dsh-subagent/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-user-approval": [
+        "./node_modules/@deepseek-ai/dsh-user-approval/lib/types/index.d.ts"
+      ]
+    }
+  },
+  "include": ["src"]
+}
