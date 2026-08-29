@@ -105,13 +105,13 @@ link_one() {
 }
 
 IFS=',' read -r -a cliArr <<< "$profiles"
-for name in "${cliArr[@]}"; do
+for name in ${cliArr[@]+"${cliArr[@]}"}; do
   [ -z "$name" ] && continue
   link_one "$cliProfilesRoot/$name" "cli:$name"
 done
 
 IFS=',' read -r -a deskArr <<< "$desktopProfiles"
-for name in "${deskArr[@]}"; do
+for name in ${deskArr[@]+"${deskArr[@]}"}; do
   [ -z "$name" ] && continue
   link_one "$desktopProfilesRoot/$name" "desktop:$name"
 done
