@@ -10,7 +10,12 @@
  * @module @dennisrongo/dsh-git/git
  */
 import { execFile } from 'node:child_process'
+import { readFile, stat } from 'node:fs/promises'
+import { isAbsolute, resolve as resolvePath, dirname } from 'node:path'
 import {
+  type GitBranch,
+  type GitStash,
+  type GitWorktree,
   MAX_AI_DIFF_BYTES,
   RECENT_COMMITS,
   type ChangeScope,
@@ -21,6 +26,114 @@ import {
   type GitStatusCode,
   type GitUpstream,
 } from './types.ts'
+
+/** Where one repository keeps its state, resolved in a single git call. */
+export interface RepoPaths {
+  /** Absolute working-tree root. */
+  root: string
+  /** Absolute git directory for THIS worktree (holds HEAD, index, MERGE_HEAD). */
+  gitDir: string
+  /** Absolute shared git directory (holds refs/stash and the object store). */
+  commonDir: string
+}
+
+/**
+ * Resolve a repository's three directories in ONE git process.
+ *
+ * `rev-parse` accepts several flags at once and prints one value per line, so
+ * this costs exactly what the old `--show-toplevel`-only probe cost. That
+ * matters because {@link readStatus} runs on every change-token move, and
+ * because `changeToken` itself is built on this call.
+ *
+ * The two directory flags come back RELATIVE to the cwd — run at a repository
+ * root, `--git-dir` prints `.git`, not an absolute path (verified on git
+ * 2.50). Resolving them is not cosmetic: an unresolved `.git` read from the
+ * host's own cwd finds nothing, and the merge probe then reports `merging:
+ * false` on a repository that is mid-merge — failing open, which is the worst
+ * direction for a flag that gates an Abort button.
+ *
+ * The distinction between the two also matters. A linked worktree's `.git` is a
+ * FILE pointing into `<common>/worktrees/<name>`, where per-worktree state
+ * (HEAD, index, MERGE_HEAD) lives, while `refs/stash` stays in the common
+ * directory shared by every worktree. Reading either from the wrong one is
+ * silently wrong rather than an error.
+ *
+ * @param dir - directory to probe.
+ * @returns the three paths, or undefined when `dir` is not in a repository.
+ */
+export async function repoPaths(dir: string): Promise<RepoPaths | undefined> {
+  try {
+    const run = await runGit(dir, [
+      'rev-parse',
+      '--show-toplevel',
+      '--git-dir',
+      '--git-common-dir',
+    ])
+    if (run.code !== 0) return undefined
+    const [root, gitDir, commonDir] = run.stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+    if (!root) return undefined
+    // A very old git may not know --git-common-dir; fall back to the git dir
+    // rather than reporting a repository with no object store.
+    const git = gitDir ? resolvePath(dir, gitDir) : resolvePath(root, '.git')
+    return {
+      root,
+      gitDir: git,
+      commonDir: commonDir ? resolvePath(dir, commonDir) : git,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Read the in-progress merge state without spawning git.
+ *
+ * `MERGE_HEAD` exists for exactly as long as a merge is unconcluded, which is
+ * the question the banner and the Abort button ask. `MERGE_MSG`'s first line is
+ * used for the label because `MERGE_HEAD` holds a bare sha, which tells a
+ * reader nothing about what they are merging.
+ *
+ * @param gitDir - this worktree's git directory.
+ * @returns whether a merge is in progress, and how git describes it.
+ */
+export async function readMergeState(
+  gitDir: string,
+): Promise<{ merging: boolean; mergeHead?: string }> {
+  try {
+    await stat(resolvePath(gitDir, 'MERGE_HEAD'))
+  } catch {
+    return { merging: false }
+  }
+  try {
+    const msg = await readFile(resolvePath(gitDir, 'MERGE_MSG'), 'utf8')
+    const first = msg.split('\n').map((s) => s.trim()).find((s) => s.length > 0)
+    return first ? { merging: true, mergeHead: first } : { merging: true }
+  } catch {
+    return { merging: true }
+  }
+}
+
+/**
+ * Count stash entries without spawning git.
+ *
+ * Git's stash IS the reflog of `refs/stash`, so counting its lines is the exact
+ * same number `git stash list` prints — not an approximation. No stash has ever
+ * been taken when the file is absent, which is not an error.
+ *
+ * @param commonDir - the SHARED git directory; stash does not live per-worktree.
+ * @returns how many entries the stash stack holds.
+ */
+export async function readStashCount(commonDir: string): Promise<number> {
+  try {
+    const raw = await readFile(resolvePath(commonDir, 'logs', 'refs', 'stash'), 'utf8')
+    return raw.split('\n').filter((line) => line.trim().length > 0).length
+  } catch {
+    return 0
+  }
+}
 
 /** One finished git invocation. */
 export interface GitRun {
@@ -140,14 +253,7 @@ export function combined(run: GitRun): string {
  * @returns absolute working-tree root, or undefined.
  */
 export async function repoRoot(dir: string): Promise<string | undefined> {
-  try {
-    const run = await runGit(dir, ['rev-parse', '--show-toplevel'])
-    if (run.code !== 0) return undefined
-    const root = run.stdout.trim()
-    return root.length > 0 ? root : undefined
-  } catch {
-    return undefined
-  }
+  return (await repoPaths(dir))?.root
 }
 
 /** Map one porcelain status letter onto the code vocabulary. */
@@ -396,13 +502,19 @@ async function readPorcelain(root: string): Promise<Porcelain> {
  * @returns the snapshot, including the `repo: false` case.
  */
 export async function readStatus(dir: string): Promise<GitStatus> {
-  const root = await repoRoot(dir)
-  if (root === undefined) return { repo: false, root: dir }
+  const paths = await repoPaths(dir)
+  if (paths === undefined) return { repo: false, root: dir }
+  const root = paths.root
 
-  const [porcelain, remotesRun, headRun] = await Promise.all([
+  // The merge and stash probes are filesystem reads, deliberately: this runs on
+  // every change-token move, so anything added here has to cost nothing. They
+  // join the same Promise.all rather than trailing it for the same reason.
+  const [porcelain, remotesRun, headRun, merge, stashCount] = await Promise.all([
     readPorcelain(root),
     runGit(root, ['remote']),
     runGit(root, ['rev-parse', '--short', 'HEAD']),
+    readMergeState(paths.gitDir),
+    readStashCount(paths.commonDir),
   ])
 
   const unborn = porcelain.unborn || headRun.code !== 0
@@ -418,6 +530,9 @@ export async function readStatus(dir: string): Promise<GitStatus> {
     hasRemote: remotesRun.code === 0 && remotesRun.stdout.trim().length > 0,
     files: porcelain.files,
     recent,
+    merging: merge.merging,
+    ...(merge.mergeHead !== undefined ? { mergeHead: merge.mergeHead } : {}),
+    stashCount,
   }
 }
 
@@ -531,6 +646,258 @@ export async function collectChangeDiff(
     scope,
     text: truncated ? `${text.slice(0, maxBytes)}\n[diff truncated]` : text,
     truncated,
+  }
+}
+
+
+/**
+ * Reject anything that is not a plain, safe git ref name.
+ *
+ * The sibling of {@link assertSafeSha}, and it exists for the same reason: a ref
+ * arrives from the browser and is handed to git verbatim. The risk is not a
+ * shell ({@link runGit} uses an argument array) but git's own argument grammar
+ * and revision syntax. A value starting with `-` is read as a FLAG, so
+ * `--exec=...` as a "branch name" reaches git as an option. `..` and `...`
+ * form revision RANGES, `~` and `^` walk ancestry, `:` addresses the index or
+ * another ref, and `@{` opens reflog syntax — every one of them names commits
+ * the UI never offered.
+ *
+ * Slashes ARE permitted: `feature/x` and `origin/feature/x` are ordinary,
+ * and refusing them would break the common case to no benefit.
+ *
+ * @param ref - untrusted ref name.
+ * @returns the same ref when it is safe to pass to git.
+ */
+export function assertSafeRef(ref: unknown): string {
+  if (typeof ref !== 'string' || ref.trim().length === 0) {
+    throw new Error('dsh-git: a branch name is required')
+  }
+  const name = ref.trim()
+  if (name.length > 255) throw new Error('dsh-git: branch name is too long')
+  // Leading '-' is the flag-injection case; leading '.' and a trailing '.lock'
+  // or '/' are refused by git's own check-ref-format.
+  if (name.startsWith('-') || name.startsWith('.') || name.startsWith('/')) {
+    throw new Error(`dsh-git: invalid branch name ${name}`)
+  }
+  if (name.endsWith('/') || name.endsWith('.') || name.endsWith('.lock')) {
+    throw new Error(`dsh-git: invalid branch name ${name}`)
+  }
+  if (name.includes('..') || name.includes('@{') || name.includes('//')) {
+    throw new Error(`dsh-git: invalid branch name ${name}`)
+  }
+  // Control characters, whitespace, and every character git's revision grammar
+  // gives a meaning to.
+  if (/[\u0000-\u001f\u007f ~^:?*[\\]/.test(name)) {
+    throw new Error(`dsh-git: invalid branch name ${name}`)
+  }
+  return name
+}
+
+/**
+ * Reject a stash address that is not a plain non-negative integer.
+ *
+ * The value is interpolated into `stash@{N}`, so anything else would smuggle
+ * reflog syntax into a ref the caller controls.
+ * @param index - untrusted stash position.
+ * @returns the same index when usable.
+ */
+export function assertSafeStashIndex(index: unknown): number {
+  if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index > 10_000) {
+    throw new Error(`dsh-git: invalid stash index ${String(index)}`)
+  }
+  return index
+}
+
+/**
+ * Resolve and validate a worktree directory.
+ *
+ * A worktree lives OUTSIDE the repository by definition, so
+ * {@link assertSafePath} — which refuses absolute paths and `..` — is the wrong
+ * check here. This is the one place the plugin creates a directory the workspace
+ * does not contain, so the validation is about intent rather than containment: a
+ * relative path is resolved against the repository's PARENT (where sibling
+ * worktrees conventionally go, and what a user typing `../feature` means), and a
+ * leading `-` is refused because git would read it as a flag.
+ *
+ * Git itself refuses to create a worktree in a non-empty directory, which is the
+ * backstop against clobbering anything that already exists.
+ *
+ * @param root - repository working-tree root.
+ * @param input - untrusted path from the browser.
+ * @returns an absolute directory path for git.
+ */
+export function resolveWorktreePath(root: string, input: unknown): string {
+  if (typeof input !== 'string' || input.trim().length === 0) {
+    throw new Error('dsh-git: a worktree path is required')
+  }
+  const raw = input.trim()
+  if (raw.startsWith('-')) {
+    throw new Error(`dsh-git: invalid worktree path ${raw}`)
+  }
+  if (/[\u0000-\u001f]/.test(raw)) {
+    throw new Error('dsh-git: worktree path contains control characters')
+  }
+  // Relative paths hang off the repo's parent, so `feature` and `../feature`
+  // both land beside the repository rather than inside it.
+  return isAbsolute(raw) ? resolvePath(raw) : resolvePath(dirname(root), raw)
+}
+
+/** Field separator for ref formats: a byte that cannot occur in a ref or subject. */
+const REF_SEP = '\u001f'
+
+/**
+ * Parse `git branch` output emitted with {@link REF_SEP}-delimited fields.
+ *
+ * Ahead/behind are left UNDEFINED rather than zero when git reports no upstream,
+ * because "in sync with origin" and "has no upstream at all" are different facts
+ * and the menu renders them differently.
+ *
+ * @param raw - the command's stdout verbatim.
+ * @returns one entry per branch, in git's order.
+ */
+export function parseBranches(raw: string): GitBranch[] {
+  const out: GitBranch[] = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    const [name, head, upstream, track, subject] = line.split(REF_SEP)
+    if (!name) continue
+    // A remote HEAD pointer ('origin/HEAD -> origin/main') is a symref, not a
+    // branch anyone can check out; listing it would offer a dead menu row.
+    if (name.includes(' -> ')) continue
+    const remote = name.startsWith('remotes/') || /^[^/]+\/.+$/.test(name) && upstream === undefined
+    const clean = name.startsWith('remotes/') ? name.slice('remotes/'.length) : name
+    const ahead = /ahead (\d+)/.exec(track ?? '')
+    const behind = /behind (\d+)/.exec(track ?? '')
+    out.push({
+      name: clean,
+      current: (head ?? '').trim() === '*',
+      remote: name.startsWith('remotes/') || remote,
+      ...(upstream ? { upstream } : {}),
+      ...(upstream && ahead ? { ahead: Number(ahead[1]) } : upstream ? { ahead: 0 } : {}),
+      ...(upstream && behind ? { behind: Number(behind[1]) } : upstream ? { behind: 0 } : {}),
+      ...(subject ? { subject } : {}),
+    })
+  }
+  return out
+}
+
+/**
+ * Parse `git stash list` output.
+ *
+ * The index is taken from the `stash@{N}` selector git prints rather than from
+ * the array position, so the address always matches what git would accept even
+ * if a line is ever skipped.
+ *
+ * @param raw - the command's stdout verbatim.
+ * @returns one entry per stash, newest first.
+ */
+export function parseStashes(raw: string): GitStash[] {
+  const out: GitStash[] = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    const [selector, message, at] = line.split(REF_SEP)
+    const found = /stash@\{(\d+)\}/.exec(selector ?? '')
+    if (!found) continue
+    // Git writes 'WIP on main: <sha> <subject>' or 'On main: <message>'.
+    const branch = /^(?:WIP on|On) ([^:]+):/.exec(message ?? '')
+    const date = Number(at ?? 0) * 1000
+    out.push({
+      index: Number(found[1]),
+      message: message ?? '',
+      ...(branch ? { branch: branch[1] } : {}),
+      ...(Number.isFinite(date) && date > 0 ? { date } : {}),
+    })
+  }
+  return out
+}
+
+/**
+ * Parse `git worktree list --porcelain`.
+ *
+ * The porcelain form is record-oriented — blank-line-separated blocks of
+ * `key value` lines — rather than columnar, so a path containing spaces (the
+ * case the human-readable form mangles) survives intact.
+ *
+ * @param raw - the command's stdout verbatim.
+ * @param currentRoot - the worktree the caller is sitting in, marked `current`.
+ * @returns one entry per worktree, main first as git lists it.
+ */
+export function parseWorktrees(raw: string, currentRoot?: string): GitWorktree[] {
+  const out: GitWorktree[] = []
+  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  let current: Partial<GitWorktree> & { path?: string } = {}
+  const flush = (): void => {
+    if (current.path === undefined) return
+    out.push({
+      path: current.path,
+      ...(current.branch !== undefined ? { branch: current.branch } : {}),
+      ...(current.head !== undefined ? { head: current.head } : {}),
+      // Git lists the MAIN worktree first, always.
+      main: out.length === 0,
+      prunable: current.prunable === true,
+      locked: current.locked === true,
+      current: currentRoot !== undefined && norm(current.path) === norm(currentRoot),
+    })
+    current = {}
+  }
+  for (const line of raw.split('\n')) {
+    const text = line.trimEnd()
+    if (text.length === 0) {
+      flush()
+      continue
+    }
+    const space = text.indexOf(' ')
+    const key = space < 0 ? text : text.slice(0, space)
+    const value = space < 0 ? '' : text.slice(space + 1)
+    if (key === 'worktree') {
+      flush()
+      current.path = value
+    } else if (key === 'HEAD') current.head = value.slice(0, 7)
+    else if (key === 'branch') current.branch = value.replace(/^refs\/heads\//, '')
+    else if (key === 'locked') current.locked = true
+    else if (key === 'prunable') current.prunable = true
+  }
+  flush()
+  return out
+}
+
+/**
+ * List branches, stashes and worktrees in three parallel git calls.
+ *
+ * Grouped into one function because the tab fetches them together — the branch
+ * menu wants the first and the Repo pane the other two — and three sequential
+ * round trips would be three times the latency for no benefit.
+ *
+ * @param root - repository working-tree root.
+ * @returns the three lists.
+ */
+export async function readRefs(
+  root: string,
+): Promise<{ branches: GitBranch[]; stashes: GitStash[]; worktrees: GitWorktree[] }> {
+  const format = [
+    '%(refname:short)',
+    '%(HEAD)',
+    '%(upstream:short)',
+    '%(upstream:track)',
+    '%(contents:subject)',
+  ].join(REF_SEP)
+
+  const [branchRun, stashRun, worktreeRun] = await Promise.all([
+    runGit(root, ['branch', '-a', `--format=${format}`]),
+    runGit(root, [
+      'stash',
+      'list',
+      `--pretty=format:%gd${REF_SEP}%gs${REF_SEP}%at`,
+    ]),
+    runGit(root, ['worktree', 'list', '--porcelain']),
+  ])
+
+  return {
+    // An unborn branch makes `git branch` exit non-zero with nothing to list,
+    // which is a state, not a failure.
+    branches: branchRun.code === 0 ? parseBranches(branchRun.stdout) : [],
+    stashes: stashRun.code === 0 ? parseStashes(stashRun.stdout) : [],
+    worktrees: worktreeRun.code === 0 ? parseWorktrees(worktreeRun.stdout, root) : [],
   }
 }
 

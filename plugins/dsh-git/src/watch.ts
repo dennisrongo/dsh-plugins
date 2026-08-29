@@ -62,6 +62,12 @@ let tokenSeed = 0
  *   index       — staging changed
  *   HEAD        — commit, checkout, or reset moved the branch pointer
  *   MERGE_HEAD  — a merge, rebase, or conflict state began or ended
+ *   worktrees   — a worktree was added or removed
+ *
+ * `worktrees` earns its place the same way the others do: adding or removing one
+ * writes there and nowhere else the watch can see, so without it the Repo pane
+ * shows a worktree list that silently never updates. It is genuinely low-rate —
+ * nothing but an explicit worktree command touches it.
  *
  * Ref FILES matter too but live in subdirectories (`refs/heads/...`), which a
  * non-recursive watch reports as the bare directory name `refs`; `packed-refs`
@@ -78,6 +84,7 @@ const GIT_SIGNIFICANT = new Set([
   'REVERT_HEAD',
   'BISECT_LOG',
   'MERGE_MSG',
+  'worktrees',
 ])
 
 /**

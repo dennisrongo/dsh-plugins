@@ -48,6 +48,7 @@ var __privateSet = (obj, member, value, setter) => (__accessCheck(obj, member, "
 var __privateMethod = (obj, member, method) => (__accessCheck(obj, member, "access private method"), method);
 
 // src/index.ts
+import { basename } from "node:path";
 import { Service } from "@deepseek-ai/cordis";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
@@ -59,6 +60,54 @@ var RECENT_COMMITS = 15;
 
 // src/git.ts
 import { execFile } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
+import { isAbsolute, resolve as resolvePath, dirname } from "node:path";
+async function repoPaths(dir) {
+  try {
+    const run = await runGit(dir, [
+      "rev-parse",
+      "--show-toplevel",
+      "--git-dir",
+      "--git-common-dir"
+    ]);
+    if (run.code !== 0) return void 0;
+    const [root, gitDir, commonDir] = run.stdout.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (!root) return void 0;
+    const git = gitDir ? resolvePath(dir, gitDir) : resolvePath(root, ".git");
+    return {
+      root,
+      gitDir: git,
+      commonDir: commonDir ? resolvePath(dir, commonDir) : git
+    };
+  } catch {
+    return void 0;
+  }
+}
+__name(repoPaths, "repoPaths");
+async function readMergeState(gitDir) {
+  try {
+    await stat(resolvePath(gitDir, "MERGE_HEAD"));
+  } catch {
+    return { merging: false };
+  }
+  try {
+    const msg = await readFile(resolvePath(gitDir, "MERGE_MSG"), "utf8");
+    const first = msg.split("\n").map((s) => s.trim()).find((s) => s.length > 0);
+    return first ? { merging: true, mergeHead: first } : { merging: true };
+  } catch {
+    return { merging: true };
+  }
+}
+__name(readMergeState, "readMergeState");
+async function readStashCount(commonDir) {
+  try {
+    const raw = await readFile(resolvePath(commonDir, "logs", "refs", "stash"), "utf8");
+    return raw.split("\n").filter((line) => line.trim().length > 0).length;
+  } catch {
+    return 0;
+  }
+}
+__name(readStashCount, "readStashCount");
 var MAX_BUFFER = 32 * 1024 * 1024;
 var DEFAULT_TIMEOUT_MS = 3e4;
 var REPO_LOCATION_ENV = [
@@ -118,14 +167,7 @@ function combined(run) {
 }
 __name(combined, "combined");
 async function repoRoot(dir) {
-  try {
-    const run = await runGit(dir, ["rev-parse", "--show-toplevel"]);
-    if (run.code !== 0) return void 0;
-    const root = run.stdout.trim();
-    return root.length > 0 ? root : void 0;
-  } catch {
-    return void 0;
-  }
+  return (await repoPaths(dir))?.root;
 }
 __name(repoRoot, "repoRoot");
 function code(ch) {
@@ -278,12 +320,15 @@ async function readPorcelain(root) {
 }
 __name(readPorcelain, "readPorcelain");
 async function readStatus(dir) {
-  const root = await repoRoot(dir);
-  if (root === void 0) return { repo: false, root: dir };
-  const [porcelain, remotesRun, headRun] = await Promise.all([
+  const paths = await repoPaths(dir);
+  if (paths === void 0) return { repo: false, root: dir };
+  const root = paths.root;
+  const [porcelain, remotesRun, headRun, merge, stashCount] = await Promise.all([
     readPorcelain(root),
     runGit(root, ["remote"]),
-    runGit(root, ["rev-parse", "--short", "HEAD"])
+    runGit(root, ["rev-parse", "--short", "HEAD"]),
+    readMergeState(paths.gitDir),
+    readStashCount(paths.commonDir)
   ]);
   const unborn = porcelain.unborn || headRun.code !== 0;
   const recent = unborn ? [] : await recentCommits(root);
@@ -296,7 +341,10 @@ async function readStatus(dir) {
     ...porcelain.upstream !== void 0 ? { upstream: porcelain.upstream } : {},
     hasRemote: remotesRun.code === 0 && remotesRun.stdout.trim().length > 0,
     files: porcelain.files,
-    recent
+    recent,
+    merging: merge.merging,
+    ...merge.mergeHead !== void 0 ? { mergeHead: merge.mergeHead } : {},
+    stashCount
   };
 }
 __name(readStatus, "readStatus");
@@ -360,6 +408,157 @@ ${named.map((f) => `${f.untracked ? "new file" : "changed"}: ${f.path}`).join("\
   };
 }
 __name(collectChangeDiff, "collectChangeDiff");
+function assertSafeRef(ref) {
+  if (typeof ref !== "string" || ref.trim().length === 0) {
+    throw new Error("dsh-git: a branch name is required");
+  }
+  const name = ref.trim();
+  if (name.length > 255) throw new Error("dsh-git: branch name is too long");
+  if (name.startsWith("-") || name.startsWith(".") || name.startsWith("/")) {
+    throw new Error(`dsh-git: invalid branch name ${name}`);
+  }
+  if (name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) {
+    throw new Error(`dsh-git: invalid branch name ${name}`);
+  }
+  if (name.includes("..") || name.includes("@{") || name.includes("//")) {
+    throw new Error(`dsh-git: invalid branch name ${name}`);
+  }
+  if (/[\u0000-\u001f\u007f ~^:?*[\\]/.test(name)) {
+    throw new Error(`dsh-git: invalid branch name ${name}`);
+  }
+  return name;
+}
+__name(assertSafeRef, "assertSafeRef");
+function assertSafeStashIndex(index) {
+  if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 1e4) {
+    throw new Error(`dsh-git: invalid stash index ${String(index)}`);
+  }
+  return index;
+}
+__name(assertSafeStashIndex, "assertSafeStashIndex");
+function resolveWorktreePath(root, input) {
+  if (typeof input !== "string" || input.trim().length === 0) {
+    throw new Error("dsh-git: a worktree path is required");
+  }
+  const raw = input.trim();
+  if (raw.startsWith("-")) {
+    throw new Error(`dsh-git: invalid worktree path ${raw}`);
+  }
+  if (/[\u0000-\u001f]/.test(raw)) {
+    throw new Error("dsh-git: worktree path contains control characters");
+  }
+  return isAbsolute(raw) ? resolvePath(raw) : resolvePath(dirname(root), raw);
+}
+__name(resolveWorktreePath, "resolveWorktreePath");
+var REF_SEP = "";
+function parseBranches(raw) {
+  const out = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const [name, head, upstream, track, subject] = line.split(REF_SEP);
+    if (!name) continue;
+    if (name.includes(" -> ")) continue;
+    const remote = name.startsWith("remotes/") || /^[^/]+\/.+$/.test(name) && upstream === void 0;
+    const clean = name.startsWith("remotes/") ? name.slice("remotes/".length) : name;
+    const ahead = /ahead (\d+)/.exec(track ?? "");
+    const behind = /behind (\d+)/.exec(track ?? "");
+    out.push({
+      name: clean,
+      current: (head ?? "").trim() === "*",
+      remote: name.startsWith("remotes/") || remote,
+      ...upstream ? { upstream } : {},
+      ...upstream && ahead ? { ahead: Number(ahead[1]) } : upstream ? { ahead: 0 } : {},
+      ...upstream && behind ? { behind: Number(behind[1]) } : upstream ? { behind: 0 } : {},
+      ...subject ? { subject } : {}
+    });
+  }
+  return out;
+}
+__name(parseBranches, "parseBranches");
+function parseStashes(raw) {
+  const out = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const [selector, message, at] = line.split(REF_SEP);
+    const found = /stash@\{(\d+)\}/.exec(selector ?? "");
+    if (!found) continue;
+    const branch = /^(?:WIP on|On) ([^:]+):/.exec(message ?? "");
+    const date = Number(at ?? 0) * 1e3;
+    out.push({
+      index: Number(found[1]),
+      message: message ?? "",
+      ...branch ? { branch: branch[1] } : {},
+      ...Number.isFinite(date) && date > 0 ? { date } : {}
+    });
+  }
+  return out;
+}
+__name(parseStashes, "parseStashes");
+function parseWorktrees(raw, currentRoot) {
+  const out = [];
+  const norm = /* @__PURE__ */ __name((p) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(), "norm");
+  let current = {};
+  const flush = /* @__PURE__ */ __name(() => {
+    if (current.path === void 0) return;
+    out.push({
+      path: current.path,
+      ...current.branch !== void 0 ? { branch: current.branch } : {},
+      ...current.head !== void 0 ? { head: current.head } : {},
+      // Git lists the MAIN worktree first, always.
+      main: out.length === 0,
+      prunable: current.prunable === true,
+      locked: current.locked === true,
+      current: currentRoot !== void 0 && norm(current.path) === norm(currentRoot)
+    });
+    current = {};
+  }, "flush");
+  for (const line of raw.split("\n")) {
+    const text = line.trimEnd();
+    if (text.length === 0) {
+      flush();
+      continue;
+    }
+    const space = text.indexOf(" ");
+    const key = space < 0 ? text : text.slice(0, space);
+    const value = space < 0 ? "" : text.slice(space + 1);
+    if (key === "worktree") {
+      flush();
+      current.path = value;
+    } else if (key === "HEAD") current.head = value.slice(0, 7);
+    else if (key === "branch") current.branch = value.replace(/^refs\/heads\//, "");
+    else if (key === "locked") current.locked = true;
+    else if (key === "prunable") current.prunable = true;
+  }
+  flush();
+  return out;
+}
+__name(parseWorktrees, "parseWorktrees");
+async function readRefs(root) {
+  const format = [
+    "%(refname:short)",
+    "%(HEAD)",
+    "%(upstream:short)",
+    "%(upstream:track)",
+    "%(contents:subject)"
+  ].join(REF_SEP);
+  const [branchRun, stashRun, worktreeRun] = await Promise.all([
+    runGit(root, ["branch", "-a", `--format=${format}`]),
+    runGit(root, [
+      "stash",
+      "list",
+      `--pretty=format:%gd${REF_SEP}%gs${REF_SEP}%at`
+    ]),
+    runGit(root, ["worktree", "list", "--porcelain"])
+  ]);
+  return {
+    // An unborn branch makes `git branch` exit non-zero with nothing to list,
+    // which is a state, not a failure.
+    branches: branchRun.code === 0 ? parseBranches(branchRun.stdout) : [],
+    stashes: stashRun.code === 0 ? parseStashes(stashRun.stdout) : [],
+    worktrees: worktreeRun.code === 0 ? parseWorktrees(worktreeRun.stdout, root) : []
+  };
+}
+__name(readRefs, "readRefs");
 function assertSafePath(path) {
   if (typeof path !== "string" || path.length === 0) {
     throw new Error("dsh-git: path must be a non-empty string");
@@ -391,7 +590,8 @@ var GIT_SIGNIFICANT = /* @__PURE__ */ new Set([
   "CHERRY_PICK_HEAD",
   "REVERT_HEAD",
   "BISECT_LOG",
-  "MERGE_MSG"
+  "MERGE_MSG",
+  "worktrees"
 ]);
 function isSignificantGitEntry(entry) {
   if (entry.length === 0) return false;
@@ -514,7 +714,7 @@ var RepoWatcher = _RepoWatcher;
 
 // src/index.ts
 var NETWORK_TIMEOUT_MS = 12e4;
-var _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _commitDiff_dec, _commitFiles_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
+var _worktree_dec, _stash_dec, _merge_dec, _branch_dec, _refs_dec, _suggestMessage_dec, _sync_dec, _init_dec, _commit_dec, _stage_dec, _commitDiff_dec, _commitFiles_dec, _diff_dec, _changeToken_dec, _status_dec, _init, _a;
 var _GitService = class _GitService extends (_a = TypertRemoteService) {
   /**
    * @param ctx - host context carrying the workspace registry and LLM runtime.
@@ -765,6 +965,158 @@ ${body}` }],
     if (message.length === 0) throw new Error("dsh-git: the model produced no commit message");
     return { message, scope: collected.scope };
   }
+  async refs(request) {
+    try {
+      const dir = this.workspaceDir(request?.workspaceId);
+      const root = await repoRoot(dir);
+      if (root === void 0) return { ok: false, error: "Not a git repository." };
+      const lists = await readRefs(root);
+      return { ok: true, ...lists };
+    } catch (error) {
+      return { ok: false, error: describe(error) };
+    }
+  }
+  async branch(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const action = request?.action;
+    const name = action === void 0 ? void 0 : assertSafeRef(request?.name);
+    const startPoint = typeof request?.startPoint === "string" && request.startPoint.length > 0 ? assertSafeRef(request.startPoint) : void 0;
+    const force = request?.force === true;
+    return this.withRepo(dir, async (root) => {
+      switch (action) {
+        case "create":
+          return combined(
+            await runGit(root, ["branch", "--", name, ...startPoint ? [startPoint] : []])
+          );
+        case "switch":
+          return combined(await runGit(root, ["checkout", "--", name]));
+        case "createSwitch":
+          return combined(
+            await runGit(root, ["checkout", "-b", name, ...startPoint ? [startPoint] : []])
+          );
+        case "delete":
+          return combined(await runGit(root, ["branch", force ? "-D" : "-d", "--", name]));
+        case "rename":
+          return combined(await runGit(root, ["branch", "-m", "--", name]));
+        case "stashSwitch": {
+          const stash = await runGit(root, [
+            "stash",
+            "push",
+            "-u",
+            "-m",
+            `dsh-git: switching to ${name}`
+          ]);
+          const stashText = combined(stash);
+          if (stash.code !== 0) return stashText;
+          const checkout = await runGit(root, ["checkout", "--", name]);
+          return [stashText, combined(checkout)].filter((s) => s.length > 0).join("\n");
+        }
+        default:
+          throw new Error(`dsh-git: unknown branch action ${String(action)}`);
+      }
+    });
+  }
+  async merge(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const action = request?.action;
+    const from = action === "merge" ? assertSafeRef(request?.from) : void 0;
+    const noFF = request?.noFF === true;
+    return this.withRepo(dir, async (root) => {
+      switch (action) {
+        case "merge":
+          return combined(
+            await runGit(root, [
+              "merge",
+              "--no-edit",
+              ...noFF ? ["--no-ff"] : [],
+              "--",
+              from
+            ])
+          );
+        case "abort":
+          return combined(await runGit(root, ["merge", "--abort"]));
+        case "continue":
+          return combined(await runGit(root, ["commit", "--no-edit"]));
+        default:
+          throw new Error(`dsh-git: unknown merge action ${String(action)}`);
+      }
+    });
+  }
+  async stash(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const action = request?.action;
+    const index = typeof request?.index === "number" ? assertSafeStashIndex(request.index) : void 0;
+    const selector = index === void 0 ? void 0 : `stash@{${index}}`;
+    const message = typeof request?.message === "string" ? request.message.trim() : "";
+    const includeUntracked = request?.includeUntracked === true;
+    return this.withRepo(dir, async (root) => {
+      switch (action) {
+        case "push": {
+          const args = ["stash", "push"];
+          if (includeUntracked) args.push("-u");
+          if (message.length > 0) args.push("-m", message);
+          const run = await runGit(root, args);
+          return combined(run);
+        }
+        case "pop":
+          return combined(
+            await runGit(root, ["stash", "pop", ...selector ? [selector] : []])
+          );
+        case "apply":
+          return combined(
+            await runGit(root, ["stash", "apply", ...selector ? [selector] : []])
+          );
+        case "drop":
+          return combined(
+            await runGit(root, ["stash", "drop", ...selector ? [selector] : []])
+          );
+        case "clear":
+          return combined(await runGit(root, ["stash", "clear"]));
+        default:
+          throw new Error(`dsh-git: unknown stash action ${String(action)}`);
+      }
+    });
+  }
+  async worktree(request) {
+    const dir = this.workspaceDir(request?.workspaceId);
+    const action = request?.action;
+    const branch = typeof request?.branch === "string" && request.branch.length > 0 ? assertSafeRef(request.branch) : void 0;
+    const newBranch = typeof request?.newBranch === "string" && request.newBranch.length > 0 ? assertSafeRef(request.newBranch) : void 0;
+    const force = request?.force === true;
+    const register = request?.register === true;
+    return this.withRepo(dir, async (root) => {
+      switch (action) {
+        case "add": {
+          const target = resolveWorktreePath(root, request?.path);
+          const args = ["worktree", "add"];
+          if (newBranch !== void 0) args.push("-b", newBranch);
+          if (force) args.push("--force");
+          args.push("--", target);
+          if (newBranch === void 0 && branch !== void 0) args.push(branch);
+          const run = await runGit(root, args);
+          const output = combined(run);
+          if (run.code !== 0 || !register) return output;
+          try {
+            await this.ctx.workspaceRegistry.create(target, basename(target));
+            return [output, `Registered ${target} as a workspace.`].filter((s) => s.length > 0).join("\n");
+          } catch (error) {
+            return [output, `Worktree created, but could not register it: ${describe(error)}`].filter((s) => s.length > 0).join("\n");
+          }
+        }
+        case "remove": {
+          const target = resolveWorktreePath(root, request?.path);
+          const args = ["worktree", "remove"];
+          if (force) args.push("--force");
+          args.push("--", target);
+          return combined(await runGit(root, args));
+        }
+        case "prune":
+          return combined(await runGit(root, ["worktree", "prune"]));
+        default:
+          throw new Error(`dsh-git: unknown worktree action ${String(action)}`);
+      }
+    });
+  }
   /**
    * Run one repository mutation on the repo's write chain and report the result.
    * @param dir - workspace directory.
@@ -818,7 +1170,7 @@ ${body}` }],
    * `dispose` is not a member of its Events map. Getting this wrong leaks an OS
    * watch handle per repository on every plugin reload.
    */
-  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _commitFiles_dec = [Remote], _commitDiff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], Service.init)]() {
+  async [(_status_dec = [Remote], _changeToken_dec = [Remote], _diff_dec = [Remote], _commitFiles_dec = [Remote], _commitDiff_dec = [Remote], _stage_dec = [Remote], _commit_dec = [Remote], _init_dec = [Remote], _sync_dec = [Remote], _suggestMessage_dec = [Remote], _refs_dec = [Remote], _branch_dec = [Remote], _merge_dec = [Remote], _stash_dec = [Remote], _worktree_dec = [Remote], Service.init)]() {
     this.ctx.effect(() => () => {
       this.watcher.close();
     });
@@ -835,6 +1187,11 @@ __decorateElement(_init, 1, "commit", _commit_dec, _GitService);
 __decorateElement(_init, 1, "init", _init_dec, _GitService);
 __decorateElement(_init, 1, "sync", _sync_dec, _GitService);
 __decorateElement(_init, 1, "suggestMessage", _suggestMessage_dec, _GitService);
+__decorateElement(_init, 1, "refs", _refs_dec, _GitService);
+__decorateElement(_init, 1, "branch", _branch_dec, _GitService);
+__decorateElement(_init, 1, "merge", _merge_dec, _GitService);
+__decorateElement(_init, 1, "stash", _stash_dec, _GitService);
+__decorateElement(_init, 1, "worktree", _worktree_dec, _GitService);
 __decoratorMetadata(_init, _GitService);
 __name(_GitService, "GitService");
 __publicField(_GitService, "inject", ["workspaceRegistry", "llm", "agentDefaultModel"]);

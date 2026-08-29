@@ -3,18 +3,23 @@
 Source-control ("Source Control") tab for DeepSeek Harness. Two halves in one package:
 
 - **Host** (`src/index.ts` → `lib/index.js`) — `GitService extends TypertRemoteService`, cordis service key `dshGit`. Runs git in the workspace directory resolved through `workspaceRegistry`, serialises writes per repo root, and drafts commit messages through `llm`. A directory that is not a repository reports `repo: false`, never an error. `src/watch.ts` holds the `fs.watch` layer behind `changeToken`.
-- **Client** (`src/client.tsx` → `lib/client.js`) — the Source Control tab, CSS prefix `dshgit-`, calling the host over the Typert bridge as `ctx.remote.dshGit.*`. The tab holds two sub-panes, **Changes** and **History**, switched by a segmented control below the branch header.
+- **Client** (`src/client.tsx` → `lib/client.js`) — the Source Control tab, CSS prefix `dshgit-`, calling the host over the Typert bridge as `ctx.remote.dshGit.*`. The tab holds three sub-panes — **Changes**, **History** and **Repo** (stashes and worktrees) — switched by a segmented control below the branch header. The branch name in the header is a menu button: switch, create, merge and delete.
 
 ## Endpoints
 
 `POST /api/dshGit/<method>`, each taking one parameter named `request`:
 
-- `status` — `{ workspaceId }` → branch, head, unborn, upstream, hasRemote, files, recent
+- `status` — `{ workspaceId }` → branch, head, unborn, upstream, hasRemote, files, recent, **merging, mergeHead, stashCount**
 - `diff` — `{ workspaceId, path?, staged? }` → `{ patch, binary }`; untracked files are synthesized into a `/dev/null` patch so a new file never renders a blank pane
 - `commitFiles` — `{ workspaceId, sha }` → `{ files }`; the paths one commit touched, via `show --name-status -z`
 - `commitDiff` — `{ workspaceId, sha, path? }` → `{ patch, binary }`; the patch one commit introduced, same shape as `diff` so one pane renders both
 - `stage` — `{ workspaceId, paths, ... }`, `commit` — `{ workspaceId, message, all? }`, `init` / `sync` — `{ workspaceId, ... }`, all → `{ ok, output }`
 - `suggestMessage` — AI-drafted commit message
+- `refs` — `{ workspaceId }` → `{ ok: true, branches, stashes, worktrees }` | `{ ok: false, error }`; ONE read for all three lists, fetched lazily (menu open / Repo pane entry), never polled
+- `branch` — `{ workspaceId, action, name?, startPoint?, force? }`; action is create | switch | createSwitch | delete | rename | stashSwitch
+- `merge` — `{ workspaceId, action, from?, noFF? }`; action is merge | abort | continue
+- `stash` — `{ workspaceId, action, index?, message?, includeUntracked? }`; action is push | pop | apply | drop | clear
+- `worktree` — `{ workspaceId, action, path?, branch?, newBranch?, force?, register? }`; action is add | remove | prune
 - `changeToken` — `{ workspaceId }` → `{ token }`; the POLLING endpoint. Answers from an `fs.watch` counter and **never spawns git** (measured 52 ms vs `status`'s 141 ms). `token: 0` means "not a repository", which is the client's signal to stop polling. A token is comparable only against an earlier token for the same workspace.
 
 `wire: 'request'` in `src/remote.ts` must match the host parameter name — the gateway resolves endpoints by reading parameter names off the function source.
@@ -48,7 +53,7 @@ Works on both surfaces: the dsh CLI (`~/.dsh/profiles/<name>`) and DSH Desktop (
 
 ## Dev loop
 
-`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `watch-probe.mjs`.
+`pnpm install` at the monorepo root, then `pnpm run build` here (emits `lib/index.js`, `lib/client.js`, `lib/typert.host.js`, plus the gitignored `client.body.cjs` and `client.test.mjs`). The three real artifacts are **committed** so a GitHub subdirectory install works — rebuild and commit them when you change `src/`. `pnpm test` runs build + `smoke.mjs` + `host-ops.mjs` + `env-isolation.mjs` + `branch-ops.mjs` + `watch-probe.mjs`. The headless-Chrome probes (`test:icons`, `test:layout`, `test:stability`, `test:skeleton`, `test:history`, `test:menu`) are separate scripts and are NOT part of `pnpm test`.
 
 Profiles materialise `file:` deps as copies **frozen at install time**, so a rebuild does not reach them. `scripts/dev-link.ps1` at the repo root replaces those copies with junctions: client-half edits then deploy on **browser refresh**, host-half edits need a **profile restart**.
 
@@ -306,6 +311,115 @@ commit.
 `host-ops.mjs` covers all of it against a real repository, including the unborn
 branch and the partial-staging case (stage one of two files, assert the other
 does NOT appear in the text).
+
+## Branches, merge, stash and worktrees
+
+Five endpoints, shaped as **noun + action** rather than one endpoint per verb.
+That is not a new pattern — `stage({action})` and `sync({action})` already do it —
+and it keeps the descriptor count low, which matters because `remote.ts`,
+`typert.host.ts` and `smoke.mjs`'s count assertion must all move together. Three-place
+drift is the recurring failure mode in this package.
+
+**`status` gained three fields and did NOT gain a git process.** It runs on every
+change-token move, so its cost is load-bearing:
+
+- `repoRoot()` used to run `rev-parse --show-toplevel`; it now goes through
+  `repoPaths()`, which asks for `--show-toplevel --git-dir --git-common-dir` in the
+  SAME call. rev-parse prints one value per line, so three facts cost what one did.
+- `merging` / `mergeHead` are an `fs` check on `MERGE_HEAD` and the first line of
+  `MERGE_MSG`. `MERGE_HEAD` holds a bare sha, which tells a reader nothing.
+- `stashCount` counts lines in `logs/refs/stash`. Git's stash IS the reflog of
+  `refs/stash`, so this is exactly what `git stash list` prints, not an estimate.
+
+**rev-parse returns those directories RELATIVE to the cwd.** Run at a repository root,
+`--git-dir` prints `.git` (verified on git 2.50). Resolving them is not cosmetic: an
+unresolved `.git` read from the host's own cwd finds nothing, and the merge probe then
+reports `merging: false` on a repository that is mid-merge — failing OPEN, which hides
+the Abort button exactly when it is needed. `branch-ops.mjs` pins the paths as absolute
+and was verified to fail when the resolve is removed.
+
+**gitDir and commonDir are not the same directory in a linked worktree**, and reading
+from the wrong one is silently wrong rather than an error. A linked worktree's `.git` is
+a FILE pointing into `<common>/worktrees/<name>`, where per-worktree state (HEAD, index,
+MERGE_HEAD) lives; `refs/stash` stays in the common directory shared by every worktree.
+The probe asserts they diverge and that the stash count agrees across both.
+
+**`merging` is its own field, not inferred from conflicted files.** Once every conflict
+is resolved and staged there are no conflicted files left and the merge is still
+unconcluded — inferring it would drop the banner precisely when the user still has to
+finish or back out. Pinned directly.
+
+**Merge deliberately reverses `sync`'s stance.** `pull --ff-only` exists because the tab
+had "no conflict-resolution surface"; that surface now exists — the Changes pane already
+lists conflicts and already blocks Commit while any remain — so `merge` allows a conflict
+and leaves the repository mid-merge, with a banner offering Abort and Continue.
+`--no-edit` is on every path: with no TTY, an editor prompt hangs the request until the
+timeout. `continue` uses `commit --no-edit` rather than `merge --continue` because it
+reuses MERGE_MSG without involving an editor at all.
+
+**Nothing is ever auto-stashed.** A refused switch is caught in `switchBranch`, matched
+against git's own wording, and turned into `pendingSwitch` — which the tab renders as an
+explicit "Stash changes and switch" button. An auto-stash whose later pop conflicts
+strands work behind a state the user never chose to enter. The refusal itself is pinned:
+if checkout ever stopped refusing, the second-click affordance would be dead UI.
+
+**A stash index is a CURSOR, not an identifier.** Dropping or popping an earlier entry
+renumbers everything after it, so the client re-reads `refs` after every mutation. The
+index is validated because it is interpolated into `stash@{N}`.
+
+**`assertSafeRef` is the `assertSafeSha` of branch names.** Same risk, same reason: not a
+shell, but git's argument grammar. A leading `-` is read as a FLAG (`--exec=...` as a
+"branch name"), `..` forms a revision RANGE, `~`/`^` walk ancestry, `:` addresses the
+index, `@{` opens reflog syntax. Slashes ARE allowed — `feature/x` is ordinary. Mirrored
+in `remote.ts` so the browser refuses one before a round trip. Verified live against a
+running harness: `--exec=calc`, `main..dev` and `a b` are all rejected at the gateway.
+
+**Worktree paths are the one place this plugin writes OUTSIDE the workspace**, so they get
+`resolveWorktreePath` rather than `assertSafePath` — which refuses absolute paths and
+`..`, correct for repo files and wrong for a worktree by definition. A relative path
+resolves against the repository's PARENT (what `../feature` means to a user, and where
+sibling worktrees conventionally go); a leading `-` is refused; git itself refuses a
+non-empty target. `register` additionally writes to `workspaceRegistry` — the only place
+this plugin touches dsh's own state — and is opt-in for that reason. Registration is
+best-effort: the worktree already exists on disk by then, so a registry failure is
+reported as text rather than failing a git operation that succeeded.
+
+**`refs` returns a discriminated outcome, never bare arrays** — the `commitFiles` lesson,
+and it is not hypothetical here. Measured against the running Desktop with an old host
+half and a fresh client bundle: `dshGit/status` answers 200 while `dshGit/refs` 404s.
+Collapsing that into empty lists would render as "this repository has no branches" rather
+than "restart the profile". `smoke.mjs` pins the failed, rejected and
+empty-but-successful cases separately.
+
+**`worktrees` had to join the watcher allowlist.** `refs` and `MERGE_HEAD` were already
+there, so stash and merge state go live for free, but a worktree add/remove writes to
+`.git/worktrees` and nowhere else the watch can see — without it the Repo pane's list
+silently never updates, which looks like the feature working until you add one. It is
+low-rate: nothing but an explicit worktree command touches it. Pinned directly in
+`watch-probe.mjs` beside the other allowlist assertions.
+
+**No browser-persisted preference is introduced, and that is deliberate.** The segment
+choice and the menu's open state are React state. DSH Desktop serves the UI from a new
+ephemeral port every launch, so an origin's `localStorage` is empty on each start —
+anything parked there would work on the CLI and silently fail on the Desktop. Nothing
+here needs to survive a restart, so nothing is stored.
+
+`pnpm run test:menu` drives headless Chrome against the **built** stylesheet: the branch
+menu must stack above the panes at both widths, stay inside the viewport, and Repo rows
+must hold the same 32px budget the icon probe pins.
+
+**That probe's first version proved nothing**, and it is worth saying why. The fixture had
+no positioned elements to compete with and a menu too short to reach the pane below it, so
+deleting the menu's `z-index` still passed. The real competitor is `.dshgit-diffhead`,
+which is `position: sticky` with `z-index: 1` — a HIGHER paint layer than any positioned
+element whose z-index is auto. The fixture now includes a diff pane and 20 branches (enough
+to hit the 60vh cap and overlap it), and the hit test samples four points down the menu's
+height rather than one near its top. Verified to fail with `covered by dshgit-diffhead@0.85`.
+
+The menu's clamp is NOT tested there. `menuLeft()` is exported and asserted in
+`smoke.mjs` instead: a browser probe that re-implements the arithmetic to position its own
+fixture is only testing its copy of it. Geometry that depends on CSS belongs in the probe;
+a clamp is arithmetic.
 
 ## Environment isolation (git's location variables)
 

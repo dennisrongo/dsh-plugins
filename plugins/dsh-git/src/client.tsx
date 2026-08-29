@@ -13,14 +13,22 @@ import React from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GIT_REMOTE } from './remote.ts'
 import type {
+  BranchAction,
   ChangeScope,
   CommandResult,
+  GitBranch,
   GitCommit,
   GitCommitFile,
   GitFileChange,
+  GitStash,
   GitStatus,
+  GitWorktree,
+  MergeAction,
+  RefsResult,
   StageAction,
+  StashAction,
   SyncAction,
+  WorktreeAction,
 } from './types.ts'
 
 // Re-exported so the smoke test can assert the contribution stays strict — a
@@ -250,6 +258,25 @@ export interface GitState {
   error: string | null
   /** Name of the command in flight, so the UI can disable exactly that button. */
   busy: string | null
+  /**
+   * Branches, stashes and worktrees — fetched lazily, never polled.
+   *
+   * null means "not asked yet". A settled value is a discriminated outcome, so
+   * "this repo has no stashes" and "we could not ask" stay distinguishable; a
+   * client newer than the host half 404s `refs`, and collapsing that into empty
+   * lists would render as an empty repository rather than a stale host.
+   */
+  refs: RefsResult | null
+  /** True while a refs read is in flight, so the pane can show it is working. */
+  refsLoading: boolean
+  /**
+   * Branch a switch was refused for, because of uncommitted local changes.
+   *
+   * Holding it is what turns the refusal into an offer: the tab reveals a
+   * "Stash changes and switch" button for exactly this branch. Nothing is
+   * stashed until that button is pressed.
+   */
+  pendingSwitch: string | null
 }
 
 const INITIAL: GitState = {
@@ -258,6 +285,9 @@ const INITIAL: GitState = {
   output: '',
   error: null,
   busy: null,
+  refs: null,
+  refsLoading: false,
+  pendingSwitch: null,
 }
 
 /**
@@ -280,6 +310,8 @@ export class GitStore {
   private timer: number | null = null
   private polling = false
   private onVisible: (() => void) | undefined
+  /** How many views currently need the branch/stash/worktree lists kept fresh. */
+  private refsWanted = 0
 
   /**
    * @param remote - the host's dshGit remote namespace.
@@ -460,14 +492,14 @@ export class GitStore {
    * @param run - issues the actual remote call.
    * @returns resolution once the command and its status refresh have landed.
    */
-  run(label: string, run: () => Promise<RemoteReply<CommandResult>>): Promise<void> {
-    const step = async (): Promise<void> => {
+  run(label: string, run: () => Promise<RemoteReply<CommandResult>>): Promise<CommandResult | null> {
+    const step = async (): Promise<CommandResult | null> => {
       this.publish({ ...this.state, busy: label, error: null })
       try {
         const reply = await run()
         if (!reply.ok) {
           this.publish({ ...this.state, busy: null, error: reply.error.message })
-          return
+          return null
         }
         const result = reply.value
         this.publish({
@@ -480,16 +512,146 @@ export class GitStore {
           // "nothing to commit" is information, not a fault.
           error: result.ok ? null : null,
         })
+        // Any mutation can invalidate the branch/stash/worktree lists, so refresh
+        // them whenever something is actually watching — a commit changes ahead
+        // counts, a checkout moves `current`, a stash push adds a row.
+        if (this.refsWanted > 0) await this.loadRefs()
+        return result
       } catch (error) {
         this.publish({ ...this.state, busy: null, error: describe(error) })
+        return null
       }
     }
     this.tail = this.tail.then(step, step)
-    return this.tail as Promise<void>
+    return this.tail as Promise<CommandResult | null>
+  }
+
+
+  /**
+   * Keep the branch, stash and worktree lists fresh while a view needs them.
+   *
+   * Reference-counted exactly like {@link watch}, and for the same reason: the
+   * branch menu and the Repo pane can both be open, and the last one to leave
+   * should stop the work. These lists are NOT polled — they are re-read after a
+   * command and when the repository itself changes — because they answer a
+   * question nobody is staring at most of the time.
+   *
+   * @returns a function releasing this view's claim.
+   */
+  wantRefs(): () => void {
+    this.refsWanted += 1
+    if (this.refsWanted === 1 || this.state.refs === null) void this.loadRefs()
+    // Guarded against a double call for the same reason watch()'s disposer is:
+    // React may run a cleanup twice, and a negative count would leave a later
+    // mount believing nothing needs refreshing.
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.refsWanted -= 1
+      if (this.refsWanted < 0) this.refsWanted = 0
+    }
+  }
+
+  /**
+   * Read branches, stashes and worktrees from the host.
+   *
+   * Never rejects and never collapses a failure into empty lists — the outcome
+   * is stored verbatim so the pane can say "couldn't read" rather than showing a
+   * convincing but false empty repository.
+   */
+  async loadRefs(): Promise<void> {
+    this.publish({ ...this.state, refsLoading: true })
+    try {
+      const reply = await this.remote.refs({ workspaceId: this.workspaceId })
+      this.publish({
+        ...this.state,
+        refsLoading: false,
+        refs: reply.ok ? reply.value : { ok: false, error: reply.error.message },
+      })
+    } catch (error) {
+      this.publish({
+        ...this.state,
+        refsLoading: false,
+        refs: { ok: false, error: describe(error) },
+      })
+    }
+  }
+
+  /** Clear a pending stash-and-switch offer. */
+  clearPendingSwitch(): void {
+    if (this.state.pendingSwitch === null) return
+    this.publish({ ...this.state, pendingSwitch: null })
+  }
+
+  /**
+   * Switch branches, turning git's refusal into an explicit offer.
+   *
+   * Git refuses a checkout that would clobber uncommitted work. Rather than
+   * auto-stashing — which hides work behind a state the user never chose, and
+   * whose later pop can conflict on a branch they did not expect — the refusal
+   * is caught here and recorded as {@link GitState.pendingSwitch}, which the tab
+   * renders as a "Stash changes and switch" button.
+   *
+   * @param name - branch to switch to.
+   */
+  async switchBranch(name: string): Promise<void> {
+    const result = await this.branch('switch', { name })
+    // Match on git's own wording. A failure for any OTHER reason (no such
+    // branch, a lock) must NOT offer to stash, since stashing would not help.
+    const refused =
+      result !== null && !result.ok && /local changes|would be overwritten|overwritten by checkout/i.test(result.output)
+    this.publish({ ...this.state, pendingSwitch: refused ? name : null })
+  }
+
+  /** Run one branch operation. */
+  branch(
+    action: BranchAction,
+    options: { name?: string; startPoint?: string; force?: boolean } = {},
+  ): Promise<CommandResult | null> {
+    return this.run(`branch:${action}`, () =>
+      this.remote.branch({ workspaceId: this.workspaceId, action, ...options }),
+    )
+  }
+
+  /** Merge a branch, or abort/continue a merge already in progress. */
+  merge(
+    action: MergeAction,
+    options: { from?: string; noFF?: boolean } = {},
+  ): Promise<CommandResult | null> {
+    return this.run(`merge:${action}`, () =>
+      this.remote.merge({ workspaceId: this.workspaceId, action, ...options }),
+    )
+  }
+
+  /** Run one stash operation. */
+  stash(
+    action: StashAction,
+    options: { index?: number; message?: string; includeUntracked?: boolean } = {},
+  ): Promise<CommandResult | null> {
+    return this.run(`stash:${action}`, () =>
+      this.remote.stash({ workspaceId: this.workspaceId, action, ...options }),
+    )
+  }
+
+  /** Run one worktree operation. */
+  worktree(
+    action: WorktreeAction,
+    options: {
+      path?: string
+      branch?: string
+      newBranch?: string
+      force?: boolean
+      register?: boolean
+    } = {},
+  ): Promise<CommandResult | null> {
+    return this.run(`worktree:${action}`, () =>
+      this.remote.worktree({ workspaceId: this.workspaceId, action, ...options }),
+    )
   }
 
   /** Stage, unstage, or discard paths. */
-  stage(action: StageAction, paths: string[]): Promise<void> {
+  stage(action: StageAction, paths: string[]): Promise<CommandResult | null> {
     return this.run(`stage:${action}`, () =>
       this.remote.stage({ workspaceId: this.workspaceId, action, paths }),
     )
@@ -501,17 +663,17 @@ export class GitStore {
    * No `all` flag: the button is live only with something staged, so the
    * index IS the commit. See {@link canCommit}.
    */
-  commit(message: string): Promise<void> {
+  commit(message: string): Promise<CommandResult | null> {
     return this.run('commit', () => this.remote.commit({ workspaceId: this.workspaceId, message }))
   }
 
   /** Create a repository in this workspace's directory. */
-  init(branch: string): Promise<void> {
+  init(branch: string): Promise<CommandResult | null> {
     return this.run('init', () => this.remote.init({ workspaceId: this.workspaceId, branch }))
   }
 
   /** Run one remote operation. */
-  sync(action: SyncAction): Promise<void> {
+  sync(action: SyncAction): Promise<CommandResult | null> {
     return this.run(`sync:${action}`, () =>
       this.remote.sync({ workspaceId: this.workspaceId, action }),
     )
@@ -680,6 +842,36 @@ export interface GitRemote {
     staged?: boolean
   }) => Promise<RemoteReply<{ message: string; scope?: ChangeScope }>>
   changeToken: (request: { workspaceId: string }) => Promise<RemoteReply<{ token: number }>>
+  refs: (request: { workspaceId: string }) => Promise<RemoteReply<RefsResult>>
+  branch: (request: {
+    workspaceId: string
+    action: BranchAction
+    name?: string
+    startPoint?: string
+    force?: boolean
+  }) => Promise<RemoteReply<CommandResult>>
+  merge: (request: {
+    workspaceId: string
+    action: MergeAction
+    from?: string
+    noFF?: boolean
+  }) => Promise<RemoteReply<CommandResult>>
+  stash: (request: {
+    workspaceId: string
+    action: StashAction
+    index?: number
+    message?: string
+    includeUntracked?: boolean
+  }) => Promise<RemoteReply<CommandResult>>
+  worktree: (request: {
+    workspaceId: string
+    action: WorktreeAction
+    path?: string
+    branch?: string
+    newBranch?: string
+    force?: boolean
+    register?: boolean
+  }) => Promise<RemoteReply<CommandResult>>
 }
 
 type RemoteReply<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
@@ -1009,6 +1201,127 @@ const VIEW_STYLES = `
   0% { background-position: 180% 0; }
   100% { background-position: -80% 0; }
 }
+
+/* ---- branch button + menu ----
+   The branch name is the natural home for branch actions, so it becomes a real
+   button rather than growing a separate control in an already busy header.
+   The menu is position: fixed and anchored from getBoundingClientRect, because
+   the tab lives inside the shell's scrolling panels: an absolutely positioned
+   popup would be clipped by the first ancestor with overflow set. */
+.dshgit-branchbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--g-primary);
+  font: inherit; font-size: 14px; line-height: 22px; font-weight: 600;
+  padding: 2px 8px 2px 6px; cursor: pointer;
+  min-width: 0; max-width: 100%;
+}
+.dshgit-branchbtn:hover { background: var(--g-hover); border-color: var(--g-border); }
+.dshgit-branchbtn[aria-expanded='true'] { background: var(--g-hover); border-color: var(--g-border); }
+.dshgit-branchbtn svg { flex: none; }
+.dshgit-branchname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dshgit-caret { flex: none; color: var(--g-caption); }
+
+.dshgit-menu {
+  position: fixed; z-index: 60;
+  min-width: 260px; max-width: 380px;
+  max-height: 60vh; overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--g-border); border-radius: 10px;
+  background: var(--dsw-specific-menu, #232427);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 12px 32px rgba(0,0,0,0.4);
+}
+.dshgit-menu-filter {
+  width: 100%; margin: 2px 0 4px;
+  border: 1px solid var(--g-border); border-radius: 7px; background: transparent;
+  color: var(--g-primary); font: inherit; font-size: 13px; line-height: 20px; padding: 5px 9px;
+}
+.dshgit-menu-filter:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
+.dshgit-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: 0; border-radius: 7px; background: transparent; color: var(--g-secondary);
+  font: inherit; font-size: 13px; line-height: 20px; text-align: left;
+  padding: 5px 8px; cursor: pointer;
+}
+.dshgit-menu-item:hover:not(:disabled), .dshgit-menu-item.focused {
+  background: var(--g-hover); color: var(--g-primary);
+}
+.dshgit-menu-item:disabled { opacity: 0.45; cursor: default; }
+.dshgit-menu-item.current { color: var(--g-primary); font-weight: 600; }
+.dshgit-menu-item .dshgit-menu-sub {
+  flex: none; color: var(--g-caption); font-size: 12px; line-height: 18px;
+}
+.dshgit-menu-label {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dshgit-menu-divider { height: 1px; margin: 4px 6px; background: var(--g-border); }
+.dshgit-menu-head {
+  padding: 6px 8px 2px; color: var(--g-caption);
+  font-size: 11px; line-height: 16px; font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.dshgit-menu-empty { padding: 8px; color: var(--g-caption); font-size: 12px; line-height: 18px; }
+
+/* ---- merge banner ----
+   A merge that conflicts leaves durable repository state, so the tab has to say
+   so on every render until it is concluded. Warn, not error: being mid-merge is
+   a normal place to be, it just is not a place to walk away from silently. */
+.dshgit-banner {
+  flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 20px; border-bottom: 1px solid var(--g-border);
+  background: color-mix(in srgb, var(--g-warn) 12%, transparent);
+  color: var(--g-primary); font-size: 13px; line-height: 20px;
+}
+.dshgit-banner .dshgit-banner-icon { flex: none; color: var(--g-warn); display: inline-flex; }
+.dshgit-banner-text { flex: 1 1 auto; min-width: 0; }
+.dshgit-banner-what {
+  color: var(--g-caption); font-size: 12px; line-height: 18px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---- inline forms (create branch, add worktree) ----
+   In-flow rather than modal: these are small, and a dialog for two fields costs
+   a focus trap and a portal to say the same thing. */
+.dshgit-form {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  padding: 8px 20px; border-bottom: 1px solid var(--g-border);
+}
+.dshgit-form input[type='text'] {
+  flex: 1 1 160px; min-width: 0;
+  border: 1px solid var(--g-border); border-radius: 7px; background: transparent;
+  color: var(--g-primary); font: inherit; font-size: 13px; line-height: 20px; padding: 5px 9px;
+}
+.dshgit-form input[type='text']:focus {
+  outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280);
+}
+.dshgit-check {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--g-caption); font-size: 12px; line-height: 18px; cursor: pointer;
+}
+
+/* ---- repo pane rows ----
+   Stash and worktree rows reuse .dshgit-row so they inherit the same 32px box
+   and 20px line-height the icon probe pins for file rows; only the columns
+   inside differ. */
+.dshgit-rowmain {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--g-secondary);
+}
+.dshgit-row:hover .dshgit-rowmain { color: var(--g-primary); }
+.dshgit-rowmeta {
+  flex: none; color: var(--g-caption); font-size: 12px; line-height: 20px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%;
+}
+.dshgit-tag {
+  flex: none; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--g-border); color: var(--g-caption);
+  font-size: 11px; line-height: 16px;
+}
+.dshgit-tag.warn { color: var(--g-warn); border-color: var(--g-warn); }
+.dshgit-tag.ok { color: var(--g-accent); border-color: var(--g-accent); }
+
 /* Visually hidden, still announced. */
 .dshgit-sronly {
   position: absolute; width: 1px; height: 1px;
@@ -1114,6 +1427,13 @@ const ICON = {
   plus: 'M8 3.5v9M3.5 8h9',
   minus: 'M3.5 8h9',
   discard: 'M3 8a5 5 0 1 0 1.6-3.68M3 2.5v3h3',
+  caret: 'M4.5 6.5 8 10l3.5-3.5',
+  merge: 'M4.5 4.5v7M4.5 3.25a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Zm0 7a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Zm7-3.5a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Zm-1.25 1.25H8A3.5 3.5 0 0 1 4.5 4.75',
+  warn: 'M8 3.2 14 13.2H2L8 3.2ZM8 6.9v2.6M8 11.1h.01',
+  stash: 'M2.5 6.5 8 3.5l5.5 3L8 9.5 2.5 6.5Zm0 3.2L8 12.7l5.5-3',
+  tree: 'M3.5 3.5h4v3h-4v-3Zm5 6h4v3h-4v-3Zm-5 0h4v3h-4v-3ZM5.5 6.5v3M10.5 6.5v3M5.5 8h5',
+  trash: 'M3.5 4.5h9M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8',
+  check: 'M3.5 8.5 6.5 11.5 12.5 5',
 } as const
 
 /** Branch glyph for the header. */
@@ -1463,6 +1783,395 @@ function HistoryPane({
   )
 }
 
+
+/**
+ * Guard any destructive action behind a confirmation.
+ *
+ * The sibling of {@link confirmDiscard}, generalized: deleting a branch,
+ * dropping a stash and removing a worktree all destroy work that is not
+ * recoverable through the tab. A host without a usable `confirm` refuses rather
+ * than proceeding, which is the safe direction for all three.
+ *
+ * @param message - the question, naming exactly what will be destroyed.
+ * @returns true when the user accepted.
+ */
+function confirmAction(message: string): boolean {
+  try {
+    if (typeof window === 'undefined' || typeof window.confirm !== 'function') return false
+    return window.confirm(message)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Where to place the branch menu's left edge so it stays on screen.
+ *
+ * Pure and exported because the browser probe cannot honestly test it: a probe
+ * that re-implements this arithmetic to position a fixture is only testing its
+ * own copy. Geometry that depends on CSS belongs in the headless probe; a clamp
+ * is arithmetic and belongs in the smoke test.
+ *
+ * @param anchorLeft - the button's left edge in viewport coordinates.
+ * @param viewportWidth - the window's inner width.
+ * @param width - the menu's fixed width.
+ * @returns the clamped left offset, never off either edge.
+ */
+export function menuLeft(anchorLeft: number, viewportWidth: number, width: number): number {
+  const GUTTER = 8
+  // Math.max last: with a viewport narrower than the menu the min() result goes
+  // negative, and the gutter has to win over the right-edge fit rather than the
+  // other way round -- otherwise a very narrow tab pushes the menu off-screen
+  // to the LEFT, which is harder to notice than overflowing to the right.
+  return Math.max(GUTTER, Math.min(anchorLeft, viewportWidth - width - GUTTER))
+}
+
+/** Describe a branch's divergence for the menu's secondary column. */
+export function branchTrack(branch: GitBranch): string {
+  if (branch.upstream === undefined) return ''
+  const ahead = branch.ahead ?? 0
+  const behind = branch.behind ?? 0
+  if (ahead === 0 && behind === 0) return 'in sync'
+  return [ahead > 0 ? '↑' + ahead : '', behind > 0 ? '↓' + behind : ''].filter(Boolean).join(' ')
+}
+
+/**
+ * The branch menu: switch, create, and merge, anchored to the branch button.
+ *
+ * Rendered as position: fixed off the anchor's own rect rather than absolutely
+ * inside the header, because the tab sits inside the shell's scrolling panels
+ * and an absolute popup is clipped by the first ancestor with overflow set.
+ */
+function BranchMenu({
+  anchor,
+  branches,
+  loading,
+  error,
+  currentBranch,
+  busy,
+  onClose,
+  onSwitch,
+  onCreate,
+  onMerge,
+  onDelete,
+}: {
+  anchor: DOMRect
+  branches: GitBranch[]
+  loading: boolean
+  error: string | null
+  currentBranch: string | undefined
+  busy: string | null
+  onClose: () => void
+  onSwitch: (name: string) => void
+  onCreate: () => void
+  onMerge: (name: string) => void
+  onDelete: (name: string) => void
+}): React.JSX.Element {
+  const [filter, setFilter] = React.useState('')
+  const [focused, setFocused] = React.useState(0)
+  const ref = React.useRef<HTMLDivElement | null>(null)
+
+  // Close on any click that is not inside the menu, and on Escape. Both are
+  // registered on the document because the click that dismisses a popup is by
+  // definition somewhere else.
+  React.useEffect(() => {
+    const onDown = (event: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(event.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [onClose])
+
+  const local = branches.filter((b) => !b.remote)
+  const shown = local.filter((b) => b.name.toLowerCase().includes(filter.trim().toLowerCase()))
+  const others = shown.filter((b) => !b.current)
+
+  const onKeyDown = (event: React.KeyboardEvent): void => {
+    // The shell binds global shortcuts; a menu must not leak keys to them.
+    event.stopPropagation()
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+      return
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const delta = event.key === 'ArrowDown' ? 1 : -1
+      setFocused((i) => Math.max(0, Math.min(others.length - 1, i + delta)))
+      return
+    }
+    if (event.key === 'Enter' && others[focused]) {
+      event.preventDefault()
+      onSwitch(others[focused].name)
+    }
+  }
+
+  // Keep the menu on screen: anchored under the button, nudged left when it
+  // would otherwise run past the viewport's right edge.
+  const width = 300
+  const left = menuLeft(anchor.left, typeof window !== 'undefined' ? window.innerWidth : 1200, width)
+
+  return (
+    <div
+      ref={ref}
+      className="dshgit-menu"
+      role="menu"
+      aria-label="Branches"
+      style={{ left, top: anchor.bottom + 4, width }}
+      onKeyDown={onKeyDown}
+    >
+      <input
+        className="dshgit-menu-filter"
+        value={filter}
+        placeholder="Filter branches…"
+        aria-label="Filter branches"
+        autoFocus
+        onChange={(e) => {
+          setFilter(e.target.value)
+          setFocused(0)
+        }}
+      />
+      {error !== null ? (
+        <div className="dshgit-menu-empty dshgit-loadingrow err">Couldn&apos;t read branches — {error}</div>
+      ) : loading && branches.length === 0 ? (
+        <div className="dshgit-menu-empty">Reading branches…</div>
+      ) : (
+        <>
+          {others.length === 0 ? (
+            <div className="dshgit-menu-empty">
+              {local.length <= 1 ? 'No other branches yet.' : 'No branch matches that filter.'}
+            </div>
+          ) : (
+            <>
+              <div className="dshgit-menu-head">Switch to</div>
+              {others.map((branch, index) => (
+                <button
+                  key={branch.name}
+                  className={'dshgit-menu-item' + (index === focused ? ' focused' : '')}
+                  role="menuitem"
+                  disabled={busy !== null}
+                  onMouseEnter={() => setFocused(index)}
+                  onClick={() => onSwitch(branch.name)}
+                >
+                  <Icon path={ICON.branch} />
+                  <span className="dshgit-menu-label">{branch.name}</span>
+                  <span className="dshgit-menu-sub">{branchTrack(branch)}</span>
+                </button>
+              ))}
+            </>
+          )}
+          <div className="dshgit-menu-divider" />
+          <button className="dshgit-menu-item" role="menuitem" disabled={busy !== null} onClick={onCreate}>
+            <Icon path={ICON.plus} />
+            <span className="dshgit-menu-label">Create branch…</span>
+          </button>
+          {others.length > 0 ? (
+            <>
+              <div className="dshgit-menu-head">Merge into {currentBranch ?? 'HEAD'}</div>
+              {others.map((branch) => (
+                <button
+                  key={'merge:' + branch.name}
+                  className="dshgit-menu-item"
+                  role="menuitem"
+                  disabled={busy !== null}
+                  onClick={() => onMerge(branch.name)}
+                >
+                  <Icon path={ICON.merge} />
+                  <span className="dshgit-menu-label">{branch.name}</span>
+                </button>
+              ))}
+              <div className="dshgit-menu-divider" />
+              <div className="dshgit-menu-head">Delete</div>
+              {others.map((branch) => (
+                <button
+                  key={'del:' + branch.name}
+                  className="dshgit-menu-item"
+                  role="menuitem"
+                  disabled={busy !== null}
+                  onClick={() => onDelete(branch.name)}
+                >
+                  <Icon path={ICON.trash} />
+                  <span className="dshgit-menu-label">{branch.name}</span>
+                </button>
+              ))}
+            </>
+          ) : null}
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The Repo pane: stashes and worktrees.
+ *
+ * Both lists reuse the file row's box, so they inherit the 32px height and 20px
+ * line-height the icon probe pins rather than introducing a second row rhythm
+ * beside the Changes list.
+ */
+function RepoPane({
+  refs,
+  loading,
+  busy,
+  onStash,
+  onWorktree,
+  onAddWorktree,
+}: {
+  refs: RefsResult | null
+  loading: boolean
+  busy: string | null
+  onStash: (action: StashAction, index?: number) => void
+  onWorktree: (action: WorktreeAction, path?: string, force?: boolean) => void
+  onAddWorktree: () => void
+}): React.JSX.Element {
+  if (refs === null && loading) {
+    return <div className="dshgit-loadingrow">Reading branches, stashes and worktrees…</div>
+  }
+  // A failed read must never render as an empty repository: that is exactly how
+  // a host half older than this bundle looks, and "no stashes" would be a lie.
+  if (refs !== null && !refs.ok) {
+    return (
+      <div className="dshgit-loadingrow err">
+        Couldn&apos;t read this repository — {refs.error}
+      </div>
+    )
+  }
+  const stashes: GitStash[] = refs?.ok ? refs.stashes : []
+  const worktrees: GitWorktree[] = refs?.ok ? refs.worktrees : []
+
+  return (
+    <>
+      <div className="dshgit-section">
+        <div className="dshgit-sechead">
+          <span>Stashes</span>
+          {stashes.length > 0 ? <span className="dshgit-badge-count">{stashes.length}</span> : null}
+          <span className="dshgit-spacer" />
+          <span className="dshgit-secbtns">
+            <button
+              className="dshgit-icon"
+              title="Stash all changes, including untracked files"
+              aria-label="Stash all changes"
+              disabled={busy !== null}
+              onClick={() => onStash('push')}
+            >
+              <Icon path={ICON.plus} />
+            </button>
+          </span>
+        </div>
+        {stashes.length === 0 ? (
+          <div className="dshgit-loadingrow">Nothing stashed.</div>
+        ) : (
+          <ul className="dshgit-list">
+            {stashes.map((stash) => (
+              <li className="dshgit-row" key={stash.index}>
+                <span className="dshgit-code A" aria-hidden="true">
+                  <Icon path={ICON.stash} />
+                </span>
+                <span className="dshgit-rowmain" title={stash.message}>
+                  {stash.message}
+                </span>
+                {stash.date !== undefined ? (
+                  <span className="dshgit-rowmeta">{fmtAge(stash.date)}</span>
+                ) : null}
+                <span className="dshgit-rowbtns">
+                  <button
+                    className="dshgit-icon"
+                    title="Apply this stash and remove it"
+                    aria-label={'Pop stash ' + stash.index}
+                    disabled={busy !== null}
+                    onClick={() => onStash('pop', stash.index)}
+                  >
+                    <Icon path={ICON.check} />
+                  </button>
+                  <button
+                    className="dshgit-icon"
+                    title="Apply this stash but keep it"
+                    aria-label={'Apply stash ' + stash.index}
+                    disabled={busy !== null}
+                    onClick={() => onStash('apply', stash.index)}
+                  >
+                    <Icon path={ICON.plus} />
+                  </button>
+                  <button
+                    className="dshgit-icon danger"
+                    title="Delete this stash"
+                    aria-label={'Drop stash ' + stash.index}
+                    disabled={busy !== null}
+                    onClick={() => onStash('drop', stash.index)}
+                  >
+                    <Icon path={ICON.trash} />
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="dshgit-section">
+        <div className="dshgit-sechead">
+          <span>Worktrees</span>
+          {worktrees.length > 0 ? (
+            <span className="dshgit-badge-count">{worktrees.length}</span>
+          ) : null}
+          <span className="dshgit-spacer" />
+          <span className="dshgit-secbtns">
+            <button
+              className="dshgit-icon"
+              title="Add a worktree"
+              aria-label="Add a worktree"
+              disabled={busy !== null}
+              onClick={onAddWorktree}
+            >
+              <Icon path={ICON.plus} />
+            </button>
+            <button
+              className="dshgit-icon"
+              title="Forget worktrees whose directory is gone"
+              aria-label="Prune worktrees"
+              disabled={busy !== null}
+              onClick={() => onWorktree('prune')}
+            >
+              <Icon path={ICON.discard} />
+            </button>
+          </span>
+        </div>
+        <ul className="dshgit-list">
+          {worktrees.map((tree) => (
+            <li className="dshgit-row" key={tree.path}>
+              <span className="dshgit-code R" aria-hidden="true">
+                <Icon path={ICON.tree} />
+              </span>
+              <span className="dshgit-rowmain" title={tree.path}>
+                {tree.branch ?? baseName(tree.path)}
+              </span>
+              <span className="dshgit-rowmeta" title={tree.path}>
+                {tree.path}
+              </span>
+              {tree.current ? <span className="dshgit-tag ok">current</span> : null}
+              {tree.prunable ? <span className="dshgit-tag warn">missing</span> : null}
+              {tree.locked ? <span className="dshgit-tag">locked</span> : null}
+              <span className="dshgit-rowbtns">
+                {/* The main worktree cannot be removed, and git refuses it —
+                    disabling here explains why instead of offering a dead click. */}
+                <button
+                  className="dshgit-icon danger"
+                  title={tree.main ? 'The main worktree cannot be removed' : 'Remove this worktree'}
+                  aria-label={'Remove worktree ' + tree.path}
+                  disabled={busy !== null || tree.main}
+                  onClick={() => onWorktree('remove', tree.path)}
+                >
+                  <Icon path={ICON.trash} />
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </>
+  )
+}
+
 export function GitView({ store }: { store: GitStore | null }): React.JSX.Element {
   const [message, setMessage] = React.useState('')
   const [branch, setBranch] = React.useState('main')
@@ -1471,7 +2180,18 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
   // Loading is its own flag rather than a sentinel string in `patch`, so a real
   // diff whose text happens to read "Loading diff…" cannot render as a skeleton.
   const [loading, setLoading] = React.useState(false)
-  const [mode, setMode] = React.useState<'changes' | 'history'>('changes')
+  const [mode, setMode] = React.useState<'changes' | 'history' | 'repo'>('changes')
+  // Anchor rect for the branch menu; null means closed. Held as a rect rather
+  // than a boolean because the menu is position: fixed and needs the button's
+  // on-screen box, which is only meaningful at the moment it was opened.
+  const [menuRect, setMenuRect] = React.useState<DOMRect | null>(null)
+  const branchBtn = React.useRef<HTMLButtonElement | null>(null)
+  const [newBranch, setNewBranch] = React.useState<string | null>(null)
+  const [worktreeForm, setWorktreeForm] = React.useState<{
+    path: string
+    branch: string
+    register: boolean
+  } | null>(null)
   const [openSha, setOpenSha] = React.useState<string | null>(null)
   // null means "still loading". Anything else is a settled outcome that knows
   // whether it succeeded, so a loading commit, an empty commit, and a failed
@@ -1594,13 +2314,22 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
    * versus "sha:path"), so carrying one across would leave the other pane
    * showing a patch it cannot match to any row it renders.
    */
-  const switchMode = React.useCallback((next: 'changes' | 'history') => {
+  const switchMode = React.useCallback((next: 'changes' | 'history' | 'repo') => {
     requestSeq.current += 1
     setMode(next)
     setSelected(null)
     setPatch('')
     setLoading(false)
   }, [])
+
+  // Keep the branch/stash/worktree lists fresh only while something shows them.
+  // They are re-read after every command and whenever the repository moves, but
+  // never polled: nobody is looking at them most of the time.
+  React.useEffect(() => {
+    if (!store) return
+    if (mode !== 'repo' && menuRect === null) return
+    return store.wantRefs()
+  }, [store, mode, menuRect])
 
   // A file that stops being changed (staged, discarded, committed) must not
   // leave a stale patch on screen.
@@ -1730,10 +2459,24 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
   return (
     <div className={`dshgit${selected !== null ? ' diffopen' : ''}`}>
       <div className="dshgit-head">
-        <span className="dshgit-branch" title={status.root}>
+        <button
+          ref={branchBtn}
+          className="dshgit-branchbtn"
+          title={status.root}
+          aria-haspopup="menu"
+          aria-expanded={menuRect !== null}
+          onClick={() =>
+            setMenuRect((open) =>
+              open !== null ? null : (branchBtn.current?.getBoundingClientRect() ?? null),
+            )
+          }
+        >
           <BranchIcon />
-          {branchSummary(status)}
-        </span>
+          <span className="dshgit-branchname">{branchSummary(status)}</span>
+          <span className="dshgit-caret">
+            <Icon path={ICON.caret} />
+          </span>
+        </button>
         <span className="dshgit-spacer" />
         <span className="dshgit-actions">
           <button
@@ -1811,7 +2554,167 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
         >
           History
         </button>
+        <button
+          className="dshgit-mode"
+          aria-pressed={mode === 'repo'}
+          onClick={() => switchMode('repo')}
+        >
+          Repo
+          {/* The count rides on status, so the badge is correct before the pane
+              has ever been opened and its lists fetched. */}
+          {(status.stashCount ?? 0) > 0 ? (
+            <span className="dshgit-badge-count">{status.stashCount}</span>
+          ) : null}
+        </button>
       </div>
+
+      {/* Banners sit between the switcher and the panes: a merge in progress and
+          a refused switch are both facts about the whole tab, not about one pane. */}
+      {status.merging === true ? (
+        <div className="dshgit-banner" role="status">
+          <span className="dshgit-banner-icon">
+            <Icon path={ICON.warn} />
+          </span>
+          <span className="dshgit-banner-text">
+            Merge in progress
+            <div className="dshgit-banner-what">
+              {status.mergeHead ?? 'Resolve any conflicts, stage them, then commit.'}
+            </div>
+          </span>
+          <button
+            className="dshgit-btn"
+            title="Finish the merge, reusing git's own merge message"
+            disabled={busy !== null || counts.conflicted > 0}
+            onClick={() => void store.merge('continue')}
+          >
+            {busy === 'merge:continue' ? '…' : 'Continue'}
+          </button>
+          <button
+            className="dshgit-btn"
+            title="Abandon the merge and restore the pre-merge state"
+            disabled={busy !== null}
+            onClick={() => {
+              if (!confirmAction('Abort this merge? Any conflict resolutions are discarded.')) return
+              void store.merge('abort')
+            }}
+          >
+            {busy === 'merge:abort' ? '…' : 'Abort'}
+          </button>
+        </div>
+      ) : null}
+
+      {/* Git refused the switch; offer the stash EXPLICITLY rather than having
+          done it silently. */}
+      {state.pendingSwitch !== null ? (
+        <div className="dshgit-banner" role="status">
+          <span className="dshgit-banner-icon">
+            <Icon path={ICON.warn} />
+          </span>
+          <span className="dshgit-banner-text">
+            Can&apos;t switch to {state.pendingSwitch} with uncommitted changes
+            <div className="dshgit-banner-what">
+              Stash them first and they stay safe in the Repo tab.
+            </div>
+          </span>
+          <button
+            className="dshgit-btn primary"
+            disabled={busy !== null}
+            onClick={() => {
+              const target = state.pendingSwitch
+              if (target === null) return
+              store.clearPendingSwitch()
+              void store.branch('stashSwitch', { name: target })
+            }}
+          >
+            {busy === 'branch:stashSwitch' ? 'Stashing…' : 'Stash changes and switch'}
+          </button>
+          <button className="dshgit-btn" onClick={() => store.clearPendingSwitch()}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {newBranch !== null ? (
+        <div className="dshgit-form">
+          <input
+            type="text"
+            value={newBranch}
+            autoFocus
+            placeholder="new-branch-name"
+            aria-label="New branch name"
+            onChange={(e) => setNewBranch(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Escape') setNewBranch(null)
+              if (e.key === 'Enter' && newBranch.trim().length > 0) {
+                void store.branch('createSwitch', { name: newBranch.trim() })
+                setNewBranch(null)
+              }
+            }}
+          />
+          <button
+            className="dshgit-btn primary"
+            disabled={busy !== null || newBranch.trim().length === 0}
+            onClick={() => {
+              void store.branch('createSwitch', { name: newBranch.trim() })
+              setNewBranch(null)
+            }}
+          >
+            Create and switch
+          </button>
+          <button className="dshgit-btn" onClick={() => setNewBranch(null)}>
+            Cancel
+          </button>
+        </div>
+      ) : null}
+
+      {worktreeForm !== null ? (
+        <div className="dshgit-form">
+          <input
+            type="text"
+            value={worktreeForm.path}
+            autoFocus
+            placeholder="../feature-worktree"
+            aria-label="Worktree directory"
+            onChange={(e) => setWorktreeForm({ ...worktreeForm, path: e.target.value })}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+          <input
+            type="text"
+            value={worktreeForm.branch}
+            placeholder="new branch name"
+            aria-label="Branch for the new worktree"
+            onChange={(e) => setWorktreeForm({ ...worktreeForm, branch: e.target.value })}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+          <label className="dshgit-check">
+            <input
+              type="checkbox"
+              checked={worktreeForm.register}
+              onChange={(e) => setWorktreeForm({ ...worktreeForm, register: e.target.checked })}
+            />
+            Open as workspace
+          </label>
+          <button
+            className="dshgit-btn primary"
+            disabled={busy !== null || worktreeForm.path.trim().length === 0}
+            onClick={() => {
+              const form = worktreeForm
+              setWorktreeForm(null)
+              void store.worktree('add', {
+                path: form.path.trim(),
+                ...(form.branch.trim().length > 0 ? { newBranch: form.branch.trim() } : {}),
+                register: form.register,
+              })
+            }}
+          >
+            Add worktree
+          </button>
+          <button className="dshgit-btn" onClick={() => setWorktreeForm(null)}>
+            Cancel
+          </button>
+        </div>
+      ) : null}
 
       {mode === 'changes' ? (
       <div className="dshgit-commit">
@@ -1874,7 +2777,34 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
 
       <div className={`dshgit-panes${selected !== null ? ' hasdiff' : ''}`}>
         <div className="dshgit-scroll">
-          {mode === 'history' ? (
+          {mode === 'repo' ? (
+            <RepoPane
+              refs={state.refs}
+              loading={state.refsLoading}
+              busy={busy}
+              onStash={(action, index) => {
+                if (action === 'drop' && !confirmAction('Delete this stash? It cannot be recovered.')) {
+                  return
+                }
+                void store.stash(action, {
+                  ...(index !== undefined ? { index } : {}),
+                  // Stashing without -u leaves brand-new files behind, which is
+                  // precisely the work someone stashing expects to be safe.
+                  ...(action === 'push' ? { includeUntracked: true } : {}),
+                })
+              }}
+              onWorktree={(action, path) => {
+                if (
+                  action === 'remove' &&
+                  !confirmAction('Remove this worktree? Uncommitted changes inside it are lost.')
+                ) {
+                  return
+                }
+                void store.worktree(action, { ...(path !== undefined ? { path } : {}) })
+              }}
+              onAddWorktree={() => setWorktreeForm({ path: '', branch: '', register: true })}
+            />
+          ) : mode === 'history' ? (
             <HistoryPane
               commits={status.recent}
               openSha={openSha}
@@ -1956,6 +2886,37 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
         ) : null}
       </div>
 
+      {menuRect !== null ? (
+        <BranchMenu
+          anchor={menuRect}
+          branches={state.refs?.ok ? state.refs.branches : []}
+          loading={state.refsLoading}
+          error={state.refs !== null && !state.refs.ok ? state.refs.error : null}
+          currentBranch={status.branch}
+          busy={busy}
+          onClose={() => setMenuRect(null)}
+          onSwitch={(name) => {
+            setMenuRect(null)
+            void store.switchBranch(name)
+          }}
+          onCreate={() => {
+            setMenuRect(null)
+            setNewBranch('')
+          }}
+          onMerge={(name) => {
+            setMenuRect(null)
+            void store.merge('merge', { from: name })
+          }}
+          onDelete={(name) => {
+            setMenuRect(null)
+            if (!confirmAction('Delete branch "' + name + '"? Unmerged commits on it are lost.')) {
+              return
+            }
+            void store.branch('delete', { name })
+          }}
+        />
+      ) : null}
+
       <div className="dshgit-foot">
         <span>
           {counts.staged} staged · {counts.unstaged} changed
@@ -2023,6 +2984,9 @@ const MISSING: GitState = {
   output: '',
   error: null,
   busy: null,
+  refs: null,
+  refsLoading: false,
+  pendingSwitch: null,
 }
 const noopSubscribe = (): (() => void) => () => {}
 const getMissingSnapshot = (): GitState => MISSING

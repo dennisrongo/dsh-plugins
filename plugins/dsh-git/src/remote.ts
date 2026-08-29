@@ -65,6 +65,13 @@ const statusSchema = z.union([
     hasRemote: z.boolean(),
     files: z.array(fileChangeSchema),
     recent: z.array(commitSchema),
+    // Optional so a host booted BEFORE these fields existed still decodes: the
+    // browser's codec is strict, and a missing field would otherwise turn a
+    // working tab into a decode error during the window where the client half
+    // has refreshed but the host half has not restarted.
+    merging: z.boolean().optional(),
+    mergeHead: z.string().optional(),
+    stashCount: z.number().optional(),
   }),
 ])
 
@@ -151,6 +158,123 @@ const initRequestSchema = z.object({
   branch: z.string().optional(),
 })
 
+
+/**
+ * A branch name as it crosses the wire.
+ *
+ * Mirrors `assertSafeRef` on the host, for the same reason `shaSchema` mirrors
+ * `assertSafeSha`: the browser's codec is strict, so a malformed ref is refused
+ * before it costs a round trip. The HOST check remains the real boundary —
+ * nothing trusts the browser to have validated anything.
+ *
+ * The character class is deliberately conservative but covers the ordinary
+ * shapes (`feature/x`, `origin/feature/x`, `release-1.2`); it excludes a
+ * leading `-` (which git reads as a FLAG) along with every character its
+ * revision grammar gives a meaning to.
+ */
+const refSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+  .refine(
+    (s) =>
+      !s.includes('..') &&
+      !s.includes('//') &&
+      !s.endsWith('/') &&
+      !s.endsWith('.') &&
+      !s.endsWith('.lock'),
+    { message: 'invalid branch name' },
+  )
+
+const branchSchema = z.object({
+  name: z.string(),
+  current: z.boolean(),
+  remote: z.boolean(),
+  upstream: z.string().optional(),
+  // Absent rather than zero without an upstream: "in sync" and "no upstream"
+  // are different facts and the menu renders them differently.
+  ahead: z.number().optional(),
+  behind: z.number().optional(),
+  subject: z.string().optional(),
+})
+
+const stashSchema = z.object({
+  index: z.number(),
+  message: z.string(),
+  branch: z.string().optional(),
+  date: z.number().optional(),
+})
+
+const worktreeSchema = z.object({
+  path: z.string(),
+  branch: z.string().optional(),
+  head: z.string().optional(),
+  main: z.boolean(),
+  prunable: z.boolean(),
+  locked: z.boolean(),
+  current: z.boolean(),
+})
+
+const refsRequestSchema = z.object({ workspaceId: z.string() })
+
+/**
+ * The `refs` reply is a DISCRIMINATED union, not three bare arrays.
+ *
+ * A client bundle newer than the host half 404s this method. Collapsing that
+ * into empty arrays would render as "this repository has no branches" rather
+ * than "restart the profile" — the same trap `commitFiles` was reshaped to
+ * avoid, and the same one that once made a stale host look like a dead UI.
+ */
+const refsResultSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    branches: z.array(branchSchema),
+    stashes: z.array(stashSchema),
+    worktrees: z.array(worktreeSchema),
+  }),
+  z.object({
+    ok: z.literal(false),
+    error: z.string(),
+  }),
+])
+
+const branchRequestSchema = z.object({
+  workspaceId: z.string(),
+  action: z.enum(['create', 'switch', 'createSwitch', 'delete', 'rename', 'stashSwitch']),
+  name: refSchema.optional(),
+  startPoint: refSchema.optional(),
+  force: z.boolean().optional(),
+})
+
+const mergeRequestSchema = z.object({
+  workspaceId: z.string(),
+  action: z.enum(['merge', 'abort', 'continue']),
+  from: refSchema.optional(),
+  noFF: z.boolean().optional(),
+})
+
+const stashRequestSchema = z.object({
+  workspaceId: z.string(),
+  action: z.enum(['push', 'pop', 'apply', 'drop', 'clear']),
+  // Interpolated into `stash@{N}` on the host, so it must be a plain integer.
+  index: z.number().int().min(0).optional(),
+  message: z.string().optional(),
+  includeUntracked: z.boolean().optional(),
+})
+
+const worktreeRequestSchema = z.object({
+  workspaceId: z.string(),
+  action: z.enum(['add', 'remove', 'prune']),
+  // NOT constrained like a repo-relative path: a worktree lives outside the
+  // repository by definition. The host's resolveWorktreePath is the boundary.
+  path: z.string().optional(),
+  branch: refSchema.optional(),
+  newBranch: refSchema.optional(),
+  force: z.boolean().optional(),
+  register: z.boolean().optional(),
+})
+
 const PACKAGE = '@dennisrongo/dsh-git'
 
 /**
@@ -204,6 +328,11 @@ export const GIT_REMOTE = {
     descriptor('sync', syncRequestSchema, commandResultSchema),
     descriptor('suggestMessage', suggestRequestSchema, suggestResultSchema),
     descriptor('changeToken', changeTokenRequestSchema, changeTokenResultSchema),
+    descriptor('refs', refsRequestSchema, refsResultSchema),
+    descriptor('branch', branchRequestSchema, commandResultSchema),
+    descriptor('merge', mergeRequestSchema, commandResultSchema),
+    descriptor('stash', stashRequestSchema, commandResultSchema),
+    descriptor('worktree', worktreeRequestSchema, commandResultSchema),
   ],
 }
 

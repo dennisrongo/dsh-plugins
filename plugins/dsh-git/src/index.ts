@@ -12,6 +12,7 @@
  *
  * @module @dennisrongo/dsh-git
  */
+import { basename } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -36,15 +37,25 @@ import {
   type DiffResult,
   type InitRequest,
   type StageRequest,
+  type BranchRequest,
+  type MergeRequest,
+  type RefsRequest,
+  type RefsResult,
+  type StashRequest,
   type StatusRequest,
   type StatusResult,
+  type WorktreeRequest,
   type SuggestRequest,
   type SuggestResult,
   type SyncRequest,
 } from './types.ts'
 import {
   assertSafePath,
+  assertSafeRef,
   assertSafeSha,
+  assertSafeStashIndex,
+  readRefs,
+  resolveWorktreePath,
   collectChangeDiff,
   combined,
   parseCommitFiles,
@@ -506,6 +517,273 @@ export class GitService extends TypertRemoteService {
     const message = cleanMessage(text)
     if (message.length === 0) throw new Error('dsh-git: the model produced no commit message')
     return { message, scope: collected.scope }
+  }
+
+
+  /**
+   * List branches, stashes and worktrees together.
+   *
+   * One endpoint rather than three because the tab fetches them as a unit: the
+   * branch menu wants the first, the Repo pane the other two, and three round
+   * trips would triple the latency for no gain. It is fetched LAZILY — on menu
+   * open or pane entry — so it never lands on the polling path that
+   * {@link changeToken} exists to keep cheap.
+   *
+   * Returns a discriminated outcome rather than bare arrays, and that is the
+   * whole point of the shape. A client bundle newer than the host half 404s this
+   * method, and collapsing that into empty arrays would render as "this
+   * repository has no branches" instead of "restart the profile" — the exact
+   * failure {@link commitFiles} was already reshaped to avoid.
+   *
+   * @param request - the workspace to inspect.
+   * @returns the three lists, or the reason they could not be read.
+   */
+  @Remote
+  async refs(request: RefsRequest): Promise<RefsResult> {
+    try {
+      const dir = this.workspaceDir(request?.workspaceId)
+      const root = await repoRoot(dir)
+      if (root === undefined) return { ok: false, error: 'Not a git repository.' }
+      const lists = await readRefs(root)
+      return { ok: true, ...lists }
+    } catch (error) {
+      return { ok: false, error: describe(error) }
+    }
+  }
+
+  /**
+   * Create, switch, delete or rename a branch.
+   *
+   * `stashSwitch` is a distinct action rather than a flag because it is the
+   * explicit SECOND step the tab offers after a plain `switch` was refused for
+   * local changes. Stashing is never implicit: an auto-stash whose later pop
+   * conflicts strands work behind a state the user never chose to enter.
+   *
+   * @param request - workspace, action and branch names.
+   * @returns command output and the refreshed status.
+   */
+  @Remote
+  async branch(request: BranchRequest): Promise<CommandResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const action = request?.action
+    // Validated up front, outside withRepo, so a bad name fails as a thrown
+    // error at the boundary rather than as command output that reads like git's.
+    const name = action === undefined ? undefined : assertSafeRef(request?.name)
+    const startPoint =
+      typeof request?.startPoint === 'string' && request.startPoint.length > 0
+        ? assertSafeRef(request.startPoint)
+        : undefined
+    const force = request?.force === true
+
+    return this.withRepo(dir, async (root: string) => {
+      switch (action) {
+        case 'create':
+          return combined(
+            await runGit(root, ['branch', '--', name!, ...(startPoint ? [startPoint] : [])]),
+          )
+        case 'switch':
+          return combined(await runGit(root, ['checkout', '--', name!]))
+        case 'createSwitch':
+          return combined(
+            await runGit(root, ['checkout', '-b', name!, ...(startPoint ? [startPoint] : [])]),
+          )
+        case 'delete':
+          // -d refuses an unmerged branch; -D is the deliberate override the
+          // client only sends after confirming.
+          return combined(await runGit(root, ['branch', force ? '-D' : '-d', '--', name!]))
+        case 'rename':
+          return combined(await runGit(root, ['branch', '-m', '--', name!]))
+        case 'stashSwitch': {
+          // -u so a brand-new file is carried across too; leaving untracked work
+          // behind is exactly the surprise this flow exists to prevent.
+          const stash = await runGit(root, [
+            'stash',
+            'push',
+            '-u',
+            '-m',
+            `dsh-git: switching to ${name!}`,
+          ])
+          const stashText = combined(stash)
+          if (stash.code !== 0) return stashText
+          const checkout = await runGit(root, ['checkout', '--', name!])
+          return [stashText, combined(checkout)].filter((s) => s.length > 0).join('\n')
+        }
+        default:
+          throw new Error(`dsh-git: unknown branch action ${String(action)}`)
+      }
+    })
+  }
+
+  /**
+   * Merge another branch into the current one, or conclude a merge in progress.
+   *
+   * Unlike {@link sync}'s `pull --ff-only`, this deliberately ALLOWS a merge to
+   * conflict and leaves the repository mid-merge. That reverses the old stance
+   * ("no conflict-resolution surface") because the surface now exists: the
+   * Changes pane already lists conflicts and already blocks Commit while any
+   * remain, and `status.merging` drives a banner offering Abort.
+   *
+   * `--no-edit` matters on every path: git would otherwise open an editor for
+   * the merge message, and with no TTY that hangs the request until the timeout.
+   *
+   * @param request - workspace, action, and the branch to merge from.
+   * @returns command output and the refreshed status.
+   */
+  @Remote
+  async merge(request: MergeRequest): Promise<CommandResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const action = request?.action
+    const from = action === 'merge' ? assertSafeRef(request?.from) : undefined
+    const noFF = request?.noFF === true
+
+    return this.withRepo(dir, async (root: string) => {
+      switch (action) {
+        case 'merge':
+          return combined(
+            await runGit(root, [
+              'merge',
+              '--no-edit',
+              ...(noFF ? ['--no-ff'] : []),
+              '--',
+              from!,
+            ]),
+          )
+        case 'abort':
+          return combined(await runGit(root, ['merge', '--abort']))
+        case 'continue':
+          // `commit --no-edit` rather than `merge --continue`: both conclude the
+          // merge, but this one reuses MERGE_MSG without involving an editor at
+          // all, and reports unresolved conflicts as plain output.
+          return combined(await runGit(root, ['commit', '--no-edit']))
+        default:
+          throw new Error(`dsh-git: unknown merge action ${String(action)}`)
+      }
+    })
+  }
+
+  /**
+   * Push, pop, apply, drop or clear stash entries.
+   *
+   * A stash index is a CURSOR into a live stack, not an identifier — dropping or
+   * popping an earlier entry renumbers everything after it. The client re-reads
+   * {@link refs} after every mutation for that reason, and the index is
+   * validated here because it is interpolated into `stash@{N}`.
+   *
+   * @param request - workspace, action, and the entry to act on.
+   * @returns command output and the refreshed status.
+   */
+  @Remote
+  async stash(request: StashRequest): Promise<CommandResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const action = request?.action
+    const index =
+      typeof request?.index === 'number' ? assertSafeStashIndex(request.index) : undefined
+    const selector = index === undefined ? undefined : `stash@{${index}}`
+    const message = typeof request?.message === 'string' ? request.message.trim() : ''
+    const includeUntracked = request?.includeUntracked === true
+
+    return this.withRepo(dir, async (root: string) => {
+      switch (action) {
+        case 'push': {
+          const args = ['stash', 'push']
+          if (includeUntracked) args.push('-u')
+          if (message.length > 0) args.push('-m', message)
+          const run = await runGit(root, args)
+          return combined(run)
+        }
+        case 'pop':
+          return combined(
+            await runGit(root, ['stash', 'pop', ...(selector ? [selector] : [])]),
+          )
+        case 'apply':
+          return combined(
+            await runGit(root, ['stash', 'apply', ...(selector ? [selector] : [])]),
+          )
+        case 'drop':
+          return combined(
+            await runGit(root, ['stash', 'drop', ...(selector ? [selector] : [])]),
+          )
+        case 'clear':
+          return combined(await runGit(root, ['stash', 'clear']))
+        default:
+          throw new Error(`dsh-git: unknown stash action ${String(action)}`)
+      }
+    })
+  }
+
+  /**
+   * Add, remove or prune a worktree.
+   *
+   * This is the one operation that writes OUTSIDE the workspace directory — a
+   * worktree lives beside the repository by definition — so the path gets its
+   * own validator rather than {@link assertSafePath}, which exists to keep file
+   * operations inside the repo. See {@link resolveWorktreePath}.
+   *
+   * `register` additionally writes to dsh's own workspace registry, which is the
+   * only place this plugin reaches outside git. It is opt-in: adding a worktree
+   * and then having to register it by hand is the annoying half of the feature,
+   * but doing it unasked would silently populate someone's workspace list.
+   *
+   * @param request - workspace, action, path and branch options.
+   * @returns command output and the refreshed status.
+   */
+  @Remote
+  async worktree(request: WorktreeRequest): Promise<CommandResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const action = request?.action
+    const branch =
+      typeof request?.branch === 'string' && request.branch.length > 0
+        ? assertSafeRef(request.branch)
+        : undefined
+    const newBranch =
+      typeof request?.newBranch === 'string' && request.newBranch.length > 0
+        ? assertSafeRef(request.newBranch)
+        : undefined
+    const force = request?.force === true
+    const register = request?.register === true
+
+    return this.withRepo(dir, async (root: string) => {
+      switch (action) {
+        case 'add': {
+          const target = resolveWorktreePath(root, request?.path)
+          const args = ['worktree', 'add']
+          if (newBranch !== undefined) args.push('-b', newBranch)
+          if (force) args.push('--force')
+          args.push('--', target)
+          // A bare `worktree add <path>` with no ref checks out a new branch
+          // named after the directory; naming the branch is the explicit form.
+          if (newBranch === undefined && branch !== undefined) args.push(branch)
+          const run = await runGit(root, args)
+          const output = combined(run)
+          if (run.code !== 0 || !register) return output
+
+          // Registration is best-effort ON PURPOSE: the worktree exists on disk
+          // at this point, and failing the whole command would report a
+          // successful git operation as an error. Say so instead.
+          try {
+            await this.ctx.workspaceRegistry.create(target, basename(target))
+            return [output, `Registered ${target} as a workspace.`]
+              .filter((s) => s.length > 0)
+              .join('\n')
+          } catch (error) {
+            return [output, `Worktree created, but could not register it: ${describe(error)}`]
+              .filter((s) => s.length > 0)
+              .join('\n')
+          }
+        }
+        case 'remove': {
+          const target = resolveWorktreePath(root, request?.path)
+          const args = ['worktree', 'remove']
+          if (force) args.push('--force')
+          args.push('--', target)
+          return combined(await runGit(root, args))
+        }
+        case 'prune':
+          return combined(await runGit(root, ['worktree', 'prune']))
+        default:
+          throw new Error(`dsh-git: unknown worktree action ${String(action)}`)
+      }
+    })
   }
 
   /**

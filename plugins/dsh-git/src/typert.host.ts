@@ -77,6 +77,11 @@ export const TYPERT = {
           method('init', '@Remote init(request: InitRequest): Promise<CommandResult>', 'Initialize a repository in the workspace.'),
           method('sync', '@Remote sync(request: SyncRequest): Promise<CommandResult>', 'Pull, push, fetch, sync or publish.'),
           method('suggestMessage', '@Remote suggestMessage(request: SuggestRequest): Promise<SuggestResult>', 'Draft a commit message from the diff via the LLM.'),
+          method('refs', '@Remote refs(request: RefsRequest): Promise<RefsResult>', 'List branches, stashes and worktrees together.'),
+          method('branch', '@Remote branch(request: BranchRequest): Promise<CommandResult>', 'Create, switch, delete or rename a branch.'),
+          method('merge', '@Remote merge(request: MergeRequest): Promise<CommandResult>', 'Merge a branch, or abort/continue a merge in progress.'),
+          method('stash', '@Remote stash(request: StashRequest): Promise<CommandResult>', 'Push, pop, apply, drop or clear stash entries.'),
+          method('worktree', '@Remote worktree(request: WorktreeRequest): Promise<CommandResult>', 'Add, remove or prune a worktree.'),
         ],
         types: [
           {
@@ -103,9 +108,29 @@ export const TYPERT = {
               'export interface CommitFile {\n    path: string;\n    origPath?: string;\n    status: StatusCode;\n}',
           },
           {
+            name: 'Branch',
+            declaration:
+              'export interface Branch {\n    name: string;\n    current: boolean;\n    remote: boolean;\n    upstream?: string;\n    ahead?: number;\n    behind?: number;\n    subject?: string;\n}',
+          },
+          {
+            name: 'Stash',
+            declaration:
+              'export interface Stash {\n    index: number;\n    message: string;\n    branch?: string;\n    date?: number;\n}',
+          },
+          {
+            name: 'Worktree',
+            declaration:
+              'export interface Worktree {\n    path: string;\n    branch?: string;\n    head?: string;\n    main: boolean;\n    prunable: boolean;\n    locked: boolean;\n    current: boolean;\n}',
+          },
+          {
+            name: 'RefsResult',
+            declaration:
+              'export type RefsResult = { ok: true; branches: Branch[]; stashes: Stash[]; worktrees: Worktree[] } | { ok: false; error: string };',
+          },
+          {
             name: 'GitStatus',
             declaration:
-              'export type GitStatus = { repo: false; root: string } | { repo: true; root: string; branch?: string; head?: string; unborn: boolean; upstream?: Upstream; hasRemote: boolean; files: FileChange[]; recent: Commit[] };',
+              'export type GitStatus = { repo: false; root: string } | { repo: true; root: string; branch?: string; head?: string; unborn: boolean; upstream?: Upstream; hasRemote: boolean; files: FileChange[]; recent: Commit[]; merging?: boolean; mergeHead?: string; stashCount?: number };',
           },
           {
             name: 'CommandResult',

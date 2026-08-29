@@ -77,6 +77,42 @@ export type GitStatus =
       files: GitFileChange[]
       /** Recent commits, newest first, for context in the tab. */
       recent: GitCommit[]
+      /**
+       * True while a merge is in progress and not yet concluded.
+       *
+       * Read from the presence of `MERGE_HEAD` in the git directory, NOT from a
+       * git process: `status` runs on every change-token move, so anything added
+       * here has to be free. It is a first-class field rather than something the
+       * client infers from conflicts, because a merge with every conflict already
+       * resolved has no conflicted files and is still very much in progress —
+       * inferring it would hide exactly the state the Abort button exists for.
+       *
+       * OPTIONAL on purpose. The host always sets it, but the two halves deploy
+       * at different speeds — a browser refresh ships the new client while the
+       * host half needs a profile restart — so during that window the field is
+       * genuinely absent. Typing it as required would let the client read
+       * `undefined` as a boolean and render a merge banner it cannot dismiss.
+       */
+      merging?: boolean
+      /**
+       * What is being merged, as git itself describes it.
+       *
+       * The first line of `MERGE_MSG` (e.g. "Merge branch 'feature'"), because
+       * `MERGE_HEAD` holds a bare sha that means nothing to a reader. Absent when
+       * git wrote no message.
+       */
+      mergeHead?: string
+      /**
+       * How many stash entries exist.
+       *
+       * Counted from the `refs/stash` reflog, which IS git's stash list — this is
+       * exact, not an estimate — and again without spawning git. Carried in
+       * `status` so the Repo tab can show a badge without first fetching the
+       * whole list.
+       *
+       * Optional for the same stale-host reason as {@link merging}.
+       */
+      stashCount?: number
     }
 
 /** One commit in the short log. */
@@ -263,6 +299,173 @@ export interface CommandResult {
   output: string
   /** Refreshed status, so a caller never needs a second round trip. */
   status: GitStatus
+}
+
+
+/**
+ * One branch as the tab lists it.
+ *
+ * Local and remote-tracking branches share one type because the branch menu
+ * shows both in one list; `remote` is what lets it group them without a second
+ * shape. Ahead/behind are omitted rather than zero-filled when git has no
+ * upstream to compare against, so "in sync" and "no upstream" stay distinct.
+ */
+export interface GitBranch {
+  /** Short name, e.g. `main` or `origin/main`. */
+  name: string
+  /** True for the branch HEAD currently points at. */
+  current: boolean
+  /** True for a remote-tracking branch rather than a local one. */
+  remote: boolean
+  /** Configured upstream ref, when this local branch has one. */
+  upstream?: string
+  /** Commits ahead of the upstream, absent when there is no upstream. */
+  ahead?: number
+  /** Commits behind the upstream, absent when there is no upstream. */
+  behind?: number
+  /** Subject of the commit this branch points at, for context in the menu. */
+  subject?: string
+}
+
+/** One stash entry, in git's own newest-first order. */
+export interface GitStash {
+  /**
+   * Position in the stash stack, which is also its address.
+   *
+   * Git addresses a stash as `stash@{index}`, and the index SHIFTS whenever an
+   * earlier entry is dropped or popped — so it is a cursor into a live list, not
+   * an identifier. The client must re-read after any mutation rather than reuse
+   * an index it captured earlier.
+   */
+  index: number
+  /** Message git recorded, e.g. `WIP on main: 1a2b3c4 subject`. */
+  message: string
+  /** Branch the stash was taken on, when git recorded one. */
+  branch?: string
+  /** Epoch ms of when it was stashed. */
+  date?: number
+}
+
+/** One worktree attached to this repository. */
+export interface GitWorktree {
+  /** Absolute path of the worktree directory. */
+  path: string
+  /** Short branch name checked out there, absent on a detached HEAD. */
+  branch?: string
+  /** Commit the worktree's HEAD points at. */
+  head?: string
+  /** True for the main worktree, which cannot be removed. */
+  main: boolean
+  /** True when the directory is gone but the administrative entry remains. */
+  prunable: boolean
+  /** True when this worktree is locked against pruning. */
+  locked: boolean
+  /** True when this is the worktree the current workspace sits in. */
+  current: boolean
+}
+
+/** `refs` request: read the branch, stash and worktree lists together. */
+export interface RefsRequest {
+  workspaceId: string
+}
+
+/**
+ * `refs` reply — a discriminated outcome, never bare arrays.
+ *
+ * The same lesson `commitFiles` paid for: a client bundle newer than the host
+ * half 404s these endpoints, and collapsing that into empty arrays renders as
+ * "this repository has no branches" instead of "restart the profile". A repo
+ * genuinely having no stashes and the lookup having failed must not look alike.
+ */
+export type RefsResult =
+  | {
+      ok: true
+      branches: GitBranch[]
+      stashes: GitStash[]
+      worktrees: GitWorktree[]
+    }
+  | {
+      ok: false
+      /** Why the lookup failed, shown verbatim in the pane. */
+      error: string
+    }
+
+/** Which branch operation to run. */
+export type BranchAction =
+  | 'create'
+  | 'switch'
+  | 'createSwitch'
+  | 'delete'
+  | 'rename'
+  /**
+   * Stash the working tree, then switch — the explicit second step offered
+   * after a plain `switch` was refused. Never taken implicitly: an auto-stash
+   * whose later pop conflicts strands work the user never chose to hide.
+   */
+  | 'stashSwitch'
+
+/** `branch` request. */
+export interface BranchRequest {
+  workspaceId: string
+  action: BranchAction
+  /** Branch to act on; the NEW name for `rename`. */
+  name?: string
+  /** Where a created branch starts, defaulting to the current HEAD. */
+  startPoint?: string
+  /** Force a delete of a branch that is not fully merged. */
+  force?: boolean
+}
+
+/** Which merge operation to run. */
+export type MergeAction = 'merge' | 'abort' | 'continue'
+
+/** `merge` request. */
+export interface MergeRequest {
+  workspaceId: string
+  action: MergeAction
+  /** Branch merged INTO the current one; required for `merge`. */
+  from?: string
+  /** Force a merge commit even when a fast-forward was possible. */
+  noFF?: boolean
+}
+
+/** Which stash operation to run. */
+export type StashAction = 'push' | 'pop' | 'apply' | 'drop' | 'clear'
+
+/** `stash` request. */
+export interface StashRequest {
+  workspaceId: string
+  action: StashAction
+  /** Stash position for pop/apply/drop; defaults to the most recent. */
+  index?: number
+  /** Message for `push`. */
+  message?: string
+  /** Include untracked files when stashing. */
+  includeUntracked?: boolean
+}
+
+/** Which worktree operation to run. */
+export type WorktreeAction = 'add' | 'remove' | 'prune'
+
+/** `worktree` request. */
+export interface WorktreeRequest {
+  workspaceId: string
+  action: WorktreeAction
+  /** Directory to add or remove. Relative paths resolve against the repo's PARENT. */
+  path?: string
+  /** Existing branch to check out in a new worktree. */
+  branch?: string
+  /** Create this branch in the new worktree instead of checking one out. */
+  newBranch?: string
+  /** Remove a worktree with local modifications. */
+  force?: boolean
+  /**
+   * Register the new worktree as a dsh workspace.
+   *
+   * Opt-in, because it writes to dsh's own registry rather than to git — the
+   * one place this plugin reaches outside the repository it was pointed at.
+   */
+  register?: boolean
 }
 
 /** Hard cap on diff bytes sent to the browser, so a huge patch cannot wedge the UI. */

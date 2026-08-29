@@ -25,6 +25,8 @@ import {
   commitBlocker,
   describeScope,
   branchSummary,
+  branchTrack,
+  menuLeft,
   baseName,
   dirName,
   GitStore,
@@ -49,7 +51,7 @@ async function test(name, fn) {
 
 await test('every remote codec is strict', () => {
   assert.equal(GIT_REMOTE.package, '@dennisrongo/dsh-git')
-  assert.equal(GIT_REMOTE.descriptors.length, 10)
+  assert.equal(GIT_REMOTE.descriptors.length, 15)
   for (const d of GIT_REMOTE.descriptors) {
     assert.equal(d.namespace, 'dshGit', `${d.method} namespace`)
     assert.equal(d.result.mode, 'strict', `${d.method} result codec`)
@@ -65,8 +67,8 @@ await test('every remote codec is strict', () => {
 await test('remote covers every host method', () => {
   const methods = GIT_REMOTE.descriptors.map((d) => d.method).sort()
   assert.deepEqual(methods, [
-    'changeToken', 'commit', 'commitDiff', 'commitFiles', 'diff', 'init', 'stage', 'status',
-    'suggestMessage', 'sync',
+    'branch', 'changeToken', 'commit', 'commitDiff', 'commitFiles', 'diff', 'init', 'merge',
+    'refs', 'stage', 'stash', 'status', 'suggestMessage', 'sync', 'worktree',
   ])
 })
 
@@ -276,6 +278,90 @@ await test('path splitting handles root and nested files', () => {
   assert.equal(dirName('a/b/c.ts'), 'a/b/')
   assert.equal(baseName('top.ts'), 'top.ts')
   assert.equal(dirName('top.ts'), '')
+})
+
+
+// --- 1c. a stale host half 404s the NEW endpoints ---------------------------
+
+// Measured against the real running Desktop harness: with an old host half and
+// a fresh client bundle, dshGit/status answers 200 while dshGit/refs 404s. That
+// window is unavoidable — a browser refresh ships the client, the host needs a
+// profile restart — so what matters is that it stays self-diagnosing.
+
+await test('a 404 from refs is reported, NOT rendered as an empty repository', async () => {
+  const store = new GitStore(
+    { refs: async () => ({ ok: false, error: { code: 'HTTP_404', message: 'HTTP 404' } }) },
+    'ws-test',
+  )
+  await store.loadRefs()
+  const state = store.getSnapshot()
+  assert.equal(state.refsLoading, false, 'the pane stops showing a spinner')
+  assert.equal(state.refs.ok, false, 'the failure is preserved as a failure')
+  assert.match(state.refs.error, /404/, 'and it says why')
+  // The bug this shape exists to prevent: collapsing to [] would render as
+  // "this repository has no branches, stashes or worktrees" — a confident lie.
+  assert.equal(state.refs.branches, undefined, 'no empty lists are invented')
+})
+
+await test('a REJECTED refs call is caught rather than left pending', async () => {
+  const store = new GitStore(
+    { refs: async () => { throw new Error('bridge down') } },
+    'ws-test',
+  )
+  await store.loadRefs()
+  const state = store.getSnapshot()
+  assert.equal(state.refsLoading, false, 'never stranded in a loading state')
+  assert.equal(state.refs.ok, false)
+  assert.match(state.refs.error, /bridge down/)
+})
+
+await test('a successful refs read carries all three lists through', async () => {
+  const store = new GitStore(
+    {
+      refs: async () => ({
+        ok: true,
+        value: {
+          ok: true,
+          branches: [{ name: 'main', current: true, remote: false }],
+          stashes: [],
+          worktrees: [{ path: '/r', main: true, prunable: false, locked: false, current: true }],
+        },
+      }),
+    },
+    'ws-test',
+  )
+  await store.loadRefs()
+  const state = store.getSnapshot()
+  assert.equal(state.refs.ok, true)
+  assert.equal(state.refs.branches[0].name, 'main')
+  // An EMPTY stash list is a legitimate success, distinct from a failure.
+  assert.deepEqual(state.refs.stashes, [])
+  assert.equal(state.refs.worktrees[0].main, true)
+})
+
+await test('menuLeft keeps the branch menu on screen', () => {
+  // Anchored well inside a wide tab: follow the button.
+  assert.equal(menuLeft(100, 1200, 300), 100)
+  // Anchored near the right edge: pull back so the menu still fits.
+  assert.equal(menuLeft(1100, 1200, 300), 892)
+  assert.equal(menuLeft(1100, 1200, 300) + 300, 1192, 'inside the 8px gutter')
+  // Narrower than the menu itself: the LEFT gutter wins. Overflowing right is
+  // visible; sliding off the left edge is not.
+  assert.equal(menuLeft(10, 280, 300), 8)
+  assert.equal(menuLeft(0, 1200, 300), 8, 'never flush against the edge')
+})
+
+await test('branchTrack distinguishes in-sync from having no upstream', () => {
+  // The whole reason ahead/behind are optional rather than zero-filled.
+  assert.equal(branchTrack({ name: 'a', current: false, remote: false }), '')
+  assert.equal(
+    branchTrack({ name: 'a', current: false, remote: false, upstream: 'origin/a', ahead: 0, behind: 0 }),
+    'in sync',
+  )
+  assert.match(
+    branchTrack({ name: 'a', current: false, remote: false, upstream: 'origin/a', ahead: 2, behind: 1 }),
+    /2/,
+  )
 })
 
 await test('assertSafePath refuses escapes and absolute paths', () => {

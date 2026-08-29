@@ -39,7 +39,14 @@ var statusSchema = z.union([
     upstream: upstreamSchema.optional(),
     hasRemote: z.boolean(),
     files: z.array(fileChangeSchema),
-    recent: z.array(commitSchema)
+    recent: z.array(commitSchema),
+    // Optional so a host booted BEFORE these fields existed still decodes: the
+    // browser's codec is strict, and a missing field would otherwise turn a
+    // working tab into a decode error during the window where the client half
+    // has refreshed but the host half has not restarted.
+    merging: z.boolean().optional(),
+    mergeHead: z.string().optional(),
+    stashCount: z.number().optional()
   })
 ]);
 var commandResultSchema = z.object({
@@ -100,6 +107,81 @@ var initRequestSchema = z.object({
   workspaceId: z.string(),
   branch: z.string().optional()
 });
+var refSchema = z.string().min(1).max(255).regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/).refine(
+  (s) => !s.includes("..") && !s.includes("//") && !s.endsWith("/") && !s.endsWith(".") && !s.endsWith(".lock"),
+  { message: "invalid branch name" }
+);
+var branchSchema = z.object({
+  name: z.string(),
+  current: z.boolean(),
+  remote: z.boolean(),
+  upstream: z.string().optional(),
+  // Absent rather than zero without an upstream: "in sync" and "no upstream"
+  // are different facts and the menu renders them differently.
+  ahead: z.number().optional(),
+  behind: z.number().optional(),
+  subject: z.string().optional()
+});
+var stashSchema = z.object({
+  index: z.number(),
+  message: z.string(),
+  branch: z.string().optional(),
+  date: z.number().optional()
+});
+var worktreeSchema = z.object({
+  path: z.string(),
+  branch: z.string().optional(),
+  head: z.string().optional(),
+  main: z.boolean(),
+  prunable: z.boolean(),
+  locked: z.boolean(),
+  current: z.boolean()
+});
+var refsRequestSchema = z.object({ workspaceId: z.string() });
+var refsResultSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    branches: z.array(branchSchema),
+    stashes: z.array(stashSchema),
+    worktrees: z.array(worktreeSchema)
+  }),
+  z.object({
+    ok: z.literal(false),
+    error: z.string()
+  })
+]);
+var branchRequestSchema = z.object({
+  workspaceId: z.string(),
+  action: z.enum(["create", "switch", "createSwitch", "delete", "rename", "stashSwitch"]),
+  name: refSchema.optional(),
+  startPoint: refSchema.optional(),
+  force: z.boolean().optional()
+});
+var mergeRequestSchema = z.object({
+  workspaceId: z.string(),
+  action: z.enum(["merge", "abort", "continue"]),
+  from: refSchema.optional(),
+  noFF: z.boolean().optional()
+});
+var stashRequestSchema = z.object({
+  workspaceId: z.string(),
+  action: z.enum(["push", "pop", "apply", "drop", "clear"]),
+  // Interpolated into `stash@{N}` on the host, so it must be a plain integer.
+  index: z.number().int().min(0).optional(),
+  message: z.string().optional(),
+  includeUntracked: z.boolean().optional()
+});
+var worktreeRequestSchema = z.object({
+  workspaceId: z.string(),
+  action: z.enum(["add", "remove", "prune"]),
+  // NOT constrained like a repo-relative path: a worktree lives outside the
+  // repository by definition. The host's resolveWorktreePath is the boundary.
+  path: z.string().optional(),
+  branch: refSchema.optional(),
+  newBranch: refSchema.optional(),
+  force: z.boolean().optional(),
+  register: z.boolean().optional()
+});
 var PACKAGE = "@dennisrongo/dsh-git";
 function descriptor(method2, request, result) {
   return {
@@ -143,7 +225,12 @@ var GIT_REMOTE = {
     descriptor("init", initRequestSchema, commandResultSchema),
     descriptor("sync", syncRequestSchema, commandResultSchema),
     descriptor("suggestMessage", suggestRequestSchema, suggestResultSchema),
-    descriptor("changeToken", changeTokenRequestSchema, changeTokenResultSchema)
+    descriptor("changeToken", changeTokenRequestSchema, changeTokenResultSchema),
+    descriptor("refs", refsRequestSchema, refsResultSchema),
+    descriptor("branch", branchRequestSchema, commandResultSchema),
+    descriptor("merge", mergeRequestSchema, commandResultSchema),
+    descriptor("stash", stashRequestSchema, commandResultSchema),
+    descriptor("worktree", worktreeRequestSchema, commandResultSchema)
   ]
 };
 
@@ -177,7 +264,12 @@ var TYPERT = {
           method("commit", "@Remote commit(request: CommitRequest): Promise<CommandResult>", "Commit the staged tree."),
           method("init", "@Remote init(request: InitRequest): Promise<CommandResult>", "Initialize a repository in the workspace."),
           method("sync", "@Remote sync(request: SyncRequest): Promise<CommandResult>", "Pull, push, fetch, sync or publish."),
-          method("suggestMessage", "@Remote suggestMessage(request: SuggestRequest): Promise<SuggestResult>", "Draft a commit message from the diff via the LLM.")
+          method("suggestMessage", "@Remote suggestMessage(request: SuggestRequest): Promise<SuggestResult>", "Draft a commit message from the diff via the LLM."),
+          method("refs", "@Remote refs(request: RefsRequest): Promise<RefsResult>", "List branches, stashes and worktrees together."),
+          method("branch", "@Remote branch(request: BranchRequest): Promise<CommandResult>", "Create, switch, delete or rename a branch."),
+          method("merge", "@Remote merge(request: MergeRequest): Promise<CommandResult>", "Merge a branch, or abort/continue a merge in progress."),
+          method("stash", "@Remote stash(request: StashRequest): Promise<CommandResult>", "Push, pop, apply, drop or clear stash entries."),
+          method("worktree", "@Remote worktree(request: WorktreeRequest): Promise<CommandResult>", "Add, remove or prune a worktree.")
         ],
         types: [
           {
@@ -201,8 +293,24 @@ var TYPERT = {
             declaration: "export interface CommitFile {\n    path: string;\n    origPath?: string;\n    status: StatusCode;\n}"
           },
           {
+            name: "Branch",
+            declaration: "export interface Branch {\n    name: string;\n    current: boolean;\n    remote: boolean;\n    upstream?: string;\n    ahead?: number;\n    behind?: number;\n    subject?: string;\n}"
+          },
+          {
+            name: "Stash",
+            declaration: "export interface Stash {\n    index: number;\n    message: string;\n    branch?: string;\n    date?: number;\n}"
+          },
+          {
+            name: "Worktree",
+            declaration: "export interface Worktree {\n    path: string;\n    branch?: string;\n    head?: string;\n    main: boolean;\n    prunable: boolean;\n    locked: boolean;\n    current: boolean;\n}"
+          },
+          {
+            name: "RefsResult",
+            declaration: "export type RefsResult = { ok: true; branches: Branch[]; stashes: Stash[]; worktrees: Worktree[] } | { ok: false; error: string };"
+          },
+          {
             name: "GitStatus",
-            declaration: "export type GitStatus = { repo: false; root: string } | { repo: true; root: string; branch?: string; head?: string; unborn: boolean; upstream?: Upstream; hasRemote: boolean; files: FileChange[]; recent: Commit[] };"
+            declaration: "export type GitStatus = { repo: false; root: string } | { repo: true; root: string; branch?: string; head?: string; unborn: boolean; upstream?: Upstream; hasRemote: boolean; files: FileChange[]; recent: Commit[]; merging?: boolean; mergeHead?: string; stashCount?: number };"
           },
           {
             name: "CommandResult",

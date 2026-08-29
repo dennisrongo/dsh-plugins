@@ -157,7 +157,10 @@ try {
           'would trigger itself: status -> event -> token bump -> status, forever',
       )
     }
-    for (const real of ['index', 'HEAD', 'refs', 'packed-refs', 'MERGE_HEAD']) {
+    // 'worktrees' is the one a worktree add/remove writes, and nothing else
+    // touches it — without it the Repo pane's worktree list silently never
+    // refreshes, which looks like the feature working until you add one.
+    for (const real of ['index', 'HEAD', 'refs', 'packed-refs', 'MERGE_HEAD', 'worktrees']) {
       assert.equal(isSignificantGitEntry(real), true, `'${real}' must advance the token`)
     }
   })
