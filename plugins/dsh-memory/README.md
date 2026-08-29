@@ -1,6 +1,6 @@
 # dsh-memory
 
-**npm:** `@dennisrongo/dsh-memory` — *not published yet; install from the repo subdirectory.*
+**npm:** [`@dennisrongo/dsh-memory`](https://www.npmjs.com/package/@dennisrongo/dsh-memory)
 
 A `/remember` command that writes a fact into the instruction hierarchy dsh already reads, and a **Memory** tab that shows which of those files the loader actually kept.
 

@@ -24,9 +24,9 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | [`dsh-skills`](plugins/dsh-skills) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-skills) | the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library as an installable skill catalog | host | — |
 | [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox, pomodoro timer | host + client | `dshMissionControl/load`, `save` |
 | [`dsh-theme`](plugins/dsh-theme) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-theme) | twelve themes, eight accents, contrast and scale sliders, and three fonts with two bundled, live preview | client + tiny host | — |
-| [`dsh-hooks`](plugins/dsh-hooks) | *unpublished* | Claude Code-compatible hook lifecycle — shell commands at eight lifecycle points | host | `dshHooks/describe`, `recent` |
-| [`dsh-plan-board`](plugins/dsh-plan-board) | *unpublished* | durable plans — captures every `exit_plan_mode` plan to disk, opens a review window, keeps the history | host + client | `dshPlans/list`, `get`, `changeToken`, `remove` |
-| [`dsh-memory`](plugins/dsh-memory) | *unpublished* | `/remember` into the AGENTS.md hierarchy, plus a tab showing which instruction files the loader kept | host + client | `dshMemory/inspect`, `remember`, `read` |
+| [`dsh-hooks`](plugins/dsh-hooks) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-hooks) | Claude Code-compatible hook lifecycle — shell commands at eight lifecycle points | host | `dshHooks/describe`, `recent` |
+| [`dsh-plan-board`](plugins/dsh-plan-board) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-plan-board) | durable plans — captures every `exit_plan_mode` plan to disk, opens a review window, keeps the history | host + client | `dshPlans/list`, `get`, `changeToken`, `remove` |
+| [`dsh-memory`](plugins/dsh-memory) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-memory) | `/remember` into the AGENTS.md hierarchy, plus a tab showing which instruction files the loader kept | host + client | `dshMemory/inspect`, `remember`, `read` |
 
 ---
 
@@ -227,7 +227,7 @@ dsh already had the lifecycle. `tools/pre-execute` is a waterfall returning `all
 
 ### `dsh-plan-board`
 
-**npm:** [`@dennisrongo/dsh-plan-board`](plugins/dsh-plan-board) — *unpublished*
+**npm:** [`@dennisrongo/dsh-plan-board`](https://www.npmjs.com/package/@dennisrongo/dsh-plan-board)
 
 Plans that outlive the scrollback. Every plan the agent presents through `exit_plan_mode` is written to `<workspace>/.dsh/plans/` as markdown, a window opens so you can read it at full size, and a **Plans** tab keeps the history with each plan's outcome.
 
@@ -247,7 +247,7 @@ Freshness rides a **change token** like `dsh-git`'s, but here it is a plain in-m
 
 ### `dsh-memory`
 
-**npm:** [`@dennisrongo/dsh-memory`](plugins/dsh-memory) — *unpublished*
+**npm:** [`@dennisrongo/dsh-memory`](https://www.npmjs.com/package/@dennisrongo/dsh-memory)
 
 A `/remember` command that writes a fact into the instruction hierarchy dsh already reads, and a **Memory** tab that shows which of those files the loader actually kept.
 
@@ -267,8 +267,7 @@ Every package carries an `AGENTS.md` with its endpoints, mount row, dev loop and
 
 ## Install a plugin
 
-The first eight are on npm (`dsh-hooks` is not published yet), and each declares
-`dsh.bundle` — so one command installs **and** mounts it. `dsh plugin` forwards to pnpm
+All eleven are on npm, and each declares `dsh.bundle` — so one command installs **and** mounts it. `dsh plugin` forwards to pnpm
 inside the profile directory:
 
 > **Profile names carry templates.** `dsh plugin --profile <name> add ...` scaffolds a new

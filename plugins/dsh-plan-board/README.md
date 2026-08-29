@@ -1,6 +1,6 @@
 # dsh-plan-board
 
-**npm:** `@dennisrongo/dsh-plan-board` — *not published yet; install from the repo subdirectory.*
+**npm:** [`@dennisrongo/dsh-plan-board`](https://www.npmjs.com/package/@dennisrongo/dsh-plan-board)
 
 Plans that outlive the scrollback. Every plan the agent presents through `exit_plan_mode` is written to `<workspace>/.dsh/plans/` as markdown, a window opens so you can read it at full size, and a **Plans** tab keeps the history with each plan's outcome.
 

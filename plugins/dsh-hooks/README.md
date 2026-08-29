@@ -1,6 +1,6 @@
 # dsh-hooks
 
-**npm:** `@dennisrongo/dsh-hooks` — *not published yet; install from the repo subdirectory.*
+**npm:** [`@dennisrongo/dsh-hooks`](https://www.npmjs.com/package/@dennisrongo/dsh-hooks)
 
 A Claude Code-compatible hook lifecycle for [dsh](https://github.com/deepseek-ai/deepseek-harness). Attach a shell command to a lifecycle point and it runs there — to block a tool call, feed the model context, format a file after an edit, or notify you when the agent stops.
 
