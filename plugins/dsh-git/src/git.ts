@@ -11,8 +11,9 @@
  */
 import { execFile } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
-import { isAbsolute, resolve as resolvePath, dirname } from 'node:path'
+import { resolve as resolvePath } from 'node:path'
 import {
+  resolveWorktreeTarget,
   type GitBranch,
   type GitStash,
   type GitWorktree,
@@ -714,10 +715,17 @@ export function assertSafeStashIndex(index: unknown): number {
  * A worktree lives OUTSIDE the repository by definition, so
  * {@link assertSafePath} — which refuses absolute paths and `..` — is the wrong
  * check here. This is the one place the plugin creates a directory the workspace
- * does not contain, so the validation is about intent rather than containment: a
- * relative path is resolved against the repository's PARENT (where sibling
- * worktrees conventionally go, and what a user typing `../feature` means), and a
- * leading `-` is refused because git would read it as a flag.
+ * does not contain, so the validation is about intent rather than containment.
+ *
+ * Relative paths resolve against the repository ROOT, matching what typing
+ * `git worktree add ../feature` in that directory does. An earlier version
+ * resolved against the PARENT, which applied the `..` twice and put
+ * `../feature` TWO levels above the repository instead of beside it — silently,
+ * and shipped with a form placeholder that demonstrated the bug.
+ *
+ * A target INSIDE the working tree is refused. Git permits it, but the result
+ * shows up as untracked content in the very tab the user is looking at, and it
+ * is far easier to create by accident than to undo.
  *
  * Git itself refuses to create a worktree in a non-empty directory, which is the
  * backstop against clobbering anything that already exists.
@@ -737,9 +745,16 @@ export function resolveWorktreePath(root: string, input: unknown): string {
   if (/[\u0000-\u001f]/.test(raw)) {
     throw new Error('dsh-git: worktree path contains control characters')
   }
-  // Relative paths hang off the repo's parent, so `feature` and `../feature`
-  // both land beside the repository rather than inside it.
-  return isAbsolute(raw) ? resolvePath(raw) : resolvePath(dirname(root), raw)
+  // Shared with the browser through types.ts so the preview the user reads and
+  // the directory git receives cannot disagree.
+  const target = resolveWorktreeTarget(root, raw)
+  if (target.inside) {
+    throw new Error(
+      `dsh-git: a worktree cannot live inside the repository (${target.path}). ` +
+        `Use a path beside it, such as ../${raw.split('/').pop() || 'worktree'}.`,
+    )
+  }
+  return target.path
 }
 
 /** Field separator for ref formats: a byte that cannot occur in a ref or subject. */

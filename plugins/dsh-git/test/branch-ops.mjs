@@ -28,6 +28,9 @@ import {
   repoPaths,
   runGit,
 } from '../src/git.ts'
+// Shared with the browser: one implementation, so the preview the user reads
+// and the directory git receives cannot disagree.
+import { resolveWorktreeTarget } from '../src/types.ts'
 
 let passed = 0
 /** Run one named async check. */
@@ -87,14 +90,43 @@ try {
     }
   })
 
-  await test('resolveWorktreePath puts a relative path BESIDE the repo', () => {
-    const root = join(tmpdir(), 'proj', 'repo')
-    const got = resolveWorktreePath(root, 'feature')
-    assert.ok(isAbsolute(got), 'always absolute')
-    assert.equal(basename(got), 'feature')
-    // Beside the repository, not inside it -- that is what '../feature' means
-    // to a user and where sibling worktrees conventionally live.
-    assert.ok(!got.includes(join('repo', 'feature')), 'not nested inside the repo, got ' + got)
+  await test('resolveWorktreePath resolves ".." like a terminal AT the repo root', () => {
+    // The bug this replaced: resolution hung off the repo's PARENT, so the ".."
+    // was applied twice and "../feature" landed TWO levels up. It shipped with a
+    // form placeholder of "../feature-worktree", so the default demonstrated the
+    // bug every time the form was opened.
+    const root = 'C:/proj/repo'
+    assert.equal(resolveWorktreePath(root, '../feature'), 'C:/proj/feature', 'beside the repo')
+    assert.equal(resolveWorktreePath(root, '../../feature'), 'C:/feature', 'two up when asked')
+    assert.equal(
+      resolveWorktreePath(root, 'C:/elsewhere/wt'),
+      'C:/elsewhere/wt',
+      'an absolute path is left alone',
+    )
+  })
+
+  await test('resolveWorktreePath REFUSES a target inside the repository', () => {
+    // Git allows it, but the worktree then shows up as untracked content in the
+    // very tab the user is looking at -- easy to do by accident, annoying to undo.
+    const root = 'C:/proj/repo'
+    for (const bad of ['feature', 'sub/dir', './feature', 'C:/proj/repo/inner', '.']) {
+      assert.throws(
+        () => resolveWorktreePath(root, bad),
+        /cannot live inside the repository/,
+        JSON.stringify(bad) + ' must be refused',
+      )
+    }
+    // A refusal that does not say what to do instead is only half an answer.
+    assert.throws(() => resolveWorktreePath(root, 'feature'), /\.\.\/feature/)
+  })
+
+  await test('the repo root itself is inside the repo, and a case difference does not hide it', () => {
+    // Windows paths differ in case constantly; a containment check that missed
+    // on a drive letter would wave through the exact nesting it exists to catch.
+    assert.equal(resolveWorktreeTarget('C:/proj/repo', 'C:/PROJ/Repo/x').inside, true)
+    assert.equal(resolveWorktreeTarget('C:/proj/repo', 'C:/proj/repo').inside, true)
+    // A sibling whose name merely STARTS with the root must not count as inside.
+    assert.equal(resolveWorktreeTarget('C:/proj/repo', 'C:/proj/repo-two').inside, false)
   })
 
   await test('resolveWorktreePath refuses a leading dash', () => {

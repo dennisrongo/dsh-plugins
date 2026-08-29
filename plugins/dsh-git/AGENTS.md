@@ -376,13 +376,51 @@ running harness: `--exec=calc`, `main..dev` and `a b` are all rejected at the ga
 
 **Worktree paths are the one place this plugin writes OUTSIDE the workspace**, so they get
 `resolveWorktreePath` rather than `assertSafePath` — which refuses absolute paths and
-`..`, correct for repo files and wrong for a worktree by definition. A relative path
-resolves against the repository's PARENT (what `../feature` means to a user, and where
-sibling worktrees conventionally go); a leading `-` is refused; git itself refuses a
-non-empty target. `register` additionally writes to `workspaceRegistry` — the only place
-this plugin touches dsh's own state — and is opt-in for that reason. Registration is
-best-effort: the worktree already exists on disk by then, so a registry failure is
-reported as text rather than failing a git operation that succeeded.
+`..`, correct for repo files and wrong for a worktree by definition. A leading `-` is
+refused; git itself refuses a non-empty target.
+
+**Relative paths resolve against the repository ROOT, and the first version got this
+wrong.** It resolved against the PARENT, which applies the `..` TWICE: with the repo at
+`GitHub/dsh-plugins`, `../worktree-test` landed in `Documents/worktree-test` — two levels
+up, silently. The form placeholder was `../feature-worktree`, so the suggested default
+demonstrated the bug every time the form opened, and this file and the README both
+asserted the parent behaviour was "what `../feature` means to a user", which is simply
+false. Root-relative is the only spelling matching `git worktree add ../feature` typed
+where the repository is. Pinned in `branch-ops.mjs`, verified to fail against the old
+behaviour (`C:/feature` where `C:/proj/feature` was expected).
+
+A target **inside** the working tree is refused. Git allows it, but the worktree then
+appears as untracked content in the very tab being looked at; the error names the `../`
+form to use instead, because a refusal that does not say what to do next is half an
+answer. Containment compares case-insensitively — Windows paths differ in case
+constantly, and a check that missed on a drive letter would wave through exactly the
+nesting it exists to catch — while a sibling merely sharing the root's prefix
+(`repo-two` beside `repo`) is correctly outside.
+
+**The path arithmetic lives in `types.ts`, not in either half.** The host needs it to
+build the git command and the browser needs it to show where the input will land; two
+implementations of the same arithmetic drift. The host cannot own it (the browser has no
+`node:path`) and the browser must not own it (the host is the security boundary), so
+`resolveWorktreeTarget` sits in the dependency-free module and both import it. The form
+renders its result live under the input, which is what stops "where does `../x` go?"
+from being a question anyone answers by trying it.
+
+**Listing worktrees without a way to reach one made the feature read-only.** A worktree
+is a directory, and in dsh a directory is reached by being a workspace — so each row
+carries an Open button calling `ctx.workspaces.create({ path })` then
+`startSession(id)`. `create` is documented idempotent, so ONE path serves both a
+worktree dsh already knows and one made from a terminal it has never seen; there is no
+"is it registered?" branch to get wrong.
+
+**Registration happens on the CLIENT, not the host.** The host's `worktree` endpoint
+still accepts `register` (an older client's contract, like `commit`'s `all`), but the
+tab no longer sends it: a host-side `workspaceRegistry` write is not guaranteed to reach
+the browser's own workspace list without a reload, and a workspace that exists but is not
+listed is worse than one that does not. Going through `ctx.workspaces` keeps that list
+coherent by construction. The id is read through `workspaceIdOf`, which accepts
+`workspaceId`, `id`, or either nested under `workspace` — the shell spells it
+differently across its own projections, and guessing wrong fails silently: the worktree
+registers, nothing opens, and the button reads as dead.
 
 **`refs` returns a discriminated outcome, never bare arrays** — the `commitFiles` lesson,
 and it is not hypothetical here. Measured against the running Desktop with an old host

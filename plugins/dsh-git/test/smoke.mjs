@@ -18,6 +18,9 @@ import { join } from 'node:path'
 
 import { parseStatus, parseBranchHeader, assertSafePath } from '../src/git.ts'
 import { GIT_REMOTE } from '../src/remote.ts'
+// Shared with the browser half: one implementation of the path arithmetic, so
+// the preview the user reads and the directory git receives cannot disagree.
+import { resolveWorktreeTarget } from '../src/types.ts'
 import {
   countChanges,
   badgeFor,
@@ -27,6 +30,7 @@ import {
   branchSummary,
   branchTrack,
   menuLeft,
+  workspaceIdOf,
   baseName,
   dirName,
   GitStore,
@@ -337,6 +341,41 @@ await test('a successful refs read carries all three lists through', async () =>
   // An EMPTY stash list is a legitimate success, distinct from a failure.
   assert.deepEqual(state.refs.stashes, [])
   assert.equal(state.refs.worktrees[0].main, true)
+})
+
+await test('workspaceIdOf accepts the shapes the shell actually returns', () => {
+  // A worktree is only reachable if this yields an id. Guessing one spelling and
+  // being wrong fails SILENTLY: the worktree registers, nothing opens, and the
+  // button reads as dead.
+  assert.equal(workspaceIdOf({ workspaceId: 'w1' }), 'w1')
+  assert.equal(workspaceIdOf({ id: 'w2' }), 'w2')
+  assert.equal(workspaceIdOf({ workspace: { workspaceId: 'w3' } }), 'w3')
+  assert.equal(workspaceIdOf({ workspace: { id: 'w4' } }), 'w4')
+  // workspaceId wins when both appear, matching the list feed's spelling.
+  assert.equal(workspaceIdOf({ workspaceId: 'w5', id: 'other' }), 'w5')
+  // Unrecognised shapes yield undefined, never a broken id that gets used.
+  for (const bad of [null, undefined, 'w', 42, {}, { workspaceId: '' }, { workspace: null }]) {
+    assert.equal(workspaceIdOf(bad), undefined, JSON.stringify(bad) + ' must not yield an id')
+  }
+})
+
+await test('resolveWorktreeTarget answers "where does ../x go?" the way a terminal would', () => {
+  const root = 'C:/Users/me/GitHub/dsh-plugins'
+  // The exact question that exposed the original bug: beside the repo, ONE level
+  // up. Resolving against the parent applied the '..' twice and landed two up.
+  assert.equal(
+    resolveWorktreeTarget(root, '../worktree-test').path,
+    'C:/Users/me/GitHub/worktree-test',
+  )
+  assert.equal(resolveWorktreeTarget(root, '../worktree-test').inside, false)
+  // Backslashes are what a Windows user actually types.
+  assert.equal(resolveWorktreeTarget(root, '..\\wt').path, 'C:/Users/me/GitHub/wt')
+  // A bare name lands INSIDE the repo, which the host refuses.
+  assert.equal(resolveWorktreeTarget(root, 'wt').inside, true)
+  // A stray '..' run must never chew through the drive letter and lose it.
+  assert.match(resolveWorktreeTarget(root, '../../../../../../../x').path, /^C:\//)
+  // POSIX roots work too; this same function runs in the browser.
+  assert.equal(resolveWorktreeTarget('/home/me/repo', '../wt').path, '/home/me/wt')
 })
 
 await test('menuLeft keeps the branch menu on screen', () => {

@@ -429,6 +429,73 @@ export interface MergeRequest {
   noFF?: boolean
 }
 
+
+/** A worktree target, resolved and classified. */
+export interface WorktreeTarget {
+  /** Absolute path, forward-slashed. */
+  path: string
+  /** True when the target sits inside the repository's own working tree. */
+  inside: boolean
+}
+
+/**
+ * Resolve a worktree path the way a terminal at the repository ROOT would.
+ *
+ * This lives in types.ts -- the dependency-free module -- deliberately: the host
+ * needs it to build the git command and the browser needs it to show the user
+ * where their input will land, and two implementations of the same arithmetic
+ * would drift. The host cannot simply own it (the browser has no node:path) and
+ * the browser must not own it (the host is the security boundary), so neither
+ * half owns it and both import it.
+ *
+ * Resolution is relative to the repository ROOT, not its parent. That is the
+ * only spelling that matches what someone typing the path means: running
+ * "git worktree add ../feature" where the repository is puts the worktree BESIDE
+ * it. Resolving against the parent instead applies the ".." twice, so
+ * "../feature" silently lands two levels up -- exactly the bug this replaced,
+ * which shipped with a form placeholder that demonstrated it.
+ *
+ * @param root - repository working-tree root, absolute.
+ * @param input - the user's path, absolute or relative to the root.
+ * @returns the absolute target and whether it falls inside the repository.
+ */
+export function resolveWorktreeTarget(root: string, input: string): WorktreeTarget {
+  const slash = (value: string): string => value.replace(/\\/g, '/')
+  const rootPath = slash(root).replace(/\/+$/, '')
+  const raw = slash(input.trim())
+
+  // A Windows drive (C:/...), a UNC share (//host/share) or a POSIX root are
+  // already absolute and must not be joined onto anything.
+  const absolute = /^[A-Za-z]:\//.test(raw) || raw.startsWith('//') || raw.startsWith('/')
+  const source = absolute ? raw : rootPath + '/' + raw
+
+  // Keep the volume prefix out of the segment walk, so a stray ".." can never
+  // chew through "C:" and yield a path with no drive at all.
+  const drive = /^([A-Za-z]:)\//.exec(source)
+  const unc = /^(\/\/[^/]+\/[^/]+)/.exec(source)
+  const prefix = drive ? drive[1] : unc ? unc[1] : ''
+  const body = source.slice(prefix.length)
+
+  const out: string[] = []
+  for (const segment of body.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      out.pop()
+      continue
+    }
+    out.push(segment)
+  }
+  const path = prefix + '/' + out.join('/')
+
+  // Compare case-insensitively: Windows paths differ only in case constantly,
+  // and a containment check that misses on a drive letter's case would wave
+  // through exactly the nested worktree this classification exists to catch.
+  const norm = (value: string): string => value.replace(/\/+$/, '').toLowerCase()
+  const inside = norm(path) === norm(rootPath) || norm(path).startsWith(norm(rootPath) + '/')
+
+  return { path, inside }
+}
+
 /** Which stash operation to run. */
 export type StashAction = 'push' | 'pop' | 'apply' | 'drop' | 'clear'
 

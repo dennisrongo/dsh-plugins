@@ -54,6 +54,31 @@ import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
 
 // src/types.ts
+function resolveWorktreeTarget(root, input) {
+  const slash = /* @__PURE__ */ __name((value) => value.replace(/\\/g, "/"), "slash");
+  const rootPath = slash(root).replace(/\/+$/, "");
+  const raw = slash(input.trim());
+  const absolute = /^[A-Za-z]:\//.test(raw) || raw.startsWith("//") || raw.startsWith("/");
+  const source = absolute ? raw : rootPath + "/" + raw;
+  const drive = /^([A-Za-z]:)\//.exec(source);
+  const unc = /^(\/\/[^/]+\/[^/]+)/.exec(source);
+  const prefix = drive ? drive[1] : unc ? unc[1] : "";
+  const body = source.slice(prefix.length);
+  const out = [];
+  for (const segment of body.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      out.pop();
+      continue;
+    }
+    out.push(segment);
+  }
+  const path = prefix + "/" + out.join("/");
+  const norm = /* @__PURE__ */ __name((value) => value.replace(/\/+$/, "").toLowerCase(), "norm");
+  const inside = norm(path) === norm(rootPath) || norm(path).startsWith(norm(rootPath) + "/");
+  return { path, inside };
+}
+__name(resolveWorktreeTarget, "resolveWorktreeTarget");
 var MAX_DIFF_BYTES = 4e5;
 var MAX_AI_DIFF_BYTES = 6e4;
 var RECENT_COMMITS = 15;
@@ -61,7 +86,7 @@ var RECENT_COMMITS = 15;
 // src/git.ts
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, resolve as resolvePath, dirname } from "node:path";
+import { resolve as resolvePath } from "node:path";
 async function repoPaths(dir) {
   try {
     const run = await runGit(dir, [
@@ -447,7 +472,13 @@ function resolveWorktreePath(root, input) {
   if (/[\u0000-\u001f]/.test(raw)) {
     throw new Error("dsh-git: worktree path contains control characters");
   }
-  return isAbsolute(raw) ? resolvePath(raw) : resolvePath(dirname(root), raw);
+  const target = resolveWorktreeTarget(root, raw);
+  if (target.inside) {
+    throw new Error(
+      `dsh-git: a worktree cannot live inside the repository (${target.path}). Use a path beside it, such as ../${raw.split("/").pop() || "worktree"}.`
+    );
+  }
+  return target.path;
 }
 __name(resolveWorktreePath, "resolveWorktreePath");
 var REF_SEP = "";

@@ -12,6 +12,7 @@
 import React from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { GIT_REMOTE } from './remote.ts'
+import { resolveWorktreeTarget } from './types.ts'
 import type {
   BranchAction,
   ChangeScope,
@@ -1295,6 +1296,15 @@ const VIEW_STYLES = `
 .dshgit-form input[type='text']:focus {
   outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280);
 }
+/* The resolved target, shown live under the input. Full width so it sits on its
+   own line under the controls rather than squeezing them. */
+.dshgit-preview {
+  flex: 1 0 100%; min-width: 0;
+  color: var(--g-caption); font-size: 12px; line-height: 18px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.dshgit-preview.err { color: var(--g-danger); font-family: inherit; }
 .dshgit-check {
   display: inline-flex; align-items: center; gap: 6px;
   color: var(--g-caption); font-size: 12px; line-height: 18px; cursor: pointer;
@@ -1434,6 +1444,7 @@ const ICON = {
   tree: 'M3.5 3.5h4v3h-4v-3Zm5 6h4v3h-4v-3Zm-5 0h4v3h-4v-3ZM5.5 6.5v3M10.5 6.5v3M5.5 8h5',
   trash: 'M3.5 4.5h9M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8',
   check: 'M3.5 8.5 6.5 11.5 12.5 5',
+  open: 'M9.5 3.5h3v3M12.5 3.5 7.5 8.5M12 9.5v2a1 1 0 0 1-1 1H4.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h2',
 } as const
 
 /** Branch glyph for the header. */
@@ -1805,6 +1816,31 @@ function confirmAction(message: string): boolean {
 }
 
 /**
+ * Pull a workspace id out of whatever shape the shell's create call returned.
+ *
+ * The id is spelled differently across the shell's own projections (the list
+ * feed uses `workspaceId`, other views use `id`) and some wrap the record
+ * under `workspace`. Guessing one spelling and being wrong fails SILENTLY —
+ * the worktree registers, nothing opens, and the button looks dead — so accept
+ * the known shapes and return undefined rather than a broken id when none match.
+ *
+ * @param view - the create call's result.
+ * @returns the workspace id, or undefined when the shape is unrecognised.
+ */
+export function workspaceIdOf(view: unknown): string | undefined {
+  if (typeof view !== 'object' || view === null) return undefined
+  const outer = view as { workspace?: unknown; workspaceId?: unknown; id?: unknown }
+  const inner =
+    typeof outer.workspace === 'object' && outer.workspace !== null
+      ? (outer.workspace as { workspaceId?: unknown; id?: unknown })
+      : outer
+  for (const candidate of [inner.workspaceId, inner.id]) {
+    if (typeof candidate === 'string' && candidate.length > 0) return candidate
+  }
+  return undefined
+}
+
+/**
  * Where to place the branch menu's left edge so it stays on screen.
  *
  * Pure and exported because the browser probe cannot honestly test it: a probe
@@ -2016,6 +2052,7 @@ function RepoPane({
   onStash,
   onWorktree,
   onAddWorktree,
+  onOpenWorktree,
 }: {
   refs: RefsResult | null
   loading: boolean
@@ -2023,6 +2060,13 @@ function RepoPane({
   onStash: (action: StashAction, index?: number) => void
   onWorktree: (action: WorktreeAction, path?: string, force?: boolean) => void
   onAddWorktree: () => void
+  /**
+   * Open a worktree as a workspace and switch to it.
+   *
+   * Absent when the shell did not supply a workspaces service, in which case the
+   * button is not rendered at all rather than rendered dead.
+   */
+  onOpenWorktree?: ((path: string) => void) | undefined
 }): React.JSX.Element {
   if (refs === null && loading) {
     return <div className="dshgit-loadingrow">Reading branches, stashes and worktrees…</div>
@@ -2152,6 +2196,20 @@ function RepoPane({
               {tree.prunable ? <span className="dshgit-tag warn">missing</span> : null}
               {tree.locked ? <span className="dshgit-tag">locked</span> : null}
               <span className="dshgit-rowbtns">
+                {/* Listing worktrees without a way to reach one made the feature
+                    read-only: a worktree IS a workspace, so opening it is the
+                    point of having it. The current one is already open. */}
+                {onOpenWorktree !== undefined && !tree.current ? (
+                  <button
+                    className="dshgit-icon"
+                    title={'Open ' + tree.path + ' as a workspace'}
+                    aria-label={'Open worktree ' + tree.path}
+                    disabled={busy !== null || tree.prunable}
+                    onClick={() => onOpenWorktree(tree.path)}
+                  >
+                    <Icon path={ICON.open} />
+                  </button>
+                ) : null}
                 {/* The main worktree cannot be removed, and git refuses it —
                     disabling here explains why instead of offering a dead click. */}
                 <button
@@ -2172,7 +2230,14 @@ function RepoPane({
   )
 }
 
-export function GitView({ store }: { store: GitStore | null }): React.JSX.Element {
+export function GitView({
+  store,
+  openWorktree,
+}: {
+  store: GitStore | null
+  /** Supplied by apply() from ctx.workspaces; absent in tests and in a shell without it. */
+  openWorktree?: ((path: string) => void) | undefined
+}): React.JSX.Element {
   const [message, setMessage] = React.useState('')
   const [branch, setBranch] = React.useState('main')
   const [selected, setSelected] = React.useState<string | null>(null)
@@ -2434,6 +2499,10 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
 
   if (!status || !status.repo) return <div className="dshgit" />
 
+  // Resolved with the SAME function the host uses to build the git command, so
+  // the path shown and the directory created cannot disagree.
+  const worktreePreview = resolveWorktreeTarget(status.root, worktreeForm?.path ?? '')
+
   const counts = countChanges(status.files)
   const staged = stagedFiles(status.files)
   const unstaged = unstagedFiles(status.files)
@@ -2674,7 +2743,7 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
             type="text"
             value={worktreeForm.path}
             autoFocus
-            placeholder="../feature-worktree"
+            placeholder="../worktree-test"
             aria-label="Worktree directory"
             onChange={(e) => setWorktreeForm({ ...worktreeForm, path: e.target.value })}
             onKeyDown={(e) => e.stopPropagation()}
@@ -2693,19 +2762,27 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
               checked={worktreeForm.register}
               onChange={(e) => setWorktreeForm({ ...worktreeForm, register: e.target.checked })}
             />
-            Open as workspace
+            Open it after creating
           </label>
           <button
             className="dshgit-btn primary"
-            disabled={busy !== null || worktreeForm.path.trim().length === 0}
+            disabled={busy !== null || worktreeForm.path.trim().length === 0 || worktreePreview.inside}
             onClick={() => {
               const form = worktreeForm
+              const target = worktreePreview.path
               setWorktreeForm(null)
-              void store.worktree('add', {
-                path: form.path.trim(),
-                ...(form.branch.trim().length > 0 ? { newBranch: form.branch.trim() } : {}),
-                register: form.register,
-              })
+              void store
+                .worktree('add', {
+                  path: form.path.trim(),
+                  ...(form.branch.trim().length > 0 ? { newBranch: form.branch.trim() } : {}),
+                  // `register` is deliberately NOT sent. The host would write
+                  // workspaceRegistry directly, which the browser's own workspace
+                  // list is not guaranteed to learn about until a reload; going
+                  // through ctx.workspaces below keeps that list coherent.
+                })
+                .then((result) => {
+                  if (result?.ok && form.register && openWorktree) openWorktree(target)
+                })
             }}
           >
             Add worktree
@@ -2713,6 +2790,16 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
           <button className="dshgit-btn" onClick={() => setWorktreeForm(null)}>
             Cancel
           </button>
+          {/* Show where it will actually land. "Where does ../x go?" is not a
+              question a user should have to answer by trying it. */}
+          <div className={'dshgit-preview' + (worktreePreview.inside ? ' err' : '')}>
+            {worktreeForm.path.trim().length === 0
+              ? 'Relative to the repository, like a terminal opened here.'
+              : worktreePreview.inside
+                ? 'Inside the repository — pick a path beside it, such as ../' +
+                  (worktreeForm.path.trim().split('/').pop() || 'worktree-test')
+                : worktreePreview.path}
+          </div>
         </div>
       ) : null}
 
@@ -2803,6 +2890,7 @@ export function GitView({ store }: { store: GitStore | null }): React.JSX.Elemen
                 void store.worktree(action, { ...(path !== undefined ? { path } : {}) })
               }}
               onAddWorktree={() => setWorktreeForm({ path: '', branch: '', register: true })}
+              onOpenWorktree={openWorktree}
             />
           ) : mode === 'history' ? (
             <HistoryPane
@@ -3045,9 +3133,49 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
     const fiber = anyCtx.inject(['remote.dshGit', 'workspaces', 'slots'], (scoped) => {
       const readyCtx = scoped as ClientContext & {
-        workspaces: { list: { getSnapshot(): { items: readonly unknown[] } } }
+        workspaces: {
+          list: { getSnapshot(): { items: readonly unknown[] } }
+          /**
+           * Register a path as a workspace. Documented as idempotent — an
+           * existing canonical path resolves to its current record — which is
+           * what lets ONE call serve both a worktree dsh already knows and one
+           * it has never seen.
+           */
+          create(input: { path: string }): Promise<unknown>
+          /** Connect a workspace and OPEN its session; this is what switches the UI. */
+          startSession(workspaceId: string): void
+        }
         remote: Record<string, GitRemote>
       }
+      /**
+       * Open a worktree directory as a workspace and switch the shell to it.
+       *
+       * Two calls, because a worktree is only useful if you can get INTO it and
+       * in dsh a directory is reached by being a workspace. `create` is
+       * idempotent, so this one path covers a worktree registered earlier and one
+       * made from a terminal that dsh has never seen — no "is it registered?"
+       * branch to get wrong.
+       *
+       * Registration happens HERE rather than on the host (which can also write
+       * the registry) because this is the browser's own workspaces domain: a
+       * host-side write is not guaranteed to reach this list without a reload,
+       * and a workspace that exists but is not listed is worse than one that
+       * does not exist.
+       * @param path - absolute worktree directory.
+       */
+      const openWorktree = (path: string): void => {
+        void (async () => {
+          try {
+            const view = await readyCtx.workspaces.create({ path })
+            const id = workspaceIdOf(view)
+            if (id !== undefined) readyCtx.workspaces.startSession(id)
+            else console.error('dsh-git: workspace created but returned no id', view)
+          } catch (error) {
+            console.error('dsh-git: could not open worktree as a workspace', error)
+          }
+        })()
+      }
+
       readyCtx.slots.inject('conversation.view', () =>
         readyCtx.slots.register(
           {
@@ -3061,13 +3189,13 @@ export function apply(ctx: ClientContext): void {
                 sessionIds: readonly string[]
               }[]
               const workspaceId = workspaceIdForSession(workspaces, sessionId)
-              if (workspaceId === undefined) return { store: null }
+              if (workspaceId === undefined) return { store: null, openWorktree }
               let store = stores.get(workspaceId)
               if (store === undefined) {
                 store = new GitStore(readyCtx.remote.dshGit, workspaceId)
                 stores.set(workspaceId, store)
               }
-              return { store }
+              return { store, openWorktree }
             },
           },
           GitView,
