@@ -702,8 +702,8 @@ function PlansTab({
 // Styles
 // ---------------------------------------------------------------------------
 
-/** Whether the stylesheet has been added to this document. */
-let stylesInjected = false
+/** The stylesheet this plugin owns, kept so its presence can be re-checked. */
+let styleTag: HTMLStyleElement | null = null
 
 /**
  * Add the plugin's stylesheet once.
@@ -716,12 +716,16 @@ let stylesInjected = false
  * @returns a no-op cleanup, so it can be used from an effect.
  */
 export function injectStyles(): () => void {
-  if (stylesInjected || typeof document === 'undefined') return () => {}
-  stylesInjected = true
+  if (typeof document === 'undefined') return () => {}
+  // Checked on the ELEMENT, not a one-way boolean: a flag that stays true after
+  // something removes the tag leaves every class name intact and no CSS behind
+  // them, which survives refreshes and reads as the panel being broken.
+  if (styleTag !== null && styleTag.isConnected) return () => {}
   const style = document.createElement('style')
   style.dataset.dshpb = 'true'
   style.textContent = CSS
   document.head.appendChild(style)
+  styleTag = style
   return () => {}
 }
 

@@ -288,11 +288,19 @@ function MemoryTab({
 // Styles
 // ---------------------------------------------------------------------------
 
-/** Whether the stylesheet has been added to this document. */
-let stylesInjected = false
+/** The stylesheet this plugin owns, kept so its presence can be re-checked. */
+let styleTag: HTMLStyleElement | null = null
 
 /**
- * Add the plugin's stylesheet once.
+ * Ensure the plugin's stylesheet is in the document.
+ *
+ * Deliberately NOT guarded by a `let injected = true` boolean. That guard is
+ * one-way: if anything ever removes the tag — a host that prunes stylesheets it
+ * does not recognise, a devtools edit, a re-mount into a fresh document — the
+ * flag stays true, the tag is never re-added, and the tab renders with no CSS
+ * at all while every element and class name looks correct. That failure is
+ * silent and survives every refresh, so the check is on the ELEMENT still being
+ * connected, which makes re-mounting the tab a repair rather than a no-op.
  *
  * Every colour is a `--dsw-*` alias the harness defines, so the tab follows the
  * active theme rather than pinning its own palette. Font sizes are literals on
@@ -300,12 +308,13 @@ let stylesInjected = false
  * @returns a no-op cleanup, so it can be used from an effect.
  */
 export function injectStyles(): () => void {
-  if (stylesInjected || typeof document === 'undefined') return () => {}
-  stylesInjected = true
+  if (typeof document === 'undefined') return () => {}
+  if (styleTag !== null && styleTag.isConnected) return () => {}
   const style = document.createElement('style')
   style.dataset.dshmem = 'true'
   style.textContent = CSS
   document.head.appendChild(style)
+  styleTag = style
   return () => {}
 }
 
