@@ -100,7 +100,7 @@ export const TYPERT = {
           },
           {
             name: 'PlanTokenResult',
-            declaration: 'export interface PlanTokenResult {\n    token: number;\n    pendingId?: string;\n}',
+            declaration: 'export interface PlanTokenResult {\n    token: number;\n    openPlanId?: string;\n}',
           },
           {
             name: 'PlanPinRequest',

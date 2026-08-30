@@ -555,10 +555,10 @@ var _PlanService = class _PlanService extends (_b = TypertRemoteService) {
   }
   async changeToken(request) {
     const dir = this.dirOf(request?.workspaceId);
-    const pending = this.store.list(dir).find((plan) => plan.status === "pending");
+    const open = this.store.list(dir).find((plan) => plan.status === "pending" || plan.status === "proposed");
     return {
       token: this.store.token(dir),
-      ...pending !== void 0 ? { pendingId: pending.id } : {}
+      ...open !== void 0 ? { openPlanId: open.id } : {}
     };
   }
   async pin(request) {

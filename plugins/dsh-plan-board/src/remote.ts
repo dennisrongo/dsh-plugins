@@ -39,7 +39,7 @@ const listResultSchema = z.object({ plans: z.array(planMetaSchema), token: z.num
 const getRequestSchema = z.object({ workspaceId: z.string(), id: z.string() })
 const getResultSchema = z.object({ plan: planRecordSchema.optional() })
 
-const tokenResultSchema = z.object({ token: z.number(), pendingId: z.string().optional() })
+const tokenResultSchema = z.object({ token: z.number(), openPlanId: z.string().optional() })
 const removeResultSchema = z.object({ ok: z.boolean(), token: z.number() })
 
 const pinRequestSchema = z.object({ workspaceId: z.string(), messageId: z.string() })

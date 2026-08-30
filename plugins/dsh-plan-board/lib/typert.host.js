@@ -19,7 +19,7 @@ var listRequestSchema = z.object({ workspaceId: z.string() });
 var listResultSchema = z.object({ plans: z.array(planMetaSchema), token: z.number() });
 var getRequestSchema = z.object({ workspaceId: z.string(), id: z.string() });
 var getResultSchema = z.object({ plan: planRecordSchema.optional() });
-var tokenResultSchema = z.object({ token: z.number(), pendingId: z.string().optional() });
+var tokenResultSchema = z.object({ token: z.number(), openPlanId: z.string().optional() });
 var removeResultSchema = z.object({ ok: z.boolean(), token: z.number() });
 var pinRequestSchema = z.object({ workspaceId: z.string(), messageId: z.string() });
 var pinResultSchema = z.union([
@@ -142,7 +142,7 @@ var TYPERT = {
           },
           {
             name: "PlanTokenResult",
-            declaration: "export interface PlanTokenResult {\n    token: number;\n    pendingId?: string;\n}"
+            declaration: "export interface PlanTokenResult {\n    token: number;\n    openPlanId?: string;\n}"
           },
           {
             name: "PlanPinRequest",

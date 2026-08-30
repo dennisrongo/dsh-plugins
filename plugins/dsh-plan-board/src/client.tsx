@@ -67,7 +67,7 @@ type Reply<T> = { ok: true; value: T } | { ok: false; error: { message?: string 
 interface PlansRemote {
   list(request: { workspaceId: string }): Promise<Reply<{ plans: PlanMeta[]; token: number }>>
   get(request: { workspaceId: string; id: string }): Promise<Reply<{ plan?: PlanRecord }>>
-  changeToken(request: { workspaceId: string }): Promise<Reply<{ token: number; pendingId?: string }>>
+  changeToken(request: { workspaceId: string }): Promise<Reply<{ token: number; openPlanId?: string }>>
   discard(request: { workspaceId: string; id: string }): Promise<Reply<{ ok: boolean; token: number }>>
   pin(request: {
     workspaceId: string
@@ -136,8 +136,8 @@ function useCurrentWorkspace(ctx: ClientContext): { workspaceId: string; path: s
 function usePlanToken(
   remote: PlansRemote | undefined,
   workspaceId: string | undefined,
-): { token: number; pendingId?: string } {
-  const [state, setState] = React.useState<{ token: number; pendingId?: string }>({ token: 0 })
+): { token: number; openPlanId?: string } {
+  const [state, setState] = React.useState<{ token: number; openPlanId?: string }>({ token: 0 })
 
   React.useEffect(() => {
     if (remote === undefined || workspaceId === undefined) return
@@ -151,7 +151,7 @@ function usePlanToken(
         const next = reply.value
         // Replace only on a real change, so an unchanged poll does not
         // re-render every consumer twice a second.
-        setState((prev) => (prev.token === next.token && prev.pendingId === next.pendingId ? prev : next))
+        setState((prev) => (prev.token === next.token && prev.openPlanId === next.openPlanId ? prev : next))
       } catch {
         // A failed poll is not worth surfacing: the next one is 2s away, and a
         // restarting host would otherwise paint an error banner every cycle.
@@ -544,10 +544,10 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
  */
 function PlanOverlay({ ctx, remote }: { ctx: ClientContext; remote: PlansRemote | undefined }): React.ReactElement | null {
   const workspace = useCurrentWorkspace(ctx)
-  const { token, pendingId } = usePlanToken(remote, workspace?.workspaceId)
+  const { token, openPlanId } = usePlanToken(remote, workspace?.workspaceId)
 
   const [plan, setPlan] = React.useState<PlanRecord | undefined>(undefined)
-  // The plan the window is showing. Held separately from `pendingId` so the
+  // The plan the window is showing. Held separately from `openPlanId` so the
   // window does NOT vanish the moment the review settles — the decision is
   // exactly when the outcome becomes worth reading, and a window that
   // disappears as you answer reads like a crash. Only Close clears it.
@@ -557,9 +557,9 @@ function PlanOverlay({ ctx, remote }: { ctx: ClientContext; remote: PlansRemote 
 
   // A newly presented plan opens the window, unless it was already closed once.
   React.useEffect(() => {
-    if (pendingId === undefined || dismissed.has(pendingId)) return
-    setOpenId(pendingId)
-  }, [pendingId, dismissed])
+    if (openPlanId === undefined || dismissed.has(openPlanId)) return
+    setOpenId(openPlanId)
+  }, [openPlanId, dismissed])
 
   // Re-read on every token move, so the status pill follows the decision and a
   // plan deleted from the tab closes the window instead of stranding it.

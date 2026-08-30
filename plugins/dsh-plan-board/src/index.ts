@@ -93,8 +93,14 @@ export interface PlanGetResult {
 /** Reply carrying just the change token. */
 export interface PlanTokenResult {
   token: number
-  /** Id of the newest pending plan, so a UI can open it without a list read. */
-  pendingId?: string
+  /**
+   * Newest plan the reader has not dealt with, so a UI can open it without a
+   * list read. Covers BOTH unsettled states: `pending` (a review is open) and
+   * `proposed` (written into the conversation, no review). Keying this on
+   * `pending` alone was the bug that stopped the dock ever opening for a plan
+   * the model fenced — which is the case it exists for.
+   */
+  openPlanId?: string
 }
 
 /** Reply to a delete. */
@@ -409,10 +415,12 @@ export class PlanService extends TypertRemoteService {
   @Remote
   async changeToken(request: PlanListRequest): Promise<PlanTokenResult> {
     const dir = this.dirOf(request?.workspaceId)
-    const pending = this.store.list(dir).find((plan) => plan.status === 'pending')
+    const open = this.store
+      .list(dir)
+      .find((plan) => plan.status === 'pending' || plan.status === 'proposed')
     return {
       token: this.store.token(dir),
-      ...(pending !== undefined ? { pendingId: pending.id } : {}),
+      ...(open !== undefined ? { openPlanId: open.id } : {}),
     }
   }
 
