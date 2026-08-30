@@ -53,6 +53,48 @@ temp directory — the behaviour worth pinning here is all filesystem behaviour.
 - **Do not register a `userQuestions` provider.** The service documents one
   active provider per context and the shipped UI holds it. Taking it to put
   approve buttons in the window would hijack every question in the harness.
+  The dock's Approve/Keep-planning/Revise buttons do NOT do this: a raised
+  question reaches the client as a `PendingWait` carrier on the session's
+  conversation snapshot (`sessions.binding(id).session.getSnapshot().pending`),
+  and the carrier owns the answer. The dock is a second remote control for one
+  wait; the shipped decision card keeps rendering and keeps working. Whichever
+  answers first settles it, and the loser's receipt is
+  `{accepted: false, reason: 'not-pending'}` — reported, never swallowed.
+- **An edited plan cannot be approved, and that is the harness's rule.**
+  `exit_plan_mode` checks `item.custom !== undefined` BEFORE it looks at the
+  selected label, so any free text makes it keep planning whatever button was
+  pressed. "Revise" therefore sends the edited body as feedback and the model
+  presents it again; sending `custom` alongside the approve label would silently
+  read as a rejection. Approve must send no `custom` at all.
+- **Never settle a review from a panel showing a different plan.** The dock
+  opens on the newest pending-or-proposed plan in the WORKSPACE, which is not
+  always the one under review — a plan fenced in a later message outranks it.
+  The bodies are compared before any button is offered; bodies are the only
+  identity the store and the wire both carry.
+- **Do not anchor the dock to `[data-slot="conversation.view"]`.** That anchor
+  shipped once and looked right in review. Its first child is the Chat view root
+  INSIDE the scrollport, not the view area, so its `top` goes negative the moment
+  the conversation scrolls (measured: -1748px on a 2342px chat in a 594px
+  scrollport). The guard rejected the negative and fell back to the column top,
+  silently restoring the geometry the anchor existed to remove — the header
+  landed back under `dsh-weather`'s bar and the desktop drag strip, and Copy and
+  Close went dead again. The dock spans the full column height and gets out of
+  the top band by *claiming* its strip instead; see the next entry.
+- **The dock's strip claim is a cross-plugin contract.** The panel marks itself
+  `data-dsh-overlay-claim="right"`, and `dsh-weather` centres its bar in what is
+  left rather than on the viewport. Frame padding — mission control's mechanism —
+  cannot express this claim: the panel is flush to the frame's CONTENT edge, so
+  padding the frame would shrink the column the panel measures itself from and
+  the two would chase each other. Changing the attribute means changing
+  `dsh-weather` in the same commit; both smoke tests pin it.
+- **z-index cannot beat DSH Desktop's drag strip.** The compositor resolves
+  `-webkit-app-region: drag` before hit-testing, and no-drag on a covered
+  element does not punch a hole through the strip above it (`dsh-weather`
+  verified both). The header is inset by `--dshpb-titlebar-h` (36px under
+  `body.dsh-desktop-windows-titlebar-layout`) so its controls sit below the
+  strip; the panel's background still spans the full window.
+- **The shell renders in TWO coordinate spaces, and this panel writes in both.** `dsh-theme`'s UI scale is `#root { zoom: var(--dshth-ui-scale, 1) }`, so `getBoundingClientRect()` returns TRUE viewport px while any length written to `style.width` / `style.right` is an AUTHOR px the zoom multiplies again. Measuring in one and writing in the other is exactly self-consistent at 100% — which is why it passed every check here and in the browser — and wrong by the zoom factor at every other step. Measured at the 90% step: `height: 1680px` rendered 1512 (168px short of the window) and `right: 377px` sat 339px in, putting the panel 22px under mission control's rail. `zoomOf()` resolves the factor (`currentCSSZoom`, falling back to `rect.width / offsetWidth`); every measurement is converted before it is written. **Verify UI changes at more than one UI scale** — 100% hides this entire class of bug.
+- **No ResizeObserver fires when the UI scale changes.** Measured in the shell across 1.0 → 0.8 → 1.0: a `content-box` observer fired zero times and so did a `device-pixel-content-box` one, because a CSS zoom rewrites the rendered result without resizing any observed box. The dock would keep geometry computed for the previous scale until an unrelated window resize rescued it. `dsh-theme` sets the scale as an inline custom property on `<body>`, so a `MutationObserver` on that style attribute is the trigger that actually works.
 - **`changeToken` is the polled endpoint and must stay cheap.** It does one
   `readdir` plus a parse per file and returns an in-memory counter. The moment
   it reads bodies it costs what `list` costs and the design is pointless — the
@@ -63,6 +105,20 @@ temp directory — the behaviour worth pinning here is all filesystem behaviour.
   `create`, when the new plan is still pending and invisible to a settled-only
   count — that version leaked one plan per create-then-settle round forever. The
   smoke test pins this.
+- **The plan fence is FOUR backticks, and the extractor is fence-length aware.**
+  A plan is a design document and routinely contains code blocks; a
+  three-backtick plan fence ends at the first ``` inside it. CommonMark, not a
+  parser bug — and it shipped. Two plans captured from a real session were cut
+  at "## The prompt", losing the prompt template and everything after; the panel
+  rendered the truncation faithfully because the data was already gone, so no
+  amount of UI testing could have caught it. `extractFencedPlans` now scans line
+  by line: a fence closes only on a BARE fence at least as long as the opener,
+  and a fence carrying an info string opens a nested block the plan cannot end
+  inside. That rescues ```plan containing ```ts even at three backticks. A bare
+  ``` inside a three-backtick plan is genuinely ambiguous and still ends it —
+  which is why `PLAN_PROMPT_SECTION` asks for four. Change one and you must
+  change the other; the smoke test pins both, including that the example in the
+  prompt is not three backticks.
 
 ## Client conventions
 

@@ -79,26 +79,82 @@ export const EXIT_PLAN_MODE = 'exit_plan_mode'
 export const PLAN_FENCE = 'plan'
 
 /**
+ * One fence line: indentation, the run of backticks, and the info string.
+ *
+ * The backtick run is captured because its LENGTH decides what can close it —
+ * see {@link extractFencedPlans}. A backtick inside the info string would make
+ * the line something other than a fence, hence `[^\s\`]*`.
+ */
+const FENCE_LINE = /^[ \t]*(`{3,})[ \t]*([^\s`]*)[ \t]*$/
+
+/**
  * Extract every fenced plan block from one assistant message.
  *
- * Matches ```plan … ``` with optional surrounding whitespace on the info
- * string. Nothing else in the message is considered, so ordinary prose — even
- * prose that looks like a plan — is never captured.
+ * Scanned line by line rather than with one regex, because a plan routinely
+ * CONTAINS code blocks and the naive pattern truncated the plan at the first
+ * one. That was not hypothetical: two plans captured from a real session were
+ * cut at "## The prompt", losing everything from the prompt template onward,
+ * and the panel rendered the truncation faithfully — the data was already gone.
+ *
+ * Two CommonMark rules do the work:
+ *
+ * - A fence is closed only by a bare fence AT LEAST AS LONG as the one that
+ *   opened it. So ` ````plan ` survives any ordinary ``` block inside it, and
+ *   that is what the prompt section now asks the model to write.
+ * - A fence line carrying an info string opens a nested block; the plan cannot
+ *   end inside one. That rescues ` ```plan ` containing ` ```ts ` even when
+ *   both are three backticks.
+ *
+ * What remains genuinely ambiguous is a BARE ``` inside a ```plan of the same
+ * length: nothing in the text distinguishes "nested block opens" from "plan
+ * ends", and CommonMark itself would end the plan. The longer opening fence is
+ * the only fix, which is why the prompt asks for it.
+ *
+ * An unterminated plan fence yields nothing, deliberately: a message still
+ * streaming, or one cut off mid-plan, should not land a half-written plan in
+ * the user's repository.
  * @param text - the assistant message's text content.
  * @returns each fenced plan body, trimmed, in document order.
  */
 export function extractFencedPlans(text: string): string[] {
-  // A literal, not `new RegExp(...)` built from PLAN_FENCE: in a quoted string
-  // `\s` is not a valid escape and silently degrades to `s`, so `([\s\S]*?)`
-  // becomes `([sS]*?)` and the fence matches almost nothing. The info string is
-  // pinned to PLAN_FENCE by the test rather than by construction.
-  const pattern = /^[ \t]*```[ \t]*plan[ \t]*$([\s\S]*?)^[ \t]*```[ \t]*$/gm
+  const lines = text.split('\n')
   const out: string[] = []
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(text)) !== null) {
-    const body = match[1].replace(/^\n+/, '').replace(/\s+$/, '')
-    if (body !== '') out.push(body)
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const open = FENCE_LINE.exec(lines[i])
+    if (open === null || open[2] !== PLAN_FENCE) continue
+
+    const ticks = open[1].length
+    const body: string[] = []
+    // Length of the nested fence currently open, or 0 at the plan's own level.
+    let nested = 0
+    let closed = false
+
+    for (i += 1; i < lines.length; i += 1) {
+      const fence = FENCE_LINE.exec(lines[i])
+      if (fence !== null) {
+        const length = fence[1].length
+        const bare = fence[2] === ''
+        if (nested === 0) {
+          if (bare && length >= ticks) {
+            closed = true
+            break
+          }
+          // Anything else at this level opens a nested block: a tagged fence of
+          // any length, or a bare one too short to close the plan.
+          nested = length
+        } else if (bare && length >= nested) {
+          nested = 0
+        }
+      }
+      body.push(lines[i])
+    }
+
+    if (!closed) break
+    const plan = body.join('\n').replace(/^\n+/, '').replace(/\s+$/, '')
+    if (plan !== '') out.push(plan)
   }
+
   return out
 }
 

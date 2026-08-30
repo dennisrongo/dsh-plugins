@@ -71,6 +71,22 @@ assert.ok(clientSrc.includes('dshMissionControl'), 'client mounts the host state
 // its margins. The gap is a CSS custom property so the effect and the
 // stylesheet cannot drift apart.
 assert.ok(clientSrc.includes('--mc-dock-gap'), 'docked rail reserves a gutter beside its width')
+// The reservation is measured with offsetWidth, not getBoundingClientRect().
+// dsh-theme's UI scale puts the shell under `#root { zoom: … }`, where the rect
+// is TRUE viewport px while the padding written from it is an AUTHOR px the
+// zoom scales AGAIN — so feeding the rect back in under-reserves by exactly the
+// zoom factor. Measured at the 90% step: the rail claimed 377px, rendered
+// 339px, and left the conversation column (and dsh-plan-board's panel, docked
+// flush to it) 22px underneath this rail. offsetWidth is author px, the same
+// space as the gap and the padding.
+assert.ok(
+  /const w = panel\.offsetWidth/.test(clientSrc),
+  'rail reservation must measure in author px (offsetWidth), not viewport px',
+)
+assert.ok(
+  !/panel\.getBoundingClientRect\(\)\.width/.test(clientSrc),
+  'a viewport-px rail width must not be written back as an author-px reservation',
+)
 // The activity feed (Feed tab, FeedView, diffFleetEvents) was removed: pin its
 // absence so the markers cannot rot back in the way dshmc-burn-row once did.
 assert.ok(!clientSrc.includes('dshmc-feed'), 'no leftover feed styles in the bundle')

@@ -14,11 +14,23 @@ or *Kept planning* with the reviewer's own words.
 model just writes the plan into the reply. So the plugin registers a
 system-prompt section asking it to wrap plans in a fence:
 
-    ```plan
+    ````plan
     # Title of the plan
 
-    ...the complete plan as markdown...
-    ```
+    ...the complete plan as markdown, including any ``` code blocks...
+    ````
+
+**Four backticks, not three, and that is load-bearing.** A plan is a design
+document, so it routinely contains code blocks — and a three-backtick plan fence
+ends at the first ``` inside it. That is CommonMark, not a parser bug, and it
+shipped: two plans captured from a real session were cut at their "## The
+prompt" heading, losing the prompt template and everything after it. The panel
+rendered the truncation faithfully, because by then the data was already gone.
+The extractor now honours fence length (a fence closes only on a bare fence at
+least as long) and skips nested blocks that carry an info string, so a
+three-backtick plan containing ```ts still survives. The one case nothing can
+recover is a bare ``` inside a three-backtick plan — nothing distinguishes it
+from the plan ending — which is exactly why the instruction asks for four.
 
 Anything inside that fence is captured as a plan, status **Proposed** — no
 review was raised, so it is not called "Awaiting review". Both routes land in
@@ -44,7 +56,9 @@ What it does not do is **keep** the plan. The markdown exists only inside the to
 
 ## What you get
 
-**A panel that docks beside the chat when a plan is presented.** It opens by itself, takes the right half of the conversation column and *pushes the chat aside* rather than covering it, and closes on Esc or the X. Closing is per-plan, so dismissing one does not suppress the next, and the chat gets its full width back the moment it closes.
+**A panel that docks beside the chat when a plan is presented.** It opens by itself, spans the full window height, takes the right half of the conversation column and *pushes the chat aside* rather than covering it, and closes on Esc or the X. Closing is per-plan, so dismissing one does not suppress the next, and the chat gets its full width back the moment it closes.
+
+**Approve, Keep planning and Revise, in the panel.** While the review is live the footer carries the same decision the conversation card offers, plus one it does not: **Revise** turns the plan into an editable buffer and sends your edited version back as review feedback, so the model re-presents it instead of you retyping the changes into the composer. Answering in either place settles the same review.
 
 **A Plans tab** beside Chat, Trajectory and Todo: every plan for the workspace, newest first, each with a status pill — *Awaiting review* · *Approved* · *Kept planning* — and, on a rejected plan, the reviewer's own words.
 
@@ -67,7 +81,11 @@ The metadata is JSON-per-line rather than YAML. It reads the same, but the write
 
 ## What it will not do
 
-**It does not approve plans.** `exit_plan_mode` presents the plan through `ctx.userQuestions.ask()`, and that service documents **one active provider per context** — the shipped question UI already holds it. Putting Approve / Keep-planning buttons in this window would mean registering a second provider and hijacking every question in the harness, not just plan reviews. So the window is a reading surface, and it says so: the approve control stays where the harness put it, in the conversation.
+**It does not take over the question service.** `exit_plan_mode` presents the plan through `ctx.userQuestions.ask()`, and that service documents **one active provider per context** — the shipped question UI holds it. Registering a second provider to get Approve buttons would hijack every question in the harness, not just plan reviews, so this plugin never does.
+
+It does not have to. A raised question reaches the browser as a pending-interaction carrier on the session's conversation snapshot, and the *carrier* owns the answer, not the provider. The panel reads `sessions.binding(id).session.getSnapshot().pending`, narrows it with the same rules the shipped decision card applies, and calls `respond()`. That makes it a second remote control for one specific wait: the conversation card keeps rendering and keeps working, whichever surface answers first settles the review, and the other one's receipt comes back `not-pending` — reported in the footer, never swallowed.
+
+**It cannot approve an edited plan**, and that is the harness's rule rather than a shortcut here. `exit_plan_mode` checks for free-text feedback *before* it looks at which button you pressed, so any edit reads as "keep planning" whatever label rides with it. Revise therefore sends the edited plan back as feedback and asks for it to be presented again — the plan the agent carries out is always one it has actually seen.
 
 ## How it works
 
@@ -76,6 +94,25 @@ The capture point is `tools/execute`, the around-dispatch waterfall. `next()` ru
 The dock is a `shell.overlay` entry, not a `conversation.view` tab, and that is not a style choice. Views are rendered one-at-a-time by the session body (`only: <active id>`), so an inactive tab is not mounted and cannot open itself when a plan appears. An overlay is shell-scoped and always mounted, so "show the plan the moment there is one" is something this plugin can actually guarantee. The tab exists too — it is the history browser, opened by hand.
 
 `shell.overlay` is not a layout sibling of the chat, so the panel cannot simply occupy half a column: it is `position: fixed`, measures the conversation column, and applies an inline `padding-right` to push it aside by exactly the dock's width. Three details make that survivable. It anchors on **`[data-slot="conversation"]`** — slot names are the documented plugin API, while the class names beside them are hashed CSS-module identifiers that change on any harness build. The padding is applied **inline**, because the column's own class selector has the same specificity as an attribute selector and which stylesheet lands last is not this plugin's to decide. And a `MutationObserver` re-applies both if a React re-render drops them, so the failure mode is a moment of overlap rather than a chat stuck at half width. If the column cannot be found at all the panel still renders against the viewport edge and simply overlays — a plan you can read on top of the conversation beats no plan.
+
+Sharing the shell's top band with other overlays took two attempts. The first
+aligned the dock below the tab strip by measuring
+`[data-slot="conversation.view"]`, which reviewed well and was wrong: that
+slot's first child is the Chat view root *inside* the scrollport, so its top
+goes negative as soon as the conversation scrolls — -1748px on a 2342px chat in
+a 594px scrollport. The guard rejected the negative and fell back to the column
+top, silently restoring the geometry the anchor existed to remove, and the
+header went back under `dsh-weather`'s bar with Copy and Close dead. The panel
+now spans the full window and *claims* its strip instead: it marks itself
+`data-dsh-overlay-claim="right"`, and the weather bar centres on the span that
+is left rather than on the viewport, so it slides aside and sheds detail
+instead of being painted over. Mission control needs no such marker — its rail
+reserves itself by padding the shell frame, which the dock already clamps to.
+
+One thing z-index cannot fix: DSH Desktop on Windows lays a 36px window-drag
+strip across the top of the viewport, and the compositor resolves a drag region
+*before* hit-testing, so it swallows clicks whatever sits above it. The panel's
+background still spans the full window; its header is inset out of the strip.
 
 Freshness rides a **change token**, the same shape `dsh-git` uses, for the same reason: the UI needs to notice a new plan without re-reading everything. Here the token is a plain in-memory counter, because this process is the only writer — no `fs.watch`, no handle per workspace. Polling stops while the document is hidden and re-reads immediately on focus, so a background tab costs nothing.
 

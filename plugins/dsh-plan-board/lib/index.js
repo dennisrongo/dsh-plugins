@@ -69,13 +69,37 @@ var DOT_DSH = ".dsh";
 var PLANS_DIR = "plans";
 var EXIT_PLAN_MODE = "exit_plan_mode";
 var PLAN_FENCE = "plan";
+var FENCE_LINE = /^[ \t]*(`{3,})[ \t]*([^\s`]*)[ \t]*$/;
 function extractFencedPlans(text) {
-  const pattern = /^[ \t]*```[ \t]*plan[ \t]*$([\s\S]*?)^[ \t]*```[ \t]*$/gm;
+  const lines = text.split("\n");
   const out = [];
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
-    const body = match[1].replace(/^\n+/, "").replace(/\s+$/, "");
-    if (body !== "") out.push(body);
+  for (let i = 0; i < lines.length; i += 1) {
+    const open = FENCE_LINE.exec(lines[i]);
+    if (open === null || open[2] !== PLAN_FENCE) continue;
+    const ticks = open[1].length;
+    const body = [];
+    let nested = 0;
+    let closed = false;
+    for (i += 1; i < lines.length; i += 1) {
+      const fence = FENCE_LINE.exec(lines[i]);
+      if (fence !== null) {
+        const length = fence[1].length;
+        const bare = fence[2] === "";
+        if (nested === 0) {
+          if (bare && length >= ticks) {
+            closed = true;
+            break;
+          }
+          nested = length;
+        } else if (bare && length >= nested) {
+          nested = 0;
+        }
+      }
+      body.push(lines[i]);
+    }
+    if (!closed) break;
+    const plan = body.join("\n").replace(/^\n+/, "").replace(/\s+$/, "");
+    if (plan !== "") out.push(plan);
   }
   return out;
 }
@@ -371,14 +395,18 @@ __name(writeAtomic, "writeAtomic");
 var MAX_REMEMBERED_MESSAGES = 200;
 var PLAN_PROMPT_SECTION = [
   "When you present an implementation plan, a design, or a proposed approach for",
-  "the user to review, wrap the plan itself in a fenced block tagged",
-  "`" + PLAN_FENCE + "`:",
+  "the user to review, wrap the plan itself in a FOUR-backtick fenced block",
+  "tagged `" + PLAN_FENCE + "`:",
   "",
-  "    ```" + PLAN_FENCE,
+  "    ````" + PLAN_FENCE,
   "    # Title of the plan",
   "",
-  "    ...the complete plan as markdown...",
-  "    ```",
+  "    ...the complete plan as markdown, including any ``` code blocks...",
+  "    ````",
+  "",
+  "Four backticks, not three. Plans routinely contain code blocks, and a",
+  "three-backtick plan fence ends at the first ``` inside it \u2014 silently, taking",
+  "the rest of the plan with it.",
   "",
   "Start it with a `#` heading naming the plan. Put ONLY the plan inside the",
   "fence \u2014 any preamble or follow-up question belongs outside it. Fence a plan",

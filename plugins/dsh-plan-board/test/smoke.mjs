@@ -145,6 +145,55 @@ test('an unterminated fence is not captured', () => {
   assert.deepEqual(extractFencedPlans('```plan\n# Half a plan\nno closing fence'), [])
 })
 
+// -- code blocks INSIDE a plan ----------------------------------------------
+// The bug this pins shipped and bit: a plan is a design document, so it
+// routinely contains code blocks, and the original one-regex extractor ended
+// the plan at the first ``` inside it. Two plans captured from a real session
+// were cut at "## The prompt", losing the prompt template and everything after
+// it, and the panel rendered the truncation faithfully — the data was already
+// gone by then, so nothing downstream could have noticed.
+
+const TICK = '`'.repeat(3)
+const QUAD = '`'.repeat(4)
+
+test('a FOUR-backtick plan survives code blocks, bare or tagged', () => {
+  const bare = [QUAD + 'plan', '# T', 'before', TICK, 'x', TICK, 'after', QUAD].join('\n')
+  assert.deepEqual(extractFencedPlans(bare), ['# T\nbefore\n' + TICK + '\nx\n' + TICK + '\nafter'])
+  const tagged = [QUAD + 'plan', '# T', TICK + 'ts', 'const x = 1', TICK, 'tail', QUAD].join('\n')
+  assert.match(extractFencedPlans(tagged)[0], /const x = 1[\s\S]*tail$/)
+})
+
+test('a three-backtick plan still survives a TAGGED inner block', () => {
+  // The info string makes it unambiguously a nested opener, so the plan can be
+  // recovered even when the model forgets the longer fence.
+  const message = [TICK + 'plan', '# T', 'before', TICK + 'markdown', '# {title}', TICK, 'after', TICK].join('\n')
+  assert.match(extractFencedPlans(message)[0], /before[\s\S]*\{title\}[\s\S]*after$/)
+})
+
+test('a BARE inner fence of equal length still ends the plan, as CommonMark says', () => {
+  // Nothing in the text distinguishes "nested block opens" from "plan ends",
+  // and guessing would be worse than the documented limit. This is exactly why
+  // the prompt section asks for four backticks; the assertion exists so the
+  // limit is a decision on record rather than a surprise.
+  const message = [TICK + 'plan', '# T', 'before', TICK, 'x', TICK, 'after', TICK].join('\n')
+  assert.deepEqual(extractFencedPlans(message), ['# T\nbefore'])
+})
+
+test('the prompt section asks for four backticks', () => {
+  // The parser cannot rescue the ambiguous case, so the instruction is the
+  // other half of the fix and must not drift away from it.
+  // The example line is built by concatenation (`'    ' + QUAD + PLAN_FENCE`),
+  // so assert on the pieces that actually survive into the bundle rather than
+  // on a literal the bundler never emits.
+  const host = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  assert.ok(host.includes(QUAD), 'the example fence must be four backticks')
+  assert.ok(/Four backticks, not three/.test(host), 'the reason must be stated to the model')
+  assert.ok(
+    !/'\s*```' \+ PLAN_FENCE/.test(host),
+    'a three-backtick example would undo the parser fix',
+  )
+})
+
 // -- proposed plans ---------------------------------------------------------
 
 test('a proposed plan is stored as proposed, not pending', () => {
@@ -362,6 +411,93 @@ test('writes are atomic — no .tmp file survives', () => {
     const files = readdirSync(join(dir, '.dsh', 'plans'))
     assert.deepEqual(files, [`${record.id}.md`], 'the temp file is renamed, never left behind')
   })
+})
+
+// ── the browser bundle ─────────────────────────────────────────────────────
+// The client half cannot be imported under Node (it is a browser bundle
+// wrapped in window.__ModuleLoader__.load), so the facts worth pinning are
+// asserted against its text — the same discipline dsh-weather's smoke test
+// uses. Every one of these is a bug that already shipped once.
+
+const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+test('the dock never answers a review by taking the question provider', () => {
+  // ctx.userQuestions documents ONE active provider per context and the shipped
+  // question UI holds it; registering a second would hijack every question in
+  // the harness. The dock answers the dispatched carrier instead.
+  assert.ok(!client.includes('registerProvider'), 'the dock must never register a userQuestions provider')
+  assert.ok(client.includes('plan-review'), 'the dock must narrow on the plan-review intent')
+  assert.ok(client.includes('not-pending'), 'a receipt rejected as already-answered must be reported, not swallowed')
+})
+
+test('the dock does not anchor to the scrolled conversation view', () => {
+  // [data-slot="conversation.view"]'s first child is the Chat view root INSIDE
+  // the scrollport, so its top goes negative as soon as the chat scrolls. The
+  // dock measured it, rejected the negative, and silently fell back to the
+  // column top — restoring the very geometry the anchor was added to remove.
+  assert.ok(
+    !client.includes('conversation.view"]'),
+    'the dock must not measure the conversation view: its child is the scrolled content root',
+  )
+  assert.ok(client.includes('data-slot="conversation"'), 'the dock still measures the conversation column')
+})
+
+test('the dock clears the desktop drag strip and outranks the weather bar', () => {
+  // A drag region is resolved by the compositor BEFORE hit-testing, so it
+  // swallows clicks whatever z-index the covered element carries — the header
+  // has to be inset out of the strip instead.
+  assert.ok(client.includes('dsh-desktop-windows-titlebar-layout'), 'the header must clear the desktop drag strip')
+  assert.ok(client.includes('--dshpb-titlebar-h'), 'drag-strip clearance variable missing')
+  assert.ok(client.includes('app-region: no-drag'), 'the header must opt out of the drag region')
+  // Above dsh-weather (2147482900), below dsh-mission-control (2147483000).
+  const z = /z-index: (\d+)/.exec(client)
+  assert.ok(z !== null, 'the dock declares no z-index')
+  const value = Number(z[1])
+  assert.ok(value > 2147482900, `the dock must outrank dsh-weather's bar, got ${value}`)
+  assert.ok(value < 2147483000, `the dock must stay under mission control's rail, got ${value}`)
+})
+
+test('the dock publishes its strip claim so floating chrome can dodge it', () => {
+  assert.ok(client.includes('data-dsh-overlay-claim'), 'the dock must mark the strip it holds')
+})
+
+test('the dock converts between viewport and author pixels', () => {
+  // dsh-theme's UI scale is `#root { zoom: var(--dshth-ui-scale, 1) }`, so the
+  // shell renders in two coordinate spaces: getBoundingClientRect() reports
+  // TRUE viewport px while an inline length is an AUTHOR px the zoom scales
+  // again. Measuring in one and writing in the other is exactly self-consistent
+  // at 100% — which is why it shipped — and wrong by the zoom factor at every
+  // other step. Measured at the 90% step before the fix: a panel told
+  // `height: 1680px` rendered 1512 and stopped 168px short of the window, and
+  // one told `right: 377px` sat 22px underneath mission control's rail.
+  assert.ok(client.includes('currentCSSZoom'), 'the dock must resolve the effective CSS zoom')
+  assert.ok(client.includes('offsetWidth'), 'the zoom fallback must derive from author-px offsetWidth')
+})
+
+test('the dock re-measures when the UI scale changes', () => {
+  // No ResizeObserver reports a zoom change: measured across 1.0 -> 0.8 -> 1.0
+  // in the shell, a content-box observer fired zero times and so did a
+  // device-pixel-content-box one, because a CSS zoom rewrites the rendered
+  // result without resizing any observed box. dsh-theme sets the scale as an
+  // inline custom property on <body>, so the style attribute is the trigger.
+  assert.ok(
+    /attributeFilter:\s*\[\s*["']style["']\s*,\s*["']class["']\s*\]/.test(client),
+    "the dock must watch <body>'s style attribute for UI-scale changes",
+  )
+})
+
+test('nothing transforms the dock away from where it was measured', () => {
+  // Observed in the shell: the entrance animation never got a start time
+  // (getAnimations() → startTime: null, currentTime: 0) and pinned the panel at
+  // its FROM keyframe forever, computed transform matrix(1,0,0,1,12,0). A dock
+  // measured flush to the column edge at 863 painted at 875, 12px into the gap
+  // it keeps from mission control's rail. The panel's position is measured
+  // against a boundary, so no animation may offset it afterwards.
+  assert.ok(!client.includes('dshpb-slide'), 'the dock must not animate its own transform')
+  assert.ok(
+    !/\.dshpb-dock\s*\{[^}]*\btransform:/.test(client),
+    'the dock must not carry a static transform either',
+  )
 })
 
 console.log(`\n${passed} checks passed`)

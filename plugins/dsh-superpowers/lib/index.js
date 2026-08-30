@@ -73,6 +73,40 @@ function resolveRoot(configured) {
   return null;
 }
 
+/**
+ * Ask the model to offer decisions as controls rather than as prose.
+ *
+ * The harness can already render a picker: `ask_user_question` takes
+ * `options[]` with a label and a one-line description, plus `multi_select`, and
+ * the shipped question UI renders a radiogroup or a checkbox group from it.
+ * What it cannot do is turn prose into controls — a structured surface exists
+ * only for a real tool call, so a turn that ends "A or B?" in markdown is
+ * markdown forever, and the user pays for it with a typed reply.
+ *
+ * The last paragraph is not optional politeness. dsh's own plan-mode section
+ * states that its rules "override any later tool description or guidance", and
+ * it explicitly forbids asking "should I proceed?" through prose OR
+ * `ask_user_question`, because `exit_plan_mode` is meant to be the single
+ * interaction there. A nudge that did not stand down in plan mode would be
+ * telling the model to break a rule it has already been given.
+ */
+const ASK_WITH_OPTIONS_SECTION = `## Offer choices as choices
+
+When you would end a turn by asking the user to pick between alternatives —
+"A or B?", "should I also do X?", "proceed as planned?" — call
+\`ask_user_question\` instead of writing the question as prose. Give each
+alternative an option with a one-line description of its tradeoff, put the one
+you recommend first, and set \`multi_select: true\` when more than one can
+apply. A question the user can click is faster to answer and unambiguous to
+read back; the same question in prose costs them a typed reply and costs you a
+guess at what they meant.
+
+Two limits. Ask only about things the user owns — preferences, priorities,
+scope, anything you cannot settle by reading the repository; resolve
+discoverable facts by inspection instead. And this does not apply in plan mode,
+whose own rules take precedence: there, present the plan with
+\`exit_plan_mode\` and let the review carry the decision.`;
+
 const Config = z.object({
   /**
    * Directory containing skills/using-superpowers/SKILL.md (the clone root).
@@ -83,7 +117,14 @@ const Config = z.object({
   /** Section order; persona is 0, harness identity is -100. We sit just before persona. */
   order: z.number().default(-50),
   /** Master switch, e.g. for a scratch profile that wants a clean baseline. */
-  enabled: z.boolean().default(true)
+  enabled: z.boolean().default(true),
+  /**
+   * Register the "offer choices as choices" section. Independent of the clone:
+   * it is hand-written here, not read from upstream.
+   */
+  askWithOptions: z.boolean().default(true),
+  /** Order for that section — just after the bootstrap, still before persona. */
+  askWithOptionsOrder: z.number().default(-45)
 });
 
 function readBootstrap(superpowersRoot) {
@@ -105,6 +146,20 @@ function readBootstrap(superpowersRoot) {
 
 function apply(ctx, config) {
   if (config.enabled === false) return;
+
+  // Registered FIRST, and from its own effect. Everything below this point can
+  // return early — no clone found, marker unreadable — and both of those are
+  // ordinary states for a machine that simply has not cloned superpowers. This
+  // section is hand-written and has nothing to do with the clone, so letting
+  // those returns swallow it would make an unrelated feature disappear for a
+  // reason nobody would think to look for.
+  if (config.askWithOptions !== false) {
+    ctx.effect(() => ctx.systemPrompt.section({
+      name: "superpowers:ask-with-options",
+      order: config.askWithOptionsOrder,
+      text: ASK_WITH_OPTIONS_SECTION
+    }), "superpowers.askWithOptions()");
+  }
 
   const root = resolveRoot(config.superpowersRoot);
   if (root === null) {

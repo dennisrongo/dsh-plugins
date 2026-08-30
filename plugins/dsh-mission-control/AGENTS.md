@@ -231,3 +231,5 @@ a new `./typert` export still needs a full profile restart.
 - `build/build.mjs` keeps `minify: false` on the host and typert builds for the same
   reason as dsh-todo: the gateway reads `@Remote` parameter names out of
   `Function.prototype.toString()`.
+
+- **The rail's frame reservation measures with `offsetWidth`, never `getBoundingClientRect().width`.** `dsh-theme`'s UI scale puts the shell under `#root { zoom: var(--dshth-ui-scale, 1) }`, where the rect is TRUE viewport px while the `frame.style.paddingRight` written from it is an AUTHOR px the zoom scales AGAIN — so feeding the rect back in under-reserves by exactly the zoom factor. Measured at the 90% step: the rail claimed `377px`, rendered 339px, and left the conversation column 22px underneath the rail, taking `dsh-plan-board`'s panel (docked flush to that column) with it. `offsetWidth` is author px, the same space as `--mc-dock-gap` and the padding, so all three agree at every scale. The smoke test pins both the presence of `offsetWidth` and the absence of the rect form.

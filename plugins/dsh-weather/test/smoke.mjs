@@ -40,13 +40,47 @@ assert.ok(client.includes('top: 44px'), 'desktop drag-strip offset missing')
 assert.ok(client.includes('data-dsh-no-drag'), 'buttons must carry the preload no-drag hook')
 assert.ok(!client.includes('bottom: 8px'), 'stale bottom anchor still in bundle')
 
-// Responsive tiers. Each breakpoint sheds a group of detail; the separator
-// that introduces a hidden group must be hidden with it, which is why the
+// Responsive tiers. Each tier sheds a group of detail; the separator that
+// introduces a hidden group must be hidden with it, which is why the
 // separators carry explicit modifier classes instead of relying on :has()
 // or positional nth-child (the groups are conditionally rendered).
-for (const bp of ['max-width: 720px', 'max-width: 520px', 'max-width: 380px']) {
-  assert.ok(client.includes(bp), `responsive breakpoint missing: ${bp}`)
+//
+// The tiers key off the MEASURED band, not a viewport media query. The bar's
+// real room is the shell's content box minus whatever a docked overlay has
+// claimed, so a wide window with dsh-plan-board's panel open can leave less
+// space than a phone — a media query calls that "full" and lets the pill run
+// under the panel. The old `max-width:` breakpoints must be gone, or the two
+// mechanisms fight each other on specificity.
+for (const tier of ['data-fit="tablet"', 'data-fit="phone"', 'data-fit="tiny"', 'data-fit="none"']) {
+  assert.ok(client.includes(tier), `responsive tier missing: ${tier}`)
 }
+for (const threshold of ['380', '520', '720']) {
+  assert.ok(client.includes(threshold), `tier threshold missing: ${threshold}`)
+}
+for (const bp of ['max-width: 720px', 'max-width: 520px', 'max-width: 380px']) {
+  assert.ok(!client.includes(bp), `stale viewport breakpoint still in bundle: ${bp}`)
+}
+
+// Band measurement. The bar must read the shell frame's CONTENT box (which is
+// how dsh-mission-control's rail reservation reaches it) and subtract any
+// overlay that marked itself as holding the right-hand strip.
+assert.ok(client.includes('data-shell-overlay'), 'bar must locate the shell frame to measure its content box')
+assert.ok(client.includes('data-dsh-overlay-claim'), 'bar must honour a docked overlay\'s right-strip claim')
+assert.ok(client.includes('paddingRight'), 'bar must subtract the frame reservation padding')
+
+// Coordinate spaces. dsh-theme's UI scale is `#root { zoom: … }`, so
+// getBoundingClientRect() reports TRUE viewport px while an inline `left` is an
+// AUTHOR px the zoom scales again. Mixing them is self-consistent at 100% and
+// wrong by the zoom factor everywhere else, so the band measurement resolves
+// the zoom and converts on the way out.
+assert.ok(client.includes('currentCSSZoom'), 'bar must resolve the effective CSS zoom')
+// And no ResizeObserver reports a zoom change (verified in the shell: neither
+// content-box nor device-pixel-content-box fires), so the scale's own carrier —
+// an inline custom property on <body> — is what gets watched.
+assert.ok(
+  /attributeFilter:\s*\[\s*["']style["']\s*,\s*["']class["']\s*\]/.test(client),
+  "bar must watch <body>'s style attribute for UI-scale changes",
+)
 assert.ok(client.includes('pointer: coarse'), 'touch hit-area rules missing')
 for (const sep of ['dshwx-sep-where', 'dshwx-sep-hours', 'dshwx-sep-meta']) {
   assert.ok(client.includes(sep), `separator modifier missing: ${sep}`)

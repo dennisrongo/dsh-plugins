@@ -191,6 +191,9 @@ async function fetchWeather() {
 var BAR_STYLES = `
 .dshwx {
   position: fixed;
+  /* Centred on the viewport only until the bar has measured the shell (see
+     useBandFit): the real centre is the middle of the span no docked overlay
+     has claimed, written inline. */
   left: 50%;
   transform: translateX(-50%);
   top: 8px;
@@ -262,37 +265,62 @@ body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 2
 @keyframes dshwx-spin { to { transform: rotate(360deg); } }
 .dshwx-error { color: var(--dsw-alias-state-error-primary, #ef4444); font-size: 12px; }
 /* --- Responsive tiers ---------------------------------------------------
-   The bar is a single nowrap pill, so narrow screens shed detail rather than
-   wrap. Each tier also drops the separator that preceded the hidden group,
-   otherwise stray dividers float with nothing between them. */
+   The bar is a single nowrap pill, so it sheds detail rather than wrap. Each
+   tier also drops the separator that preceded the hidden group, otherwise
+   stray dividers float with nothing between them.
+
+   Keyed on the MEASURED band (data-fit), not on a viewport media query. The
+   space this bar actually gets is the shell's content box minus whatever a
+   docked overlay has claimed, so a 2400px window with a plan panel open can
+   leave the bar less room than a phone \u2014 a media query would call that "full"
+   and let the pill run under the panel. The measurement falls back to the
+   viewport when there is no shell frame, so the tiers still work standalone. */
 
 /* Tablet: drop the hourly outlook and the humidity/wind readout. */
-@media (max-width: 720px) {
-  .dshwx-hours, .dshwx-meta { display: none; }
-  .dshwx-sep-hours, .dshwx-sep-meta { display: none; }
-}
+.dshwx[data-fit="tablet"] .dshwx-hours,
+.dshwx[data-fit="tablet"] .dshwx-meta,
+.dshwx[data-fit="tablet"] .dshwx-sep-hours,
+.dshwx[data-fit="tablet"] .dshwx-sep-meta,
+.dshwx[data-fit="phone"] .dshwx-hours,
+.dshwx[data-fit="phone"] .dshwx-meta,
+.dshwx[data-fit="phone"] .dshwx-sep-hours,
+.dshwx[data-fit="phone"] .dshwx-sep-meta,
+.dshwx[data-fit="tiny"] .dshwx-hours,
+.dshwx[data-fit="tiny"] .dshwx-meta,
+.dshwx[data-fit="tiny"] .dshwx-sep-hours,
+.dshwx[data-fit="tiny"] .dshwx-sep-meta { display: none; }
 
 /* Phone: tighten spacing, shrink the place name, and give the controls
    touch-sized hit areas without changing the pill's visual weight. */
-@media (max-width: 520px) {
-  .dshwx {
-    gap: 7px;
-    padding: 4px 10px;
-    max-width: calc(100vw - 16px);
-    font-size: 12px;
-  }
-  .dshwx-where { max-width: 92px; }
-  .dshwx-icon { font-size: 14px; }
-  .dshwx-temp { font-size: 13px; padding: 5px 7px; margin: -4px -3px; }
-  .dshwx-refresh { padding: 7px; margin: -5px; }
+.dshwx[data-fit="phone"],
+.dshwx[data-fit="tiny"] {
+  gap: 7px;
+  padding: 4px 10px;
+  font-size: 12px;
 }
+.dshwx[data-fit="phone"] .dshwx-where,
+.dshwx[data-fit="tiny"] .dshwx-where { max-width: 92px; }
+.dshwx[data-fit="phone"] .dshwx-icon,
+.dshwx[data-fit="tiny"] .dshwx-icon { font-size: 14px; }
+.dshwx[data-fit="phone"] .dshwx-temp,
+.dshwx[data-fit="tiny"] .dshwx-temp { font-size: 13px; padding: 5px 7px; margin: -4px -3px; }
+.dshwx[data-fit="phone"] .dshwx-refresh,
+.dshwx[data-fit="tiny"] .dshwx-refresh { padding: 7px; margin: -5px; }
 
 /* Very narrow: the place name is the least load-bearing text \u2014 the icon,
    temperature and condition carry the meaning. */
-@media (max-width: 380px) {
-  .dshwx-where, .dshwx-sep-where { display: none; }
-  .dshwx { gap: 6px; }
-}
+.dshwx[data-fit="tiny"] .dshwx-where,
+.dshwx[data-fit="tiny"] .dshwx-sep-where { display: none; }
+.dshwx[data-fit="tiny"] { gap: 6px; }
+
+/* Nowhere left to stand. Better absent for the moment a full-width overlay is
+   up than a clipped stub sliding under it.
+
+   visibility, NOT display. A display:none bar has no box, so
+   getBoundingClientRect reports zero height, the band measurement has no rows
+   to test claimants against and bails \u2014 and the bar would stay hidden forever
+   after the overlay that squeezed it went away. A hidden box is still a box. */
+.dshwx[data-fit="none"] { visibility: hidden; pointer-events: none; }
 
 /* Coarse pointers (touch) get the larger hit areas at any width. */
 @media (pointer: coarse) {
@@ -313,10 +341,114 @@ function injectStyles() {
   tag.textContent = BAR_STYLES;
   document.head.appendChild(tag);
 }
+var CLAIM_SELECTOR = '[data-dsh-overlay-claim="right"]';
+var BAND_GUTTER = 16;
+function zoomOf(el) {
+  const own = el.currentCSSZoom;
+  if (typeof own === "number" && own > 0) return own;
+  const width = el.getBoundingClientRect().width;
+  return el.offsetWidth > 0 && width > 0 ? width / el.offsetWidth : 1;
+}
+function tierOf(width) {
+  if (width === void 0) return "full";
+  if (width < 200) return "none";
+  if (width <= 380) return "tiny";
+  if (width <= 520) return "phone";
+  if (width <= 720) return "tablet";
+  return "full";
+}
+function measureBand(band) {
+  const layer = document.querySelector("[data-shell-overlay]");
+  const frame = layer?.parentElement ?? null;
+  let left = 0;
+  let right = window.innerWidth;
+  if (frame !== null) {
+    const rect = frame.getBoundingClientRect();
+    const style = getComputedStyle(frame);
+    const zoom = zoomOf(frame);
+    left = rect.left + (parseFloat(style.paddingLeft) || 0) * zoom;
+    right = rect.right - (parseFloat(style.paddingRight) || 0) * zoom;
+  }
+  for (const claim of Array.from(document.querySelectorAll(CLAIM_SELECTOR))) {
+    const rect = claim.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
+    if (rect.bottom <= band.top || rect.top >= band.bottom) continue;
+    if (rect.right < right - 1) continue;
+    right = Math.min(right, rect.left);
+  }
+  return {
+    centre: left + (right - left) / 2,
+    width: right - left - BAND_GUTTER * 2,
+    zoom: frame === null ? 1 : zoomOf(frame)
+  };
+}
+function useBandFit(ref) {
+  const [fit, setFit] = import_react.default.useState(null);
+  import_react.default.useLayoutEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const measure = () => {
+      const self = el.getBoundingClientRect();
+      if (self.height === 0) return;
+      const next = measureBand({ top: self.top, bottom: self.bottom });
+      setFit(
+        (prev) => prev !== null && Math.abs(prev.centre - next.centre) < 0.5 && Math.abs(prev.width - next.width) < 0.5 && prev.zoom === next.zoom ? prev : next
+      );
+    };
+    measure();
+    const layer = document.querySelector("[data-shell-overlay]");
+    const frame = layer?.parentElement ?? null;
+    const resize = new ResizeObserver(measure);
+    if (frame !== null) resize.observe(frame);
+    if (layer !== null) resize.observe(layer);
+    const scaleWatch = new MutationObserver(measure);
+    scaleWatch.observe(document.body, { attributes: true, attributeFilter: ["style", "class"] });
+    const mutation = new MutationObserver((records) => {
+      if (records.every((record) => el.contains(record.target))) return;
+      measure();
+    });
+    if (layer !== null) {
+      mutation.observe(layer, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["style", "data-dsh-overlay-claim", "hidden"]
+      });
+    }
+    if (frame !== null) mutation.observe(frame, { attributes: true, attributeFilter: ["style"] });
+    window.addEventListener("resize", measure);
+    return () => {
+      resize.disconnect();
+      scaleWatch.disconnect();
+      mutation.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [ref]);
+  return fit;
+}
 function WeatherBar() {
   const [state, setState] = import_react.default.useState({ status: "loading" });
   const [busy, setBusy] = import_react.default.useState(false);
   const [unit, setUnit] = import_react.default.useState(loadUnit);
+  const ref = import_react.default.useRef(null);
+  const fit = useBandFit(ref);
+  const shell = {
+    ref,
+    className: "dshwx",
+    "data-fit": tierOf(fit?.width),
+    // A non-positive width is the squeezed-out case: the `none` tier hides the
+    // bar, and writing a negative max-width would be an ignored declaration
+    // that left it at full size behind the overlay.
+    //
+    // Both lengths are divided by the zoom: `fit` is measured in viewport px
+    // and these are author px the zoom scales again (see zoomOf).
+    ...fit === null || fit.width <= 0 ? {} : {
+      style: {
+        left: `${fit.centre / fit.zoom}px`,
+        maxWidth: `${fit.width / fit.zoom}px`
+      }
+    }
+  };
   const toggleUnit = () => {
     setUnit((prev) => {
       const next = prev === "C" ? "F" : "C";
@@ -350,13 +482,13 @@ function WeatherBar() {
     fetchWeather().then(setState).catch((e) => setState({ status: "error", error: String(e?.message ?? e) })).finally(() => setBusy(false));
   };
   if (state.status === "loading") {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshwx", "aria-live": "polite", children: [
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { ...shell, "aria-live": "polite", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-icon", children: "\u{1F321}\uFE0F" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-label", children: "Loading weather\u2026" })
     ] });
   }
   if (state.status === "error" || !state.now) {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshwx", "aria-live": "polite", children: [
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { ...shell, "aria-live": "polite", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-icon", children: "\u26A0\uFE0F" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-error", title: state.error, children: "Weather unavailable" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: `dshwx-refresh${busy ? " busy" : ""}`, "data-dsh-no-drag": "", title: "Retry", onClick: reload, children: "\u27F3" })
@@ -365,7 +497,7 @@ function WeatherBar() {
   const { icon, label } = describeCode(state.now.weatherCode, state.now.isDay);
   const other = unit === "C" ? "F" : "C";
   const title = `${label} in ${state.where ?? ""} \u2014 feels like ${fmtTemp(state.now.apparentC, unit)}, humidity ${state.now.humidity}%, wind ${Math.round(state.now.windKph)} km/h \xB7 click the temperature for \xB0${other}`;
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshwx", title, "aria-live": "polite", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { ...shell, title, "aria-live": "polite", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-icon", children: icon }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
       "button",

@@ -5606,7 +5606,17 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
       // flush against the rail's seam, while the centered chat keeps its
       // margins — the panel then reads as sitting on top of the tab's
       // components even though nothing geometrically overlaps.
-      const w = panel.getBoundingClientRect().width
+      //
+      // offsetWidth, NOT getBoundingClientRect().width. `dsh-theme`'s UI scale
+      // puts the whole shell under `#root { zoom: … }`, and the two disagree
+      // there: the rect is TRUE viewport px (already scaled) while the padding
+      // written below is an AUTHOR px length the zoom scales again. Feeding the
+      // rect back in under-reserved by exactly the zoom factor — at the 90%
+      // step the rail claimed 377px, rendered 339px, and left the conversation
+      // column (and anything docked flush to it, such as dsh-plan-board's plan
+      // panel) 22px underneath this rail. offsetWidth is author px, the same
+      // space as the gap and the padding, so all three agree at every scale.
+      const w = panel.offsetWidth
       const gap = parseFloat(getComputedStyle(panel).getPropertyValue('--mc-dock-gap')) || 0
       frame.style.paddingRight = w > 0 ? `${Math.round(w + gap)}px` : ''
     }

@@ -101,7 +101,30 @@ an unrelated plugin by another author, so `add dsh-superpowers` fetches theirs, 
 |---|---|---|
 | `superpowersRoot` | `""` → resolved (see above) | repo root containing `skills/using-superpowers/SKILL.md` |
 | `order` | `-50` | prompt section order (persona is 0; we sit before it) |
-| `enabled` | `true` | set false for a clean-baseline profile |
+| `enabled` | `true` | master switch; false silences both sections |
+| `askWithOptions` | `true` | register the "offer choices as choices" section (below) |
+| `askWithOptionsOrder` | `-45` | order for that section |
+
+## Also: "offer choices as choices"
+
+A second, independent prompt section — hand-written here, nothing to do with the
+Superpowers clone, and registered whether or not that clone exists.
+
+dsh can already render a real picker. `ask_user_question` accepts `options[]`
+with a label and a one-line description, plus `multi_select`, and the shipped
+question UI turns that into a radiogroup or a checkbox group. What it cannot do
+is turn prose into controls: a structured surface exists only for an actual tool
+call, and a tool call can only happen *during* a turn. So an answer that ends
+"A or B?" in markdown stays markdown forever, and you pay for it by typing a
+reply that the model then has to guess the meaning of.
+
+This section asks the model to reach for the tool in exactly that moment — with
+a recommended option first, and `multi_select` when more than one can apply. It
+deliberately stands down in plan mode, where dsh's own rules make
+`exit_plan_mode` the single interaction and say so in terms that override later
+guidance.
+
+Set `askWithOptions: false` to drop it without touching the bootstrap.
 
 ## Tests
 

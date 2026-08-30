@@ -18590,7 +18590,7 @@ function MissionControl({ ctx }) {
     const prev = frame.style.paddingRight;
     frame.setAttribute("data-dshmc-reserved", "");
     const apply2 = () => {
-      const w = panel.getBoundingClientRect().width;
+      const w = panel.offsetWidth;
       const gap = parseFloat(getComputedStyle(panel).getPropertyValue("--mc-dock-gap")) || 0;
       frame.style.paddingRight = w > 0 ? `${Math.round(w + gap)}px` : "";
     };

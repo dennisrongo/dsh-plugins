@@ -52,7 +52,19 @@ function run(config, env) {
     if (prev === undefined) delete process.env.SUPERPOWERS_ROOT
     else process.env.SUPERPOWERS_ROOT = prev
   }
-  return { section: sections[0] ?? null, count: sections.length, warns, threw }
+  // Two independent sections now come out of apply(), so they are addressed by
+  // name rather than by position — the clone bootstrap and the hand-written
+  // "offer choices as choices" nudge. `count` stays the bootstrap's count so
+  // the checks below keep meaning exactly what they meant.
+  const named = (n) => sections.find((s) => s.name === n) ?? null
+  return {
+    section: named('superpowers:using-superpowers'),
+    ask: named('superpowers:ask-with-options'),
+    count: sections.filter((s) => s.name === 'superpowers:using-superpowers').length,
+    all: sections,
+    warns,
+    threw,
+  }
 }
 
 /** Build a throwaway clone whose marker body is identifiable by length. */
@@ -109,6 +121,7 @@ try {
   test('enabled:false registers nothing and does not warn', () => {
     const r = run({ superpowersRoot: cloneA, enabled: false }, undefined)
     assert.equal(r.count, 0)
+    assert.equal(r.all.length, 0, 'the master switch must silence every section')
     assert.equal(r.threw, null)
     assert.equal(r.warns.length, 0, 'a deliberate opt-out must be silent')
   })
@@ -125,6 +138,56 @@ try {
     const r = run({ superpowersRoot: NOWHERE }, undefined)
     assert.equal(r.count, 0, 'a non-clone directory must not register')
     assert.ok(r.warns.length > 0)
+  })
+
+  // ── the "offer choices as choices" section ───────────────────────────────
+  // Hand-written here, not read from the clone, so it must survive every state
+  // that legitimately kills the bootstrap. A machine that has never cloned
+  // superpowers is an ordinary machine, and the nudge disappearing there would
+  // be a bug nobody would think to look for.
+
+  test('the ask-with-options section registers alongside the bootstrap', () => {
+    const r = run({ superpowersRoot: cloneA }, undefined)
+    assert.ok(r.ask !== null, 'expected the ask-with-options section')
+    assert.equal(r.all.length, 2, 'both sections, no more')
+    assert.ok(r.ask.order < 0, 'must land before the persona at 0')
+    assert.ok(r.ask.order > -100, 'must land after harness identity at -100')
+  })
+
+  test('it survives a missing clone', () => {
+    const r = run({ superpowersRoot: join(NOWHERE, 'not-here') }, undefined)
+    assert.equal(r.count, 0, 'the bootstrap is correctly absent')
+    assert.ok(r.ask !== null, 'the nudge must not depend on the clone')
+  })
+
+  test('it survives a directory with no marker', () => {
+    const r = run({ superpowersRoot: NOWHERE }, undefined)
+    assert.equal(r.count, 0)
+    assert.ok(r.ask !== null, 'the nudge must not depend on the clone')
+  })
+
+  test('askWithOptions:false opts out of just that section', () => {
+    const r = run({ superpowersRoot: cloneA, askWithOptions: false }, undefined)
+    assert.equal(r.ask, null)
+    assert.equal(r.count, 1, 'the bootstrap must be unaffected')
+  })
+
+  test('its order is configurable', () => {
+    const r = run({ superpowersRoot: cloneA, askWithOptionsOrder: -33 }, undefined)
+    assert.equal(r.ask.order, -33)
+  })
+
+  test('it names the real tool and stands down in plan mode', () => {
+    const r = run({ superpowersRoot: cloneA }, undefined)
+    // The tool is `ask_user_question` — a wrong name is a section that reads
+    // fine and can never be acted on.
+    assert.match(r.ask.text, /ask_user_question/, 'must name the actual tool')
+    assert.match(r.ask.text, /multi_select/, 'checkboxes are the point of the nudge')
+    // dsh's plan-mode section declares that its rules override later guidance
+    // and forbids asking "should I proceed?" through prose OR the tool. A nudge
+    // that did not stand down there would tell the model to break a live rule.
+    assert.match(r.ask.text, /plan mode/, 'must defer to plan mode explicitly')
+    assert.match(r.ask.text, /exit_plan_mode/, 'must point at the plan-mode route')
   })
 
   test('SUPERPOWERS_ROOT is honoured when config is empty', () => {

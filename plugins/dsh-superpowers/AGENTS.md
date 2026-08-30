@@ -31,7 +31,39 @@ changes never need reconciling against this repo.
 |---|---|---|
 | `superpowersRoot` | `""` → resolved | clone root containing `skills/using-superpowers/SKILL.md` |
 | `order` | `-50` | section order |
-| `enabled` | `true` | `false` for a clean-baseline profile |
+| `enabled` | `true` | master switch; `false` silences BOTH sections |
+| `askWithOptions` | `true` | register the "offer choices as choices" section |
+| `askWithOptionsOrder` | `-45` | order for that section |
+
+## The second section: "offer choices as choices"
+
+This plugin registers a second, unrelated section, `superpowers:ask-with-options`.
+It is hand-written here rather than read from the clone, and it exists because
+the harness can already render a picker but only ever gets the chance to when
+the model asks through a tool: `ask_user_question` takes `options[]` plus
+`multi_select`, and the shipped question UI renders a radiogroup or a checkbox
+group from it. A turn that ends `"A or B?"` in markdown is markdown forever —
+structured controls exist only for a real `question/requested` frame, and a tool
+call can only happen *during* a turn. So the fix has to be upstream of the
+prose, in the prompt.
+
+Two things to keep if you edit it:
+
+- **It must name `ask_user_question` exactly.** A wrong tool name is a section
+  that reads perfectly and can never be acted on.
+- **It must stand down in plan mode.** dsh's own plan-mode section states that
+  its rules "override any later tool description or guidance", and it
+  explicitly forbids asking "should I proceed?" through prose *or*
+  `ask_user_question`, because `exit_plan_mode` is meant to be the single
+  interaction there. A nudge that did not defer would be instructing the model
+  to break a rule it has already been given.
+
+It is registered **before** the clone resolution and from its own `ctx.effect`,
+deliberately. Everything after that point can return early — no clone found,
+marker unreadable — and both are ordinary states on a machine that simply has
+not cloned superpowers. Letting those returns swallow this section would make an
+unrelated feature vanish for a reason nobody would think to look for. The smoke
+test pins that independence in both directions.
 
 Root resolution, first hit wins: explicit `superpowersRoot` → `SUPERPOWERS_ROOT` env → a
 probe of ten common clone locations under `homedir()` (platform-neutral). If none contains

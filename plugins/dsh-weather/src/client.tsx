@@ -248,6 +248,9 @@ async function fetchWeather(): Promise<WeatherState> {
 const BAR_STYLES = `
 .dshwx {
   position: fixed;
+  /* Centred on the viewport only until the bar has measured the shell (see
+     useBandFit): the real centre is the middle of the span no docked overlay
+     has claimed, written inline. */
   left: 50%;
   transform: translateX(-50%);
   top: 8px;
@@ -319,37 +322,62 @@ body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 2
 @keyframes dshwx-spin { to { transform: rotate(360deg); } }
 .dshwx-error { color: var(--dsw-alias-state-error-primary, #ef4444); font-size: 12px; }
 /* --- Responsive tiers ---------------------------------------------------
-   The bar is a single nowrap pill, so narrow screens shed detail rather than
-   wrap. Each tier also drops the separator that preceded the hidden group,
-   otherwise stray dividers float with nothing between them. */
+   The bar is a single nowrap pill, so it sheds detail rather than wrap. Each
+   tier also drops the separator that preceded the hidden group, otherwise
+   stray dividers float with nothing between them.
+
+   Keyed on the MEASURED band (data-fit), not on a viewport media query. The
+   space this bar actually gets is the shell's content box minus whatever a
+   docked overlay has claimed, so a 2400px window with a plan panel open can
+   leave the bar less room than a phone — a media query would call that "full"
+   and let the pill run under the panel. The measurement falls back to the
+   viewport when there is no shell frame, so the tiers still work standalone. */
 
 /* Tablet: drop the hourly outlook and the humidity/wind readout. */
-@media (max-width: 720px) {
-  .dshwx-hours, .dshwx-meta { display: none; }
-  .dshwx-sep-hours, .dshwx-sep-meta { display: none; }
-}
+.dshwx[data-fit="tablet"] .dshwx-hours,
+.dshwx[data-fit="tablet"] .dshwx-meta,
+.dshwx[data-fit="tablet"] .dshwx-sep-hours,
+.dshwx[data-fit="tablet"] .dshwx-sep-meta,
+.dshwx[data-fit="phone"] .dshwx-hours,
+.dshwx[data-fit="phone"] .dshwx-meta,
+.dshwx[data-fit="phone"] .dshwx-sep-hours,
+.dshwx[data-fit="phone"] .dshwx-sep-meta,
+.dshwx[data-fit="tiny"] .dshwx-hours,
+.dshwx[data-fit="tiny"] .dshwx-meta,
+.dshwx[data-fit="tiny"] .dshwx-sep-hours,
+.dshwx[data-fit="tiny"] .dshwx-sep-meta { display: none; }
 
 /* Phone: tighten spacing, shrink the place name, and give the controls
    touch-sized hit areas without changing the pill's visual weight. */
-@media (max-width: 520px) {
-  .dshwx {
-    gap: 7px;
-    padding: 4px 10px;
-    max-width: calc(100vw - 16px);
-    font-size: 12px;
-  }
-  .dshwx-where { max-width: 92px; }
-  .dshwx-icon { font-size: 14px; }
-  .dshwx-temp { font-size: 13px; padding: 5px 7px; margin: -4px -3px; }
-  .dshwx-refresh { padding: 7px; margin: -5px; }
+.dshwx[data-fit="phone"],
+.dshwx[data-fit="tiny"] {
+  gap: 7px;
+  padding: 4px 10px;
+  font-size: 12px;
 }
+.dshwx[data-fit="phone"] .dshwx-where,
+.dshwx[data-fit="tiny"] .dshwx-where { max-width: 92px; }
+.dshwx[data-fit="phone"] .dshwx-icon,
+.dshwx[data-fit="tiny"] .dshwx-icon { font-size: 14px; }
+.dshwx[data-fit="phone"] .dshwx-temp,
+.dshwx[data-fit="tiny"] .dshwx-temp { font-size: 13px; padding: 5px 7px; margin: -4px -3px; }
+.dshwx[data-fit="phone"] .dshwx-refresh,
+.dshwx[data-fit="tiny"] .dshwx-refresh { padding: 7px; margin: -5px; }
 
 /* Very narrow: the place name is the least load-bearing text — the icon,
    temperature and condition carry the meaning. */
-@media (max-width: 380px) {
-  .dshwx-where, .dshwx-sep-where { display: none; }
-  .dshwx { gap: 6px; }
-}
+.dshwx[data-fit="tiny"] .dshwx-where,
+.dshwx[data-fit="tiny"] .dshwx-sep-where { display: none; }
+.dshwx[data-fit="tiny"] { gap: 6px; }
+
+/* Nowhere left to stand. Better absent for the moment a full-width overlay is
+   up than a clipped stub sliding under it.
+
+   visibility, NOT display. A display:none bar has no box, so
+   getBoundingClientRect reports zero height, the band measurement has no rows
+   to test claimants against and bails — and the bar would stay hidden forever
+   after the overlay that squeezed it went away. A hidden box is still a box. */
+.dshwx[data-fit="none"] { visibility: hidden; pointer-events: none; }
 
 /* Coarse pointers (touch) get the larger hit areas at any width. */
 @media (pointer: coarse) {
@@ -373,6 +401,202 @@ function injectStyles() {
 }
 
 // ---------------------------------------------------------------------------
+// Fitting the bar into what the shell has left
+// ---------------------------------------------------------------------------
+
+/**
+ * The marker a docked overlay sets on itself to say it holds a right-hand
+ * strip. `dsh-plan-board`'s plan dock sets it; see its DOCK_CLAIM for why the
+ * claim rides the element instead of the shell frame's padding.
+ */
+const CLAIM_SELECTOR = '[data-dsh-overlay-claim="right"]'
+
+/** Gap kept between the pill and whatever bounds it. */
+const BAND_GUTTER = 16
+
+/**
+ * The effective CSS zoom on an element's subtree.
+ *
+ * `dsh-theme`'s UI scale is `#root { zoom: var(--dshth-ui-scale, 1) }` and this
+ * bar renders inside it, which makes two coordinate spaces:
+ * `getBoundingClientRect()` reports TRUE viewport px, while a length written to
+ * `style.left` is an AUTHOR px the zoom multiplies again. Measuring in one and
+ * writing in the other is exactly self-consistent at 100% — and wrong by the
+ * zoom factor at every other step.
+ * @param el - an element inside the subtree in question.
+ * @returns the zoom factor; 1 when there is none or it cannot be derived.
+ */
+function zoomOf(el: HTMLElement): number {
+  const own = (el as unknown as { currentCSSZoom?: number }).currentCSSZoom
+  if (typeof own === 'number' && own > 0) return own
+  const width = el.getBoundingClientRect().width
+  return el.offsetWidth > 0 && width > 0 ? width / el.offsetWidth : 1
+}
+
+/**
+ * Where the bar may sit. `centre` and `width` are TRUE viewport px — the space
+ * the tiers are judged against — and `zoom` is what converts them back into the
+ * author px the inline styles are written in.
+ */
+interface BandFit {
+  centre: number
+  width: number
+  zoom: number
+}
+
+/** Display tier for a measured band width; the CSS keys its shedding on this. */
+type FitTier = 'full' | 'tablet' | 'phone' | 'tiny' | 'none'
+
+/**
+ * The tier a band width earns.
+ * @param width - available width in px, or undefined before measurement.
+ * @returns the tier name.
+ */
+function tierOf(width: number | undefined): FitTier {
+  if (width === undefined) return 'full'
+  if (width < 200) return 'none'
+  if (width <= 380) return 'tiny'
+  if (width <= 520) return 'phone'
+  if (width <= 720) return 'tablet'
+  return 'full'
+}
+
+/**
+ * Measure the horizontal span this bar may occupy.
+ *
+ * Two things narrow it. The shell frame's own padding is how
+ * `dsh-mission-control` reserves its rail, so the frame's CONTENT box already
+ * excludes that — reading the content box costs nothing and handles the rail
+ * for free. What it does not cover is an overlay docked INSIDE the content box,
+ * against its right edge: that is `dsh-plan-board`'s plan panel, and it marks
+ * itself with {@link CLAIM_SELECTOR} rather than padding the frame (padding
+ * would shrink the very column the panel measures itself from). A claimant only
+ * counts when it actually shares this bar's rows and actually reaches the right
+ * edge — an overlay somewhere in the middle of the shell is not a boundary.
+ * A squeezed-to-nothing band is returned as a non-positive width rather than as
+ * null: "there is no room right now" is a state the bar has to render (and then
+ * recover from when the overlay leaves), not an absence of measurement.
+ * @param band - the bar's current vertical extent, in viewport coordinates.
+ * @returns the centre to align on and the width available.
+ */
+function measureBand(band: { top: number; bottom: number }): BandFit {
+  const layer = document.querySelector<HTMLElement>('[data-shell-overlay]')
+  const frame = layer?.parentElement ?? null
+  // No shell frame — a bar rendered outside the harness's own layout still gets
+  // a sensible band, and the tiers behave exactly like the old media queries.
+  let left = 0
+  let right = window.innerWidth
+  if (frame !== null) {
+    const rect = frame.getBoundingClientRect()
+    const style = getComputedStyle(frame)
+    // getComputedStyle resolves padding in AUTHOR px; the rect is viewport px.
+    // Scale the padding up before subtracting, or a reservation reads short by
+    // the zoom factor and the band runs under whatever made it.
+    const zoom = zoomOf(frame)
+    left = rect.left + (parseFloat(style.paddingLeft) || 0) * zoom
+    right = rect.right - (parseFloat(style.paddingRight) || 0) * zoom
+  }
+
+  // Array.from, not for..of: the tsconfig targets a lib without an iterable
+  // NodeList, and iterating one directly does not compile.
+  for (const claim of Array.from(document.querySelectorAll<HTMLElement>(CLAIM_SELECTOR))) {
+    const rect = claim.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) continue
+    // Not in this bar's rows.
+    if (rect.bottom <= band.top || rect.top >= band.bottom) continue
+    // Not against the right edge, so it does not bound this bar — 1px of slack
+    // because both edges come from separate fractional measurements.
+    if (rect.right < right - 1) continue
+    right = Math.min(right, rect.left)
+  }
+
+  return {
+    centre: left + (right - left) / 2,
+    width: right - left - BAND_GUTTER * 2,
+    zoom: frame === null ? 1 : zoomOf(frame),
+  }
+}
+
+/**
+ * Keep the bar centred in the span the shell has left it.
+ *
+ * Re-measures on the events that actually move the boundary: the frame
+ * resizing or having its reservation padding rewritten, and a claimant
+ * appearing, moving, resizing or leaving. The overlay layer is watched as a
+ * subtree because a claimant is not there to observe until it mounts —
+ * mutations from the bar's own inline writes are ignored, or applying a
+ * measurement would schedule the next one forever.
+ * @param ref - the bar element.
+ * @returns the fit to apply, or null before the first measurement.
+ */
+function useBandFit(ref: React.RefObject<HTMLDivElement | null>): BandFit | null {
+  const [fit, setFit] = React.useState<BandFit | null>(null)
+
+  React.useLayoutEffect(() => {
+    const el = ref.current
+    if (el === null) return
+
+    const measure = (): void => {
+      const self = el.getBoundingClientRect()
+      // No box at all — the bar is display:none somewhere up the tree, so there
+      // are no rows to test claimants against. Keep the last fit; the `none`
+      // tier deliberately hides with `visibility` so this stays reachable.
+      if (self.height === 0) return
+      const next = measureBand({ top: self.top, bottom: self.bottom })
+      setFit((prev) =>
+        prev !== null &&
+        Math.abs(prev.centre - next.centre) < 0.5 &&
+        Math.abs(prev.width - next.width) < 0.5 &&
+        prev.zoom === next.zoom
+          ? prev
+          : next,
+      )
+    }
+
+    measure()
+    const layer = document.querySelector<HTMLElement>('[data-shell-overlay]')
+    const frame = layer?.parentElement ?? null
+
+    const resize = new ResizeObserver(measure)
+    if (frame !== null) resize.observe(frame)
+    if (layer !== null) resize.observe(layer)
+    // Changing `dsh-theme`'s UI scale moves every number this bar is centred on
+    // and no ResizeObserver reports it — neither content-box nor
+    // device-pixel-content-box fires, because a CSS zoom rewrites the rendered
+    // result without resizing any observed box. The scale is an inline custom
+    // property on <body>, so watch that instead.
+    const scaleWatch = new MutationObserver(measure)
+    scaleWatch.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] })
+
+    const mutation = new MutationObserver((records) => {
+      // Our own inline left/max-width write is a mutation on this element; it
+      // would re-enter measure() on every frame it settles.
+      if (records.every((record) => el.contains(record.target as Node))) return
+      measure()
+    })
+    if (layer !== null) {
+      mutation.observe(layer, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['style', 'data-dsh-overlay-claim', 'hidden'],
+      })
+    }
+    if (frame !== null) mutation.observe(frame, { attributes: true, attributeFilter: ['style'] })
+    window.addEventListener('resize', measure)
+
+    return () => {
+      resize.disconnect()
+      scaleWatch.disconnect()
+      mutation.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [ref])
+
+  return fit
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -380,6 +604,31 @@ function WeatherBar(): React.JSX.Element {
   const [state, setState] = React.useState<WeatherState>({ status: 'loading' })
   const [busy, setBusy] = React.useState(false)
   const [unit, setUnit] = React.useState<TempUnit>(loadUnit)
+
+  // Every branch below renders the same pill shell, so the ref, the measured
+  // centre and the tier are assembled once and spread — a branch that forgot
+  // them would silently go back to viewport-centred and slide under the panel.
+  const ref = React.useRef<HTMLDivElement | null>(null)
+  const fit = useBandFit(ref)
+  const shell = {
+    ref,
+    className: 'dshwx',
+    'data-fit': tierOf(fit?.width),
+    // A non-positive width is the squeezed-out case: the `none` tier hides the
+    // bar, and writing a negative max-width would be an ignored declaration
+    // that left it at full size behind the overlay.
+    //
+    // Both lengths are divided by the zoom: `fit` is measured in viewport px
+    // and these are author px the zoom scales again (see zoomOf).
+    ...(fit === null || fit.width <= 0
+      ? {}
+      : {
+          style: {
+            left: `${fit.centre / fit.zoom}px`,
+            maxWidth: `${fit.width / fit.zoom}px`,
+          },
+        }),
+  }
 
   const toggleUnit = () => {
     setUnit((prev) => {
@@ -423,7 +672,7 @@ function WeatherBar(): React.JSX.Element {
 
   if (state.status === 'loading') {
     return (
-      <div className="dshwx" aria-live="polite">
+      <div {...shell} aria-live="polite">
         <span className="dshwx-icon">🌡️</span>
         <span className="dshwx-label">Loading weather…</span>
       </div>
@@ -431,7 +680,7 @@ function WeatherBar(): React.JSX.Element {
   }
   if (state.status === 'error' || !state.now) {
     return (
-      <div className="dshwx" aria-live="polite">
+      <div {...shell} aria-live="polite">
         <span className="dshwx-icon">⚠️</span>
         <span className="dshwx-error" title={state.error}>Weather unavailable</span>
         <button className={`dshwx-refresh${busy ? ' busy' : ''}`} data-dsh-no-drag="" title="Retry" onClick={reload}>⟳</button>
@@ -443,7 +692,7 @@ function WeatherBar(): React.JSX.Element {
   const other: TempUnit = unit === 'C' ? 'F' : 'C'
   const title = `${label} in ${state.where ?? ''} — feels like ${fmtTemp(state.now.apparentC, unit)}, humidity ${state.now.humidity}%, wind ${Math.round(state.now.windKph)} km/h · click the temperature for °${other}`
   return (
-    <div className="dshwx" title={title} aria-live="polite">
+    <div {...shell} title={title} aria-live="polite">
       <span className="dshwx-icon">{icon}</span>
       <button
         type="button"

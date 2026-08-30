@@ -57,7 +57,7 @@ const defined = new Set(
 )
 
 /** Names a plugin may legitimately define for itself. */
-const ownPrefixes = ['--dshth-', '--mc-', '--td-', '--g-', '--dshwx-']
+const ownPrefixes = ['--dshth-', '--mc-', '--td-', '--g-', '--dshwx-', '--dshpb-']
 
 function sourcesOf(dir) {
   const out = []

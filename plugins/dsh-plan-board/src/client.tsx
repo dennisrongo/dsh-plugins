@@ -22,14 +22,24 @@
  * hand, listing every plan for the workspace with its outcome. The dock shows
  * the plan in play; the tab is for the ones that already settled.
  *
- * ## What this window will not do
+ * ## How it approves without hijacking the question service
  *
- * It does not approve plans. `exit_plan_mode` presents the plan through
- * `ctx.userQuestions.ask()`, and that service documents ONE active provider per
- * context — the shipped question UI already holds it. Registering a second one
- * to put Approve/Keep-planning buttons here would hijack every question in the
- * harness, not just plan reviews. So this window is a reading surface: the plan
- * at full size, and a line telling you where the real control is.
+ * `exit_plan_mode` presents the plan through `ctx.userQuestions.ask()`, and that
+ * service documents ONE active provider per context — the shipped question UI
+ * holds it. Registering a second provider to put Approve buttons here would
+ * hijack every question in the harness, so this plugin never does.
+ *
+ * It does not need to. A raised question reaches the client as a `PendingWait`
+ * carrier on the owning session's conversation snapshot, and the carrier owns
+ * the answer, not the provider. This panel reads
+ * `sessions.binding(id).session.getSnapshot().pending` and calls `respond()` —
+ * a second remote control for one specific wait. The shipped decision card
+ * keeps rendering and keeps working; whichever answers first settles it and the
+ * other gets a `not-pending` receipt. See {@link usePlanReview}.
+ *
+ * Revising is the same channel: `exit_plan_mode` treats ANY `custom` text as
+ * keep-planning, whatever option label rides with it, so an edited plan cannot
+ * be approved — it goes back as feedback and the model presents it again.
  *
  * @module @dennisrongo/dsh-plan-board/client
  */
@@ -266,30 +276,55 @@ function shellFrame(): HTMLElement | null {
 }
 
 /**
- * Top edge of the conversation VIEW, below the session header and tab strip.
+ * The cross-plugin marker for "an overlay is holding this strip".
  *
- * The dock is aligned to this rather than to the column's own top, and the
- * reason is not tidiness. The shell's top band is where other `shell.overlay`
- * entries live, and they are entitled to be there: `dsh-weather` renders a
- * fixed bar at `z-index: 2147482900`. A panel whose header shares that band has
- * its controls covered by whatever floats above it — the Close button becomes
- * unclickable, which reads as the panel being broken. Starting below the tab
- * strip sidesteps the whole stacking question instead of escalating it, and it
- * leaves the tabs visible, which is where the user goes next anyway.
- * @returns the view's top in viewport coordinates, or undefined when absent.
+ * `shell.overlay` has no width-reservation API — `dsh-mission-control` invented
+ * one by padding the shell frame, which works because its rail is flush to the
+ * viewport edge and outside the frame's content box. This dock is flush to the
+ * CONTENT edge instead, so frame padding cannot describe it: padding the frame
+ * by the dock's width would shrink the column the dock measures itself from,
+ * and the two would chase each other.
+ *
+ * So the dock states its claim on itself, and floating chrome that centres in
+ * the shell measures what is left. `dsh-weather` reads it: its bar is centred
+ * on the free span rather than on the viewport, so it slides out of the panel's
+ * way instead of being painted over. Anything that does not know the attribute
+ * is unaffected.
  */
-function conversationViewTop(): number | undefined {
-  const host = document.querySelector<HTMLElement>('[data-slot="conversation.view"]')
-  const el = host?.firstElementChild as HTMLElement | null
-  if (!el) return undefined
-  const rect = el.getBoundingClientRect()
-  return rect.height > 0 ? rect.top : undefined
-}
+const DOCK_CLAIM = 'data-dsh-overlay-claim'
 
 /** Attribute this plugin sets on the column while the dock is open. */
 const DOCK_ATTR = 'data-dshpb-docked'
 /** Custom property carrying the dock's current width to the column's padding. */
 const DOCK_WIDTH_VAR = '--dshpb-dock-w'
+
+/**
+ * The effective CSS zoom on an element's subtree.
+ *
+ * `dsh-theme`'s UI scale is `#root { zoom: var(--dshth-ui-scale, 1) }`, and
+ * everything in the shell — including this overlay — renders inside it. That
+ * makes two coordinate spaces, and a docked panel has to be fluent in both:
+ *
+ * - `getBoundingClientRect()` returns TRUE viewport pixels, already scaled.
+ * - A length written to `style.width` / `style.right` is an AUTHOR pixel, which
+ *   the zoom then multiplies on the way to the screen.
+ *
+ * Measuring in one and writing in the other is silently self-consistent at
+ * 100%, which is why it survived every check here, and 10% wrong at the 90%
+ * step: a panel told `height: 1680px` rendered 1512 and stopped 168px short of
+ * the window, and one told `right: 377px` sat 339px in, 22px under mission
+ * control's rail. Every measurement below is converted before it is written.
+ * @param el - an element inside the subtree in question.
+ * @returns the zoom factor; 1 when there is none or it cannot be derived.
+ */
+function zoomOf(el: HTMLElement): number {
+  // Chromium exposes the resolved factor directly on modern builds.
+  const own = (el as unknown as { currentCSSZoom?: number }).currentCSSZoom
+  if (typeof own === 'number' && own > 0) return own
+  // Otherwise derive it: offsetWidth is author px, the rect is viewport px.
+  const width = el.getBoundingClientRect().width
+  return el.offsetWidth > 0 && width > 0 ? width / el.offsetWidth : 1
+}
 
 /** Narrowest useful dock, in px — below this the markdown stops being readable. */
 const DOCK_MIN = 280
@@ -333,12 +368,18 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
 
     if (column === null) {
       // No column to dock against — fall back to the viewport's right edge.
+      // Still zoom-corrected: the panel renders inside the scaled subtree
+      // whether or not there is a column to measure.
       const apply = () => {
+        const frame = shellFrame()
+        const zoom = frame === null ? 1 : zoomOf(frame)
         setBox({
           top: 0,
-          height: window.innerHeight,
+          height: Math.round(window.innerHeight / zoom),
           right: 0,
-          width: Math.max(DOCK_MIN, Math.min(DOCK_MAX, window.innerWidth * 0.5)),
+          width: Math.round(
+            Math.max(DOCK_MIN, Math.min(DOCK_MAX, (window.innerWidth / zoom) * 0.5)),
+          ),
         })
       }
       apply()
@@ -366,18 +407,29 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
         return
       }
       frames = 0
+      // Everything measured below is in viewport px; everything written is in
+      // author px. See zoomOf() for why conflating the two is a 10%-wrong
+      // panel that looks perfect at the default UI scale.
+      const zoom = zoomOf(column)
       // Never extend past whatever the shell has reserved on the right. The
       // frame's padding is how a docked overlay (mission control's rail) claims
       // that space, so its content edge — not the viewport edge, and not the
-      // column's own right edge — is the real boundary.
+      // column's own right edge — is the real boundary. getComputedStyle
+      // resolves that padding in AUTHOR px, so it has to be scaled up into the
+      // viewport space `frameRect` is measured in before the two can be
+      // subtracted.
       const frame = shellFrame()
       let boundary = rect.right
       if (frame !== null) {
         const frameRect = frame.getBoundingClientRect()
-        const reserved = parseFloat(getComputedStyle(frame).paddingRight) || 0
+        const reserved = (parseFloat(getComputedStyle(frame).paddingRight) || 0) * zoom
         boundary = Math.min(boundary, frameRect.right - reserved)
       }
-      const width = Math.round(Math.max(DOCK_MIN, Math.min(DOCK_MAX, rect.width * 0.5)))
+      // The readability clamp is about rendered text, but it is applied to the
+      // author width because that is what the width is finally written as.
+      const width = Math.round(
+        Math.max(DOCK_MIN, Math.min(DOCK_MAX, (rect.width / zoom) * 0.5)),
+      )
       column.setAttribute(DOCK_ATTR, '')
       // Inline, not a stylesheet rule. The column's own class selector has the
       // same specificity as an attribute selector, and which stylesheet lands
@@ -387,14 +439,22 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
       column.style.setProperty(DOCK_WIDTH_VAR, `${width}px`)
       column.style.paddingRight = `${width}px`
       setBox((prev) => {
-        // Below the tab strip, down to the bottom of the column: the dock fills
-        // exactly the strip the padding above reserved for it.
-        const viewTop = conversationViewTop()
-        const top = viewTop !== undefined && viewTop > rect.top && viewTop < rect.bottom ? viewTop : rect.top
+        // The full height of the column, top to bottom. An earlier version
+        // started below the tab strip to duck under `dsh-weather`'s bar, by
+        // measuring `[data-slot="conversation.view"]`'s first child — but that
+        // child is the Chat view root INSIDE the scrollport, not the view area,
+        // so its `top` goes negative the moment the conversation scrolls
+        // (-1748px on a 2342px-tall chat in a 594px scrollport). The guard then
+        // rejected it and fell back here anyway, silently restoring the very
+        // geometry it was meant to remove. Ducking is now done by claiming the
+        // strip (see DOCK_CLAIM) instead of by measuring a sibling.
+        //
+        // Divided by the zoom on the way out: these become inline lengths, and
+        // the zoom multiplies them again when it renders them.
         const next = {
-          top: Math.round(top),
-          height: Math.round(rect.bottom - top),
-          right: Math.round(window.innerWidth - boundary),
+          top: Math.round(rect.top / zoom),
+          height: Math.round(rect.height / zoom),
+          right: Math.round((window.innerWidth - boundary) / zoom),
           width,
         }
         return prev &&
@@ -410,6 +470,20 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
     sync()
     const resize = new ResizeObserver(sync)
     resize.observe(column)
+    // Changing `dsh-theme`'s UI scale re-renders the shell at a different zoom,
+    // which moves every number this dock is built from — and NO ResizeObserver
+    // reports it. Measured in the shell across 1.0 → 0.8 → 1.0: a content-box
+    // observer fired zero times, and so did a device-pixel-content-box one,
+    // because a CSS zoom rewrites the rendered result without resizing any
+    // observed box. The panel therefore kept geometry computed for the previous
+    // scale until an unrelated window resize rescued it.
+    //
+    // The scale is an inline custom property on <body> (dsh-theme's boot script
+    // does `body.style.setProperty('--dshth-ui-scale', …)`), so the style
+    // attribute is the thing that actually changes. Watching it is cheap: the
+    // shell writes there rarely, and sync() is idempotent.
+    const scaleWatch = new MutationObserver(sync)
+    scaleWatch.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] })
     // The frame's CONTENT box shrinks when another overlay reserves space, even
     // though its border box stays the full width — which is exactly the event
     // that moves this dock's boundary, and it does not always resize the column
@@ -430,6 +504,7 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
     return () => {
       if (raf !== 0) cancelAnimationFrame(raf)
       resize.disconnect()
+      scaleWatch.disconnect()
       mutation.disconnect()
       frameWatch.disconnect()
       window.removeEventListener('resize', sync)
@@ -442,15 +517,267 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
   return box
 }
 
-function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }): React.ReactElement {
-  // Esc closes, matching every other dismissible surface in the shell.
+// ---------------------------------------------------------------------------
+// Answering the live review
+// ---------------------------------------------------------------------------
+
+/**
+ * Reaching the plan review WITHOUT taking the user-questions provider.
+ *
+ * `exit_plan_mode` raises its review through `ctx.userQuestions.ask()`, and that
+ * service documents ONE active provider per context — the shipped question UI
+ * holds it. Registering a second provider to put an Approve button here would
+ * hijack every question in the harness, which is why this plugin has always
+ * refused to (see the module doc). None of that applies to what follows.
+ *
+ * A raised question is dispatched to the client as a `PendingWait` carrier on
+ * the owning session's conversation snapshot, and the carrier — not the
+ * provider — owns the answer. Reading `session.getSnapshot().pending` and
+ * calling `respond()` makes this panel a SECOND remote control for one specific
+ * wait; the shipped decision card keeps rendering in the composer and keeps
+ * working. Whichever surface answers first settles it, and the other's receipt
+ * comes back `{accepted: false, reason: 'not-pending'}` — a clean, reported
+ * no-op rather than a corrupted answer. That is the whole reason this is safe
+ * where a provider would not be.
+ */
+
+/** One option the asker offered on a question. */
+interface QuestionOptionLike {
+  label: string
+  description?: string
+}
+
+/** One question of a request, as the pending carrier delivers it. */
+interface QuestionItemLike {
+  id: string
+  question: string
+  detail?: string
+  multiSelect?: boolean
+  options?: QuestionOptionLike[]
+  intent?: { kind?: string; approve?: string }
+}
+
+/** The runtime's pending-interaction carrier, narrowed to what this panel uses. */
+interface PendingWaitLike {
+  kind: string
+  sessionId: string
+  payload?: { questions?: QuestionItemLike[] }
+  respond(result: unknown): Promise<{ accepted: boolean; reason?: string }>
+}
+
+/** The session face: the conversation snapshot source plus its behaviour verbs. */
+interface SessionFaceLike {
+  getSnapshot(): { pending?: readonly PendingWaitLike[] }
+  subscribe(fn: () => void): () => void
+}
+
+/** A pending question narrowed to a renderable plan decision. */
+interface PlanReviewLike {
+  /** The reviewed question's id, echoed in the answer. */
+  id: string
+  /** The plan markdown under review — matched against the stored plan. */
+  plan: string
+  /** The option that approves it. */
+  approve: QuestionOptionLike
+  /** The option that declines it; absent when the asker offered no other. */
+  decline?: QuestionOptionLike
+}
+
+/**
+ * Narrow a question batch to a plan review, or undefined.
+ *
+ * Deliberately the same rules the shipped decision card applies: one question,
+ * declaring the `plan-review` intent, carrying the plan as its detail, single
+ * select, at most two options, and an option whose label the intent names as
+ * the approving one. A batch this panel cannot answer completely is a batch it
+ * must not offer buttons for — the intent changes presentation, never which
+ * answers are reachable.
+ * @param questions - the request's whole question batch.
+ * @returns the narrowed review, or undefined.
+ */
+function planReviewOf(questions: readonly QuestionItemLike[]): PlanReviewLike | undefined {
+  if (questions.length !== 1) return undefined
+  const question = questions[0]
+  const approveLabel = question.intent?.approve
+  if (question.intent?.kind !== 'plan-review' || question.detail === undefined) return undefined
+  if (approveLabel === undefined || question.multiSelect === true) return undefined
+  const options = question.options ?? []
+  if (options.length > 2) return undefined
+  const approve = options.find((option) => option.label === approveLabel)
+  if (approve === undefined) return undefined
+  const decline = options.find((option) => option.label !== approveLabel)
+  return { id: question.id, plan: question.detail, approve, ...(decline === undefined ? {} : { decline }) }
+}
+
+/** Snapshot handed back when there is no session to read — a stable identity, so uSES does not loop. */
+const NO_PENDING: { pending: readonly PendingWaitLike[] } = { pending: [] }
+
+/** The face used when the plan's session cannot be bound. */
+const NO_SESSION: SessionFaceLike = {
+  getSnapshot: () => NO_PENDING,
+  subscribe: () => () => {},
+}
+
+/**
+ * The live plan review for one session, if it is showing.
+ * @param ctx - client root context.
+ * @param sessionId - the session that raised the plan.
+ * @returns the carrier and the narrowed review, or undefined.
+ */
+function usePlanReview(
+  ctx: ClientContext,
+  sessionId: string | undefined,
+): { wait: PendingWaitLike; review: PlanReviewLike } | undefined {
+  const face = React.useMemo(() => {
+    if (sessionId === undefined || sessionId === '') return NO_SESSION
+    const sessions = (ctx as unknown as {
+      sessions: { binding?: (id: string) => { session: SessionFaceLike } | undefined }
+    }).sessions
+    // `binding` mints the session scope lazily and is documented render-safe,
+    // but it fails loud on an id the runtime does not know — which is exactly
+    // what a plan whose session has been pruned carries.
+    try {
+      return sessions.binding?.(sessionId)?.session ?? NO_SESSION
+    } catch {
+      return NO_SESSION
+    }
+  }, [ctx, sessionId])
+
+  const snapshot = useObservable(face)
+
+  return React.useMemo(() => {
+    for (const wait of snapshot.pending ?? []) {
+      if (wait.kind !== 'question') continue
+      const review = planReviewOf(wait.payload?.questions ?? [])
+      if (review !== undefined) return { wait, review }
+    }
+    return undefined
+  }, [snapshot])
+}
+
+/**
+ * Send one decision for a live review.
+ *
+ * The encoding is the wire contract's, not a convenience of this panel:
+ * `selected` carries the asker's own option label verbatim, and `custom` is the
+ * free-text channel `exit_plan_mode` turns into the model's feedback. Note that
+ * ANY `custom` makes it keep planning — the tool checks `custom !== undefined`
+ * before it looks at the label — so approving and revising are mutually
+ * exclusive by the harness's design, not by a choice made here.
+ * @param wait - the pending carrier.
+ * @param id - the reviewed question's id.
+ * @param label - the option label being selected.
+ * @param custom - free-text feedback, omitted entirely when approving.
+ */
+async function answerReview(
+  wait: PendingWaitLike,
+  id: string,
+  label: string,
+  custom?: string,
+): Promise<void> {
+  const receipt = await wait.respond({
+    ok: true,
+    value: {
+      sessionId: wait.sessionId,
+      answer: { answers: [{ id, selected: [label], ...(custom === undefined ? {} : { custom }) }] },
+    },
+  })
+  if (!receipt.accepted) {
+    throw new Error(
+      receipt.reason === 'not-pending'
+        ? 'that review was already answered elsewhere'
+        : `the host rejected the answer (${receipt.reason ?? 'unknown'})`,
+    )
+  }
+}
+
+/**
+ * The lead-in wrapped around a revised plan before it is sent as feedback.
+ *
+ * The body alone arrives at the model as the bare text of
+ * "The user chose to keep planning; their feedback: …", which reads as a
+ * comment on the plan rather than a replacement for it. One sentence makes the
+ * intent unambiguous, and asking for it back through `exit_plan_mode` keeps the
+ * revised version inside the review loop instead of ending it.
+ * @param body - the edited plan markdown.
+ * @returns the feedback text to send.
+ */
+function revisionFeedback(body: string): string {
+  return `I edited the plan. Present this revised version again with exit_plan_mode, changing it only where it cannot work:\n\n${body}`
+}
+
+function PlanWindow({
+  ctx,
+  plan,
+  onClose,
+}: {
+  ctx: ClientContext
+  plan: PlanRecord
+  onClose: () => void
+}): React.ReactElement {
+  // The live review, but only when it is unambiguously THIS plan's. The dock
+  // opens on the newest pending-or-proposed plan in the workspace, which is not
+  // always the one under review — a plan fenced in a later message outranks it.
+  // Bodies are compared because that is the only thing the store and the wire
+  // both carry; settling a review from a panel showing something else would be
+  // the worst bug this feature could have.
+  const found = usePlanReview(ctx, plan.sessionId)
+  const live =
+    found !== undefined && plan.status === 'pending' && found.review.plan.trim() === plan.body.trim()
+      ? found
+      : undefined
+
+  // `undefined` is "not editing"; a string is the draft. Kept as one value so
+  // the two can never disagree.
+  const [draft, setDraft] = React.useState<string | undefined>(undefined)
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | undefined>(undefined)
+
+  // A different plan, or a review that settled elsewhere, must not leave a
+  // stale draft editing a body that is no longer on screen.
+  // Hoisted out of the JSX so the declining option narrows once instead of
+  // needing a non-null assertion at every use.
+  const decline = live?.review.decline
+  const reviewing = live !== undefined
+  React.useEffect(() => {
+    setDraft(undefined)
+    setBusy(false)
+    setError(undefined)
+  }, [plan.id, reviewing])
+
+  const settle = React.useCallback(
+    (label: string, custom?: string) => {
+      if (live === undefined) return
+      setBusy(true)
+      setError(undefined)
+      void answerReview(live.wait, live.review.id, label, custom)
+        .then(() => {
+          setDraft(undefined)
+          setBusy(false)
+        })
+        .catch((err: unknown) => {
+          setBusy(false)
+          setError(err instanceof Error ? err.message : String(err))
+        })
+    },
+    [live],
+  )
+
+  // Esc closes, matching every other dismissible surface in the shell — except
+  // while editing, where it backs out of the editor instead. Losing an edited
+  // plan to the same key that dismisses the panel would be a cruel default.
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Escape') return
+      if (draft !== undefined) {
+        setDraft(undefined)
+        return
+      }
+      onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, draft])
 
   const [copied, setCopied] = React.useState(false)
   const copy = React.useCallback(() => {
@@ -481,6 +808,8 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
       // tell a screen reader the rest of the app is inert, which is a lie.
       role="complementary"
       aria-label={`Plan: ${plan.title}`}
+      // Tell floating chrome that this strip is taken (see DOCK_CLAIM).
+      {...{ [DOCK_CLAIM]: 'right' }}
     >
       <div className="dshpb-head">
         <div className="dshpb-headline">
@@ -516,21 +845,101 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
       </div>
 
       <div className="dshpb-body">
-        <Markdown source={plan.body} />
+        {draft === undefined ? (
+          <Markdown source={plan.body} />
+        ) : (
+          <textarea
+            className="dshpb-editor"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            spellCheck={false}
+            autoFocus
+            aria-label="Revise the plan"
+          />
+        )}
       </div>
 
       <div className="dshpb-foot">
-        {plan.status === 'pending' ? (
-          // Say plainly where the control is. A reading panel with no approve
-          // button reads like a broken approve button unless it explains itself.
-          <span>Approve or keep planning from the review prompt in the conversation.</span>
+        {live !== undefined ? (
+          <>
+            <span className="dshpb-note">
+              {error !== undefined ? (
+                <span className="dshpb-error">{error}</span>
+              ) : draft !== undefined ? (
+                'Sent as review feedback — the model revises and presents again.'
+              ) : (
+                'Answering here settles the review in the conversation.'
+              )}
+            </span>
+            <span className="dshpb-foot-actions">
+              {draft === undefined ? (
+                <>
+                  <button
+                    type="button"
+                    className="dshpb-btn"
+                    disabled={busy}
+                    onClick={() => setDraft(plan.body)}
+                    title="Edit the plan and send it back for revision"
+                  >
+                    Revise
+                  </button>
+                  {decline !== undefined ? (
+                    <button
+                      type="button"
+                      className="dshpb-btn"
+                      disabled={busy}
+                      {...(decline.description === undefined ? {} : { title: decline.description })}
+                      onClick={() => settle(decline.label)}
+                    >
+                      {decline.label}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="dshpb-primary"
+                    disabled={busy}
+                    {...(live.review.approve.description === undefined
+                      ? {}
+                      : { title: live.review.approve.description })}
+                    onClick={() => settle(live.review.approve.label)}
+                  >
+                    {live.review.approve.label}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="dshpb-btn" disabled={busy} onClick={() => setDraft(undefined)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="dshpb-primary"
+                    disabled={busy || draft.trim() === ''}
+                    // Any `custom` is keep-planning to `exit_plan_mode`, whatever
+                    // label rides with it, so the honest label is the declining
+                    // one — the review really does stay open.
+                    onClick={() => settle((decline ?? live.review.approve).label, revisionFeedback(draft.trim()))}
+                  >
+                    Send revision
+                  </button>
+                </>
+              )}
+            </span>
+          </>
+        ) : plan.status === 'pending' ? (
+          // A pending plan with no reachable review: the session that raised it
+          // is not bound here, or the card was already answered. Say where the
+          // control is rather than showing buttons that cannot settle anything.
+          <span className="dshpb-note">
+            Approve or keep planning from the review prompt in the conversation.
+          </span>
         ) : plan.status === 'proposed' ? (
           // No review was raised for this one, so do not imply one is waiting.
-          <span>Proposed in the conversation — no approval was requested.</span>
+          <span className="dshpb-note">Proposed in the conversation — no approval was requested.</span>
         ) : plan.feedback !== undefined && plan.feedback !== '' ? (
-          <span className="dshpb-feedback">{plan.feedback}</span>
+          <span className="dshpb-note dshpb-feedback">{plan.feedback}</span>
         ) : (
-          <span>Saved to .dsh/plans/{plan.id}.md</span>
+          <span className="dshpb-note">Saved to .dsh/plans/{plan.id}.md</span>
         )}
       </div>
     </aside>
@@ -590,7 +999,7 @@ function PlanOverlay({ ctx, remote }: { ctx: ClientContext; remote: PlansRemote 
   }, [openId])
 
   if (plan === undefined) return null
-  return <PlanWindow plan={plan} onClose={close} />
+  return <PlanWindow ctx={ctx} plan={plan} onClose={close} />
 }
 
 /**
@@ -823,6 +1232,10 @@ const CSS = `
   position: fixed;
   display: flex;
   flex-direction: column;
+  /* The measured box IS the panel. Under content-box the two 1px borders push
+     the panel 1px past the column's right edge and 1px below its bottom, which
+     is exactly the seam a docked panel must not have. */
+  box-sizing: border-box;
   background: var(--dsw-specific-menu);
   /* Only the inner edge is drawn: the panel is flush with the column's right
      side, so a full border would double up against the shell's own chrome. */
@@ -831,7 +1244,13 @@ const CSS = `
   border-top-left-radius: 10px;
   font-family: var(--dsw-font-family);
   color: var(--dsw-alias-label-primary);
-  z-index: 40;
+  /* Above dsh-weather's bar (2147482900), below mission control's rail
+     (2147483000). The overlay layer is one stacking context, so a plugin that
+     leaves itself near the bottom of it is painted over by every sibling that
+     touches it — this panel sat at 40 and lost to a decorative weather bar. The
+     bar now slides aside instead (see DOCK_CLAIM); this is what stops it being
+     covered on a viewport with nowhere for the bar to go. */
+  z-index: 2147482950;
   overflow: hidden;
   opacity: 1;
   /* The shell's overlay layer is pointer-events: none so it cannot swallow
@@ -839,25 +1258,47 @@ const CSS = `
      this panel's Close button — has to opt back in, or it renders perfectly and
      does nothing. */
   pointer-events: auto;
-  animation: dshpb-slide 160ms ease;
+  /* No entrance animation, and this is a correctness rule rather than taste.
+     An earlier version slid in with translateX(12px) -> 0 and dropped an
+     opacity keyframe because "a tab that mounts while the window is hidden"
+     leaves the animation reverted or never run. The transform half has the
+     same failure and a worse consequence: observed in the shell with
+     getAnimations() reporting startTime: null and currentTime: 0, the panel was
+     pinned at the FROM keyframe forever — computed transform
+     matrix(1,0,0,1,12,0) — so a dock measured flush to the column's right edge
+     at 863 actually painted to 875, leaving 4px between it and mission
+     control's rail instead of 16. This panel's position is measured against a
+     boundary; nothing may offset it after the fact. The column's own
+     padding-right transition still animates, so the arrival is not abrupt. */
+  /* DSH Desktop on Windows overlays a 36px window-drag strip across the top of
+     the viewport (#dsh-desktop-windows-drag-region, -webkit-app-region: drag,
+     z-index 2147483644). The compositor resolves a drag region BEFORE
+     hit-testing, so it swallows clicks that land in it no matter what z-index
+     the covered element carries, and no-drag on the covered element does not
+     punch a hole through it (dsh-weather verified both). The panel spans the
+     full window, so its header has to be inset out of the strip instead — see
+     .dshpb-head. Non-Windows desktop and plain web get 0px. */
+  --dshpb-titlebar-h: 0px;
 }
-/* Transform only. An opacity keyframe leaves the panel invisible whenever the
-   animation is reverted or never runs (a tab that mounts while the window is
-   hidden), which is indistinguishable from the panel being broken. */
-@keyframes dshpb-slide {
-  from { transform: translateX(12px); }
-  to { transform: translateX(0); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dshpb-dock { animation: none; }
+body.dsh-desktop-windows-titlebar-layout .dshpb-dock {
+  --dshpb-titlebar-h: 36px;
 }
 .dshpb-head {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 14px 16px 12px;
+  padding: calc(14px + var(--dshpb-titlebar-h)) 16px 12px;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
+  /* Belt-and-braces against the desktop drag strip. The preload already grants
+     buttons no-drag; stating it here survives a future narrowing of that
+     allowlist, and costs nothing in a browser. */
+  -webkit-app-region: no-drag;
 }
+.dshpb-head button { -webkit-app-region: no-drag; }
+/* A glyph never swallows its button's click: the preload's no-drag allowlist
+   covers "button" but not "svg", so an svg left as its own hit target could
+   land back inside the drag region. */
+.dshpb-close > svg { pointer-events: none; }
 .dshpb-headline { flex: 1 1 auto; min-width: 0; }
 .dshpb-eyebrow {
   font-size: 11px;
@@ -948,14 +1389,68 @@ const CSS = `
   border-radius: 999px;
   border: 1px solid currentColor;
 }
-.dshpb-body { flex: 1 1 auto; overflow: auto; padding: 16px; }
+.dshpb-body { flex: 1 1 auto; overflow: auto; padding: 16px; display: flex; flex-direction: column; }
+/* The revision editor takes the body whole. Code font and 12px because the
+   content is markdown being edited as source, matching .dshpb-pre. */
+.dshpb-editor {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  resize: none;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-specific-input-major);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 2;
+}
+.dshpb-editor:focus {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+}
+/* A column, not a row. Three decision buttons plus a sentence do not fit
+   across a 280px dock — measured: 265px of buttons into 248px of content box,
+   which pushed Approve out through the panel's own overflow:hidden and clipped
+   it. Stacking gives the buttons the full width and the note a readable line,
+   and the wrap below covers the narrowest dock the clamp allows. */
 .dshpb-foot {
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   padding: 10px 16px;
   border-top: 1px solid var(--dsw-alias-border-l1);
   font-size: 11px;
   color: var(--dsw-alias-label-tertiary);
 }
+.dshpb-note { min-width: 0; line-height: 1.4; }
+.dshpb-foot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  align-items: center;
+}
+.dshpb-error { color: var(--dsw-alias-state-error-primary); }
+.dshpb-primary {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  cursor: pointer;
+}
+.dshpb-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
+.dshpb-primary:disabled, .dshpb-btn:disabled { opacity: 0.6; cursor: default; }
+.dshpb-foot .dshpb-btn { white-space: nowrap; }
 .dshpb-feedback { color: var(--dsw-alias-state-business-primary); white-space: pre-wrap; }
 .dshpb-feedback-block {
   margin-top: 16px;
