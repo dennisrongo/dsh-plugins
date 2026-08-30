@@ -56,6 +56,16 @@ pnpm -r --if-present run typecheck
 # Each plugin's `test` script builds first, so this also regenerates lib/.
 pnpm -r --if-present run test
 
+# --- Every client plugin must mount on a REAL cordis context.
+#
+# Runs AFTER the suites because it reads the freshly built lib/. A cordis
+# context is a Proxy: reading a service the plugin did not declare in `inject`
+# THROWS, where the per-package smoke tests -- which render against plain stub
+# objects -- see a harmless undefined. dsh-todo shipped an empty tab that way
+# with every suite green, so this class of bug needs a check the stubs cannot
+# fake.
+node scripts/check-context.mjs
+
 # --- Stale committed bundle check.
 #
 # The harness loads lib/, not src/. Those bundles are tracked, so a commit that

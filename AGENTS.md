@@ -40,7 +40,8 @@ plugins/dsh-memory       host + client — /remember + instruction inspector, se
                          dshMemory. Writes into the AGENTS.md hierarchy and
                          reports what dsh-agent-instructions' byte budget kept.
 scripts/                 verify.mjs, anchor.mjs, host-deps.mjs, check-type-scale.mjs,
-                         check-tokens.mjs, link-superpowers-skills.mjs (all portable)
+                         check-tokens.mjs, check-context.mjs,
+                         link-superpowers-skills.mjs (all portable)
                          dev-link.mjs (entry point; the root postinstall runs it)
                          -> dev-link.ps1 (Windows) / dev-link.sh (macOS/Linux):
                             anchors + junctions into profiles
@@ -215,6 +216,23 @@ app, so a light theme on a dark-mode machine renders dark. `ui-layout`'s ThemePr
 `body[data-ds-dark-theme]` — key off those. `dsh-todo` carried the OS query for both its
 select popups and its option rows, with a comment asserting the shell "never sets a
 color-scheme to inherit from", which was simply untrue.
+
+**A cordis context is a Proxy, and reading an undeclared service THROWS.** Inside a
+plugin fiber, `ctx.sessions` for a service not in that plugin's `inject` array raises
+`cannot get property "sessions" without inject` — it does not return `undefined`. Every
+client half's smoke test renders against plain **stub objects**, and a stub answers a
+missing key with `undefined`, so this entire class of bug is invisible to them.
+`dsh-todo` shipped it: an unguarded optional read threw inside the `conversation.view`
+slot's `inject` callback, no store reached the view, and every task vanished from a tab
+that still drew its own header — with four green suites and two green browser probes.
+Guard an optional read with try/catch (`ctx.get(name)` is the safe probe and yields
+`undefined`), or declare the service. A missing KEY on an already-injected service object
+(`ctx.remote?.foo`) is safe; the namespaced service form (`ctx['remote.foo']`) is not.
+`node scripts/check-context.mjs` mounts every built client bundle on a REAL `Context`
+with only its declared services and calls each registered slot's `inject` callback — the
+deferred path where the failure actually lands. It runs LAST in `pnpm test` because it
+reads built `lib/`, and it fails a plugin that registers zero slots, because a check that
+exercised nothing must not report a pass.
 
 **One type scale across every plugin: 11 / 12 / 13 / 14 / 16 / 20 / 24 px.** Those are the
 sizes the harness's own typography tokens define, so a plugin on this ladder matches the
