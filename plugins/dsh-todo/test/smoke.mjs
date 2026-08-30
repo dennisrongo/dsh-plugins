@@ -987,6 +987,30 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   assert.ok(/askDelete/.test(source), 'the shared delete prompt builder must exist')
 }
 
+// --- the launch button must be VISIBLE without hovering ----------------------
+// It shipped inside .dshtd-rowbtns, which is `opacity: 0` until the row is
+// hovered. Every other check passed — the button rendered, the handler was
+// wired, the services resolved — and the feature was still reported as missing,
+// because an affordance nobody can see does not exist. Correct behaviour for
+// move/delete; wrong for the primary action on a row.
+{
+  const source = readFileSync(join(root, 'src/client.tsx'), 'utf8')
+  assert.ok(/className="dshtd-icon dshtd-rowlead"[\s\S]{0,240}?Start a session for this task/.test(source),
+    'the launch button must use .dshtd-rowlead (always visible), not the hover-only group')
+  assert.ok(/className="dshtd-icon dshtd-rowlead"[\s\S]{0,240}?Open the session working this task/.test(source),
+    'the open-session button must use .dshtd-rowlead too')
+  const lead = /\.dshtd-rowlead \{([^}]*)\}/.exec(source)
+  assert.ok(lead, '.dshtd-rowlead must be styled')
+  assert.ok(!/opacity:\s*0\s*[;}]/.test(lead[1]),
+    '.dshtd-rowlead must not be opacity: 0 — that is exactly what hid the feature')
+  // Anchored past the ARCHIVED-row branch, which has a .dshtd-rowbtns of its own
+  // — comparing against that one measures the wrong group entirely.
+  const launchBtn = source.indexOf('Start a session for this task')
+  const rowbtns = source.indexOf('<span className="dshtd-rowbtns">', launchBtn)
+  assert.ok(launchBtn !== -1 && rowbtns !== -1 && launchBtn < rowbtns,
+    'the launch button must render BEFORE the hover-only .dshtd-rowbtns group that follows it')
+}
+
 // --- launching a session from a task ----------------------------------------
 // The ordering rule here is the one defect in this feature that fails SILENTLY:
 // the agent-preset applier drops a pick aimed at a session that is no longer

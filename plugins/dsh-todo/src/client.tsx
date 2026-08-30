@@ -949,6 +949,11 @@ const VIEW_STYLES = `
 }
 .dshtd-edit:focus { outline: none; }
 .dshtd-rowbtns { flex: none; display: flex; gap: 1px; opacity: 0; transition: opacity 100ms ease; }
+/* Always visible, unlike .dshtd-rowbtns: launching work on a task is a primary
+   action, and one hidden until hover is one nobody finds. Dimmed at rest so a
+   list of them does not shout, full strength on hover/focus. */
+.dshtd-rowlead { flex: none; opacity: 0.55; transition: opacity 100ms ease; }
+.dshtd-row:hover .dshtd-rowlead, .dshtd-rowlead:hover, .dshtd-rowlead:focus-visible { opacity: 1; }
 .dshtd-row:hover .dshtd-rowbtns, .dshtd-row:focus-within .dshtd-rowbtns { opacity: 1; }
 /* A 16px glyph centred in a fixed 20px square. 20px, not 24px: the button is
    the tallest thing in a row, so its height sets the row height — a 24px box
@@ -2072,30 +2077,35 @@ function TodoRow({
             <StatusPill item={item} store={store} />
           </span>
         ) : null}
+        {/* OUTSIDE .dshtd-rowbtns, which is opacity: 0 until the row is hovered.
+            That is right for move/delete — destructive or fiddly controls that
+            would clutter a list — but wrong for this one: starting work on a
+            task is a PRIMARY action, and an affordance nobody can see does not
+            exist. It shipped hidden and was reported as a missing feature.
+            Open replaces Launch rather than joining it: the row is at its 40px
+            budget and the two are mutually exclusive anyway. A task whose
+            recorded session no longer resolves falls back to Launch — never a
+            button that errors on click. */}
+        {onOpenSession ? (
+          <button
+            className="dshtd-icon dshtd-rowlead"
+            title="Open the session working this task"
+            aria-label={`Open the session for "${item.title}"`}
+            onClick={onOpenSession}
+          >
+            <Icon path={ICON.session} />
+          </button>
+        ) : onLaunch && !done ? (
+          <button
+            className="dshtd-icon dshtd-rowlead"
+            title="Start a session for this task"
+            aria-label={`Start a session for "${item.title}"`}
+            onClick={onLaunch}
+          >
+            <Icon path={ICON.launch} />
+          </button>
+        ) : null}
         <span className="dshtd-rowbtns">
-          {/* Open replaces Launch rather than joining it: the row is at its
-              40px budget, and the two are mutually exclusive anyway. A task
-              whose recorded session no longer resolves falls back to Launch —
-              never a button that errors on click. */}
-          {onOpenSession ? (
-            <button
-              className="dshtd-icon"
-              title="Open the session working this task"
-              aria-label={`Open the session for "${item.title}"`}
-              onClick={onOpenSession}
-            >
-              <Icon path={ICON.session} />
-            </button>
-          ) : onLaunch && !done ? (
-            <button
-              className="dshtd-icon"
-              title="Start a session for this task"
-              aria-label={`Start a session for "${item.title}"`}
-              onClick={onLaunch}
-            >
-              <Icon path={ICON.launch} />
-            </button>
-          ) : null}
           <button
             className="dshtd-icon"
             title={open ? 'Hide details' : 'Show details'}
