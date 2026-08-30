@@ -166,10 +166,23 @@ async function mount(have) {
   // launch button was invisible in the real UI, so 'agentPresets' now means the
   // namespaced registration and 'agentPresetsKey' is kept only to prove the
   // legacy shape still works.
+  // Kept only to prove the key form does NOT enable the button — see the matrix.
   if (have.includes('agentPresetsKey')) {
     remote.agentPresets = { list: async () => ({ ok: true, value: { presets: [] } }), select: async () => ({ ok: true }) }
   }
-  ctx.remote = remote
+  // THE REAL `remote` IS A PROXY THAT THROWS on an unknown sub-name — a plain
+  // object silently answers `undefined` instead, which is exactly why this
+  // matrix passed green while the browser console showed
+  // `cannot get property "remote.agentPresets" without inject` and the tab was
+  // empty. Symbols pass through: cordis probes its own tracker symbols and
+  // throwing on those breaks the fiber before the plugin ever runs.
+  ctx.remote = new Proxy(remote, {
+    get(target, prop) {
+      if (prop in target) return target[prop]
+      if (typeof prop === 'symbol') return undefined
+      throw new Error(`cannot get property "remote.${String(prop)}" without inject`)
+    },
+  })
   if (have.includes('sessions')) {
     ctx.provide('sessions')
     ctx.sessions = { binding: () => undefined, open: () => {}, create: async () => 'n' }
@@ -205,9 +218,11 @@ const MATRIX = [
   { label: 'sessions + modelDirectories, no agentPresets', have: ['sessions', 'modelDirectories'], launch: 'absent' },
   { label: 'all three, no uiWorkspace', have: ['sessions', 'modelDirectories', 'agentPresets'], launch: 'present' },
   { label: 'everything', have: ['sessions', 'modelDirectories', 'agentPresets', 'uiWorkspace'], launch: 'present' },
-  // The legacy key-on-remote shape must keep working, but it is NOT what the
-  // harness does — see the namespaced-service block above.
-  { label: 'legacy key-form agentPresets', have: ['sessions', 'modelDirectories', 'agentPresetsKey'], launch: 'present' },
+  // A key on `remote` is NOT a supported shape and must NOT enable the button:
+  // the harness only ever registers the namespaced service, and the fallback
+  // that once read the key form threw on the real proxied remote and crashed
+  // the slot. This row pins that the key form alone leaves launch absent.
+  { label: 'key-on-remote only (unsupported)', have: ['sessions', 'modelDirectories', 'agentPresetsKey'], launch: 'absent' },
 ]
 
 for (const row of MATRIX) {

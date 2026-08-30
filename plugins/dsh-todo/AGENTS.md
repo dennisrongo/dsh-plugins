@@ -157,6 +157,20 @@ sessions.create". So a launch is a five-step sequence, and its order is load-bea
     exercised the ABSENT case, so it stayed green while documenting the wrong rule.
     `probeNamespaced()` is the single guarded helper for this; the guard is still
     needed, because a profile that never provides the service does throw.
+  - **`c.remote?.agentPresets` is NOT a safe fallback — it THROWS.** `remote` is
+    itself a Proxy, and optional chaining guards a nullish object, never a proxy
+    trap on the property. A `?? c.remote?.agentPresets` tail added as
+    belt-and-braces behind the already-correct guarded read escaped the try/catch,
+    crashed the `conversation.view` slot, and emptied the tab a SECOND time
+    (`slot entry crashed in 'conversation.view'` in the browser console). There is
+    no fallback now and there must not be one: the namespaced form is the only
+    correct access, so the tail bought nothing and cost two outages.
+  - **Stub service objects as throwing Proxies, never plain objects** — letting
+    symbols through, since cordis probes its own tracker symbols. A plain-object
+    stub answers `undefined` for any missing key and therefore cannot fail, which
+    is exactly why the matrix stayed green through both outages. For the same
+    reason the matrix must NOT provide `remote.agentPresets`: a check that supplies
+    the optional service can never exercise its absence.
   - `test/context-probe.mjs` pins all of it against a REAL `Context` and the REAL
     built bundle, over a six-row deployment matrix. The matrix is exhaustive on
     purpose: with the property guard removed, THREE separate rows fail on three

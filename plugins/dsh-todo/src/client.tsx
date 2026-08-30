@@ -2778,7 +2778,13 @@ function launchContext(
   // had the service loaded the whole time, and an earlier comment here asserted
   // the opposite. The namespaced read still needs its guard: a profile without
   // ui-agent-preset never provides the service, and an undeclared read throws.
-  const agentPresets = probeNamespaced(c, 'remote.agentPresets') ?? c.remote?.agentPresets
+  //
+  // There is deliberately NO `?? c.remote?.agentPresets` fallback. On the real
+  // (proxied) remote service that read THROWS rather than yielding undefined —
+  // it escapes the guard above and crashes the whole conversation.view slot,
+  // which is what emptied the tab. The namespaced form is the only correct
+  // access, so the fallback bought nothing and cost the outage twice.
+  const agentPresets = probeNamespaced(c, 'remote.agentPresets')
   if (!sessions || !modelDirectories || !agentPresets) return undefined
   return {
     workspaceId,

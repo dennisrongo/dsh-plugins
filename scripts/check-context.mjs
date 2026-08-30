@@ -103,7 +103,33 @@ function stubs(ctx) {
     locale: { register: () => () => {}, bind: () => (k) => k },
     settingsScope: { bind: () => ({}), describe: () => ({}) },
     uiWorkspace: { archiveSession: async () => {}, startSession: async () => {} },
-    remote: { $mount: async () => async () => {}, $on: () => () => {} },
+    // The real `remote` is a PROXY that THROWS on an unknown sub-name. A plain
+    // object answers `undefined` instead, and that difference hid a shipped
+    // outage: `ctx.remote?.agentPresets` looked like a safe optional read,
+    // passed every stub-based test, and crashed the conversation.view slot in
+    // the browser. Symbols pass through — cordis probes its own tracker
+    // symbols, and throwing on those breaks the fiber before apply() runs.
+    remote: new Proxy(
+      {
+        $mount: async () => async () => {},
+        $on: () => () => {},
+        // A plugin's OWN mounted namespace is a legitimate key here: $mount
+        // publishes it and the plugin reads it back through `remote`.
+        ...Object.fromEntries(
+          MOUNTED_NAMESPACES.map((name) => [
+            name,
+            new Proxy({}, { get: () => async () => ({ ok: true, value: { list: { items: [], revision: 0, updatedAt: 0 } } }) }),
+          ]),
+        ),
+      },
+      {
+        get(target, prop) {
+          if (prop in target) return target[prop]
+          if (typeof prop === 'symbol') return undefined
+          throw new Error(`cannot get property "remote.${String(prop)}" without inject`)
+        },
+      },
+    ),
   }
 }
 
@@ -144,10 +170,17 @@ const moduleTable = {
  * Each is a cordis service only that plugin provides, and its slot registration
  * is parked on it — so the check must supply them or it measures nothing.
  */
+/** Bare namespace names a plugin publishes for itself through `remote.$mount`. */
+const MOUNTED_NAMESPACES = ['dshTodo', 'dshGit', 'dshPlans', 'dshMemory', 'dshMissionControl']
+
 const REMOTE_NAMESPACES = [
   'remote.dshTodo', 'remote.dshGit', 'remote.dshPlans',
-  'remote.dshMemory', 'remote.dshMissionControl', 'remote.agentPresets',
+  'remote.dshMemory', 'remote.dshMissionControl',
 ]
+// NOTE: 'remote.agentPresets' is deliberately NOT provided. It is an OPTIONAL
+// service no plugin declares, and providing it here would mean the check never
+// exercises the absent case — which is the case that threw and emptied the Todo
+// tab. A stub that supplies everything cannot catch an unguarded optional read.
 
 const failures = []
 const checked = []

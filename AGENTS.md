@@ -234,6 +234,16 @@ invisible on a harness that had the service loaded the whole time. Reading it th
 fails CLOSED and silently. An earlier version of this very paragraph asserted the
 opposite, and the test pinning it only exercised the ABSENT case, so it passed while
 encoding the wrong rule — a test must exercise the shape that actually exists.
+
+**And `ctx.remote` is itself a Proxy, so `ctx.remote?.foo` is NOT a safe optional read —
+it THROWS.** Optional chaining guards against a nullish `remote`, never against a proxy
+trap on the property. That emptied the Todo tab a SECOND time, from a
+`?? ctx.remote?.agentPresets` fallback that existed only as belt-and-braces behind an
+already-correct guarded read. **Stub every service object as a throwing Proxy, not a plain
+object** — letting symbols through, since cordis probes its own tracker symbols — because a
+plain-object stub answers `undefined` and cannot fail. And a check must NOT provide an
+optional service whose absence it exists to test: `check-context.mjs` supplied
+`remote.agentPresets` unconditionally and so could never see the throw.
 `node scripts/check-context.mjs` mounts every built client bundle on a REAL `Context`
 with only its declared services and calls each registered slot's `inject` callback — the
 deferred path where the failure actually lands. It runs LAST in `pnpm test` because it
