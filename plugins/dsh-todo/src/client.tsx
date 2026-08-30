@@ -2748,8 +2748,20 @@ const getMissingSnapshot = (): TodoState => MISSING
  */
 function probeNamespaced(ctx: unknown, name: string): unknown {
   const c = ctx as Record<string, unknown> & { get?: (n: string) => unknown }
+  // ORDER MATTERS: ctx.get(name) FIRST, the bare read only as a fallback.
+  // `c[name] ?? c.get?.(name)` looks like it tries both, and does not: the
+  // bare read THROWS on an undeclared service, which aborts the whole
+  // expression before ?? is ever evaluated, and the catch then swallows it.
+  // Measured in a live browser: bare=THREW get()=ok for every service, so the
+  // fallback that was supposed to rescue the read could never run.
   try {
-    return c[name] ?? c.get?.(name)
+    const viaGet = c.get?.(name)
+    if (viaGet !== undefined) return viaGet
+  } catch {
+    // fall through to the bare read
+  }
+  try {
+    return c[name]
   } catch {
     return undefined
   }
@@ -2772,13 +2784,8 @@ function launchContext(
   // optional, every read must be guarded, or a profile that composes none of
   // them takes the whole tab down with it. `ctx.get(name)` is the safe probe;
   // the bare property read is the trap. test/context-probe.mjs pins both.
-  const probe = (name: 'sessions' | 'modelDirectories' | 'uiWorkspace'): unknown => {
-    try {
-      return c[name] ?? c.get?.(name)
-    } catch {
-      return undefined
-    }
-  }
+  const probe = (name: 'sessions' | 'modelDirectories' | 'uiWorkspace'): unknown =>
+    probeNamespaced(c, name)
   const sessions = probe('sessions')
   const modelDirectories = probe('modelDirectories')
   // agentPresets is a NAMESPACED SERVICE, reachable only as
@@ -2808,7 +2815,30 @@ function launchContext(
   // already renders 'Default' for an empty picker.
   if (!sessions) {
     if (typeof console !== 'undefined') {
-      console.warn('dsh-todo: no `sessions` service — the launch button is hidden')
+      // Report WHAT was tried, not just that it failed. 'no sessions service'
+      // on a harness that plainly HAS sessions is a dead end; the per-read
+      // detail is what separates 'absent' from 'present but unreachable from
+      // this fiber'.
+      const seen: string[] = []
+      for (const key of ['sessions', 'modelDirectories', 'uiWorkspace']) {
+        let bare = 'undefined'
+        try {
+          bare = (c as Record<string, unknown>)[key] === undefined ? 'undefined' : 'ok'
+        } catch {
+          bare = 'THREW'
+        }
+        let viaGet = 'undefined'
+        try {
+          viaGet = c.get?.(key) === undefined ? 'undefined' : 'ok'
+        } catch {
+          viaGet = 'THREW'
+        }
+        seen.push(key + ': bare=' + bare + ' get()=' + viaGet)
+      }
+      console.warn(
+        'dsh-todo: launch hidden — sessions did not resolve from this fiber.\n  ' +
+          seen.join('\n  '),
+      )
     }
     return undefined
   }
@@ -2896,7 +2926,15 @@ export function apply(ctx: ClientContext): void {
                 store = new TodoStore(readyCtx.remote.dshTodo, workspaceId)
                 stores.set(workspaceId, store)
               }
-              return { store, launch: launchContext(readyCtx, workspaceId) }
+              // Read the launch services off the ROOT ctx, not the nested
+              // fiber. A cordis fiber resolves a service only if IT declared the
+              // dependency; the nested inject lists remote.dshTodo/workspaces/
+              // slots, so `sessions` is invisible there however well the shell
+              // provides it — which is exactly what hid this button. Adding it
+              // to that inject list is the wrong fix: it would park the whole
+              // TAB until an optional service appears. The root ctx sees every
+              // registered service, and launchContext() still guards each read.
+              return { store, launch: launchContext(ctx, workspaceId) }
             },
           },
           TodoView,

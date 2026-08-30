@@ -209,6 +209,57 @@ async function mount(have) {
   return registered
 }
 
+// --- the SHELL's real context: bare reads throw, ctx.get() works ------------
+// Measured in a live browser, and it is the shape every earlier stub got wrong:
+//
+//   sessions:         bare=THREW  get()=ok
+//   modelDirectories: bare=THREW  get()=ok
+//   uiWorkspace:      bare=THREW  get()=ok
+//
+// The services were present the whole time. The probe read
+// `c[name] ?? c.get?.(name)`, which LOOKS like it tries both and does not: the
+// bare read throws, aborting the expression before `??` is evaluated, and the
+// surrounding catch swallows it. The get() fallback could never run.
+//
+// So ctx.get(name) must be tried FIRST. Pinned against a context that behaves
+// exactly as the shell's does.
+{
+  const services = {
+    sessions: { binding: () => undefined, open() {}, create: async () => 'n' },
+    modelDirectories: { directoryFor: () => ({}) },
+  }
+  const shellLike = new Proxy({ get: (name) => services[name] }, {
+    get(target, prop) {
+      if (prop === 'get') return target.get
+      if (typeof prop === 'symbol') return undefined
+      throw new Error(`cannot get property "${String(prop)}" without inject`)
+    },
+  })
+
+  const probe = (ctx, name) => {
+    try {
+      const viaGet = ctx.get?.(name)
+      if (viaGet !== undefined) return viaGet
+    } catch { /* fall through */ }
+    try { return ctx[name] } catch { return undefined }
+  }
+  assert.ok(probe(shellLike, 'sessions'),
+    'a probe must reach a service the shell exposes only through ctx.get()')
+
+  // The ORDER is the whole point: the naive form resolves to undefined.
+  const naive = (ctx, name) => {
+    try { return ctx[name] ?? ctx.get?.(name) } catch { return undefined }
+  }
+  assert.equal(naive(shellLike, 'sessions'), undefined,
+    'the ?? form must still be broken here — if it starts working, this test stops proving the order matters')
+
+  const source = readFileSync(join(root, 'src/client.tsx'), 'utf8')
+  const getAt = source.indexOf('const viaGet = c.get?.(name)')
+  assert.ok(getAt !== -1, 'probeNamespaced must try ctx.get(name) first')
+  assert.ok(source.indexOf('return c[name]', getAt) > getAt,
+    'the bare property read must come AFTER the ctx.get() attempt')
+}
+
 // --- the matrix -------------------------------------------------------------
 // Every row was verified to FAIL with the guard removed; rows 1, 2 and 4 each
 // trip a DIFFERENT undeclared read, which is why one case is not enough.
