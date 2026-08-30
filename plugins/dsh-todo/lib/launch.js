@@ -40,13 +40,13 @@ function presetOptions(presets) {
 }
 async function launchSession(ctx, request) {
   const { sessionId, presetId, model, prompt } = request;
-  if (presetId !== void 0) {
+  if (presetId !== void 0 && ctx.remote.agentPresets !== void 0) {
     const applied = await ctx.remote.agentPresets.select(sessionId, presetId);
     if (!applied.ok) {
       throw new Error(`could not set mode: ${applied.error.message}`);
     }
   }
-  if (model !== void 0) {
+  if (model !== void 0 && ctx.modelDirectories !== void 0) {
     await ctx.modelDirectories.directoryFor(sessionId).select(model);
   }
   const binding = ctx.sessions.binding(sessionId);

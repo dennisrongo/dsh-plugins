@@ -1451,8 +1451,8 @@ export function LaunchDialog({
     if (session === null) return
     let cancelled = false
 
-    const directory = ctx.modelDirectories.directoryFor(session.id)
-    void directory
+    const directory = ctx.modelDirectories?.directoryFor(session.id)
+    if (directory !== undefined) void directory
       .load()
       .then(() => {
         if (cancelled) return
@@ -1468,7 +1468,7 @@ export function LaunchDialog({
       })
 
     void ctx.remote.agentPresets
-      .list()
+      ?.list()
       .then((reply) => {
         if (cancelled || !reply.ok) return
         const { options, defaultId } = presetOptions(reply.value.presets)
@@ -2795,7 +2795,23 @@ function launchContext(
   // which is what emptied the tab. The namespaced form is the only correct
   // access, so the fallback bought nothing and cost the outage twice.
   const agentPresets = probeNamespaced(c, 'remote.agentPresets')
-  if (!sessions || !modelDirectories || !agentPresets) return undefined
+
+  // ONLY `sessions` is required. It is the one service a launch cannot fake:
+  // without it there is no session to create, configure or open.
+  //
+  // `modelDirectories` and `agentPresets` are OPTIONAL, and requiring them was the
+  // mistake that kept this button invisible. They supply the two PICKERS, and a
+  // launch with no pick is a launch on the deployment defaults — exactly what
+  // the sidebar's own New Session does. Gating the whole feature on them meant
+  // one absent service silently removed the BUTTON rather than a dropdown, and
+  // that failure is indistinguishable from the feature being broken. The dialog
+  // already renders 'Default' for an empty picker.
+  if (!sessions) {
+    if (typeof console !== 'undefined') {
+      console.warn('dsh-todo: no `sessions` service — the launch button is hidden')
+    }
+    return undefined
+  }
   return {
     workspaceId,
     sessions,

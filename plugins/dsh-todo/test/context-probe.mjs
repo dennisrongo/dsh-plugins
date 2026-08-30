@@ -212,17 +212,23 @@ async function mount(have) {
 // --- the matrix -------------------------------------------------------------
 // Every row was verified to FAIL with the guard removed; rows 1, 2 and 4 each
 // trip a DIFFERENT undeclared read, which is why one case is not enough.
+// ONLY `sessions` is required. `modelDirectories` and `agentPresets` supply the
+// two PICKERS, and a launch with no pick runs the deployment defaults — exactly
+// what the sidebar's own New Session does. An earlier version of this matrix
+// demanded all three, which is the rule that kept the button invisible on a real
+// profile: one absent optional service removed the whole FEATURE instead of one
+// dropdown, and that is indistinguishable from the feature being broken.
 const MATRIX = [
   { label: 'nothing composed', have: [], launch: 'absent' },
-  { label: 'sessions only', have: ['sessions'], launch: 'absent' },
-  { label: 'sessions + modelDirectories, no agentPresets', have: ['sessions', 'modelDirectories'], launch: 'absent' },
+  { label: 'sessions ONLY — no pickers, button must still show', have: ['sessions'], launch: 'present' },
+  { label: 'sessions + modelDirectories, no agentPresets', have: ['sessions', 'modelDirectories'], launch: 'present' },
+  { label: 'sessions + agentPresets, no modelDirectories', have: ['sessions', 'agentPresets'], launch: 'present' },
   { label: 'all three, no uiWorkspace', have: ['sessions', 'modelDirectories', 'agentPresets'], launch: 'present' },
   { label: 'everything', have: ['sessions', 'modelDirectories', 'agentPresets', 'uiWorkspace'], launch: 'present' },
-  // A key on `remote` is NOT a supported shape and must NOT enable the button:
-  // the harness only ever registers the namespaced service, and the fallback
-  // that once read the key form threw on the real proxied remote and crashed
-  // the slot. This row pins that the key form alone leaves launch absent.
-  { label: 'key-on-remote only (unsupported)', have: ['sessions', 'modelDirectories', 'agentPresetsKey'], launch: 'absent' },
+  // A key on `remote` is not how the harness registers the service — only the
+  // namespaced form is — but with sessions present the button shows either way,
+  // because the pickers are optional.
+  { label: 'key-on-remote agentPresets (not the harness shape)', have: ['sessions', 'modelDirectories', 'agentPresetsKey'], launch: 'present' },
 ]
 
 for (const row of MATRIX) {

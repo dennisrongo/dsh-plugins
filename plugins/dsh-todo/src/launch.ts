@@ -62,11 +62,19 @@ export interface LaunchContext {
     open: (sessionId: string) => void
     binding: (sessionId: string) => { session: SessionFace } | undefined
   }
-  modelDirectories: {
+  /**
+   * OPTIONAL. Supplies the model picker; absent on a profile without
+   * ui-model-selection, where a launch simply runs the deployment default.
+   */
+  modelDirectories?: {
     directoryFor: (sessionId: string) => ModelDirectoryFace
   }
   remote: {
-    agentPresets: {
+    /**
+     * OPTIONAL. Supplies the mode picker; absent on a profile without
+     * ui-agent-preset, where a launch runs the default preset.
+     */
+    agentPresets?: {
       list: () => Promise<RemoteResult<{ presets: RawPreset[] }>>
       select: (sessionId: string, presetId: string) => Promise<RemoteResult<unknown>>
     }
@@ -236,16 +244,18 @@ export interface LaunchRequest {
 export async function launchSession(ctx: LaunchContext, request: LaunchRequest): Promise<string> {
   const { sessionId, presetId, model, prompt } = request
 
-  // 1. Mode first: only a blank session accepts a preset.
-  if (presetId !== undefined) {
+  // 1. Mode first: only a blank session accepts a preset. Skipped entirely when
+  //    the deployment composes no agent presets — the session then runs the
+  //    default, exactly as one started from the sidebar would.
+  if (presetId !== undefined && ctx.remote.agentPresets !== undefined) {
     const applied = await ctx.remote.agentPresets.select(sessionId, presetId)
     if (!applied.ok) {
       throw new Error(`could not set mode: ${applied.error.message}`)
     }
   }
 
-  // 2. Model second, still before the prompt.
-  if (model !== undefined) {
+  // 2. Model second, still before the prompt. Same optionality.
+  if (model !== undefined && ctx.modelDirectories !== undefined) {
     await ctx.modelDirectories.directoryFor(sessionId).select(model)
   }
 
