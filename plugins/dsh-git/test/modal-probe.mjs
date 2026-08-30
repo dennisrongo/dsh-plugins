@@ -29,6 +29,15 @@ const css = (() => {
 })()
 assert.match(css, /\.dshgit-modal-backdrop/, 'the modal CSS must be in the shipped bundle')
 
+// Every destructive action goes through the in-app dialog. A stray window.confirm
+// would be a SECOND confirmation UI in one tab — the browser's grey box beside a
+// themed dialog — and it is exactly what this replaced. dsh-todo pins the same
+// guard for the same reason.
+assert.ok(
+  !bundle.includes('window.confirm'),
+  'window.confirm must be replaced by the in-app confirmation dialog',
+)
+
 const html = [
   '<!doctype html><meta charset=utf-8>',
   '<style>html,body{margin:0;height:100%}</style>',
@@ -57,8 +66,26 @@ const html = [
   '<div style="height:1200px">tall</div>',
   '</div></div>',
   '<div class="dshgit-modal-foot"><span class="dshgit-spacer"></span>',
-  '<button class="dshgit-btn">Cancel</button>',
+  '<button class="dshgit-btn" id=cancel>Cancel</button>',
   '<button class="dshgit-btn primary" id=primary>Add worktree</button></div>',
+  '</div></div>',
+  // A second dialog, the destructive one, so one page can compare the danger
+  // button against the neutral and accent variants.
+  //
+  // position:static is forced ONLY here. Two fixed full-screen backdrops overlap
+  // by construction, and the second would intercept the first's hit test — a
+  // fixture artifact, not a product fault. Stacking for this class is already
+  // proven by the dialog above; this instance is measured for PAINT alone.
+  '<div class="dshgit-modal-backdrop" id=cbackdrop style="position:static;background:transparent">',
+  '<div class="dshgit-modal">',
+  '<div class="dshgit-modal-head"><span class="dshgit-modal-title">Delete this branch?</span></div>',
+  '<div class="dshgit-modal-body"><div class="dshgit-confirm">',
+  '<span class="dshgit-confirm-text">Commits only on this branch are lost.</span>',
+  '<span class="dshgit-confirm-subject">feature/test-branch</span>',
+  '</div></div>',
+  '<div class="dshgit-modal-foot"><span class="dshgit-spacer"></span>',
+  '<button class="dshgit-btn" id=ccancel>Cancel</button>',
+  '<button class="dshgit-btn danger" id=cdanger>Delete branch</button></div>',
   '</div></div>',
 ].join('')
 
@@ -89,6 +116,11 @@ const script = `
     inputs: Array.from(document.querySelectorAll('.dshgit-modal input[type=text], .dshgit-modal input:not([type])'))
       .map((el) => Math.round(el.getBoundingClientRect().width)),
     labelW: document.querySelector('.dshgit-flabel').getBoundingClientRect().width,
+    dangerBg: getComputedStyle(document.getElementById('cdanger')).backgroundColor,
+    dangerColor: getComputedStyle(document.getElementById('cdanger')).color,
+    neutralBg: getComputedStyle(document.getElementById('ccancel')).backgroundColor,
+    subjectFont: getComputedStyle(document.querySelector('.dshgit-confirm-subject')).fontFamily,
+    dangerRect: (() => { const r = document.getElementById('cdanger').getBoundingClientRect(); return { w: r.width, h: r.height } })(),
   })
 `
 
@@ -172,6 +204,23 @@ check('the fields are wide enough to read a path in', () => {
   for (const w of m.inputs) {
     assert.ok(w > 200, 'an input is only ' + w + 'px wide; fields: ' + JSON.stringify(m.inputs))
   }
+})
+
+check('a destructive confirm is visibly destructive, not just another button', () => {
+  // The whole point of the danger variant. If it renders identically to Cancel,
+  // "Delete branch" and "Cancel" are two grey buttons and the dialog has stopped
+  // communicating which one destroys work.
+  assert.notEqual(m.dangerBg, 'rgba(0, 0, 0, 0)', 'the danger button has no fill')
+  assert.notEqual(m.dangerBg, m.neutralBg, 'danger and Cancel are painted the same')
+  assert.notEqual(m.dangerBg, m.primaryBg, 'danger is not distinct from the accent action')
+  assert.notEqual(m.dangerBg, m.dangerColor, 'danger is text-on-itself')
+  assert.ok(m.dangerRect.w > 40 && m.dangerRect.h > 16, 'the danger button collapsed')
+})
+
+check('the confirm subject is monospaced so a name can be read exactly', () => {
+  // These questions name a branch or a path. A name the user cannot read
+  // character-for-character is a name they cannot check before deleting it.
+  assert.match(m.subjectFont, /mono/i, 'subject font is ' + m.subjectFont)
 })
 
 console.log('\n' + passed + ' modal checks passed')

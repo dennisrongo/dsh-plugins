@@ -1017,6 +1017,16 @@ const VIEW_STYLES = `
   --g-danger: var(--dsw-alias-state-error-primary, #ef4444);
   --g-warn: var(--dsw-alias-state-warn-primary, #f59e0b);
   --g-info: var(--dsw-alias-state-business-primary, #3b82f6);
+  /* ACTION vs SUCCESS. --g-accent is state-success-primary, which means
+     "this went well" and stays green whatever accent the user picks. Painting
+     the primary BUTTON with it made the main action of every dialog read as
+     foreign next to dsh's own send button. dsh-mission-control already had this
+     right: button-info-fill is the surface the accent actually reaches
+     (dsh-theme's notes: brand-primary is a trap that paints nothing), so the
+     action colour follows the theme and the success colour stays a state. */
+  --g-action: var(--dsw-alias-button-info-fill, #4d6bfe);
+  --g-action-hover: var(--dsw-alias-button-info-hover, #679efe);
+  --g-on-action: var(--dsw-alias-label-primary-foreground, #ffffff);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -1056,9 +1066,18 @@ const VIEW_STYLES = `
 .dshgit-btn:hover:not(:disabled) { background: var(--g-hover); color: var(--g-primary); }
 .dshgit-btn:disabled { opacity: 0.4; cursor: default; }
 .dshgit-btn.primary {
-  background: var(--g-accent); border-color: transparent; color: #06240f; font-weight: 600;
+  background: var(--g-action); border-color: transparent; color: var(--g-on-action); font-weight: 600;
 }
-.dshgit-btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--g-accent); color: #06240f; }
+.dshgit-btn.primary:hover:not(:disabled) {
+  background: var(--g-action-hover); color: var(--g-on-action);
+}
+/* Destructive confirmations. Red because these are the actions that cannot be
+   undone — a dropped stash and a deleted unmerged branch are both gone. */
+.dshgit-btn.danger {
+  background: var(--g-danger); border-color: transparent;
+  color: var(--g-on-action); font-weight: 600;
+}
+.dshgit-btn.danger:hover:not(:disabled) { filter: brightness(1.08); }
 .dshgit-btn.ai { border-color: var(--g-info); color: var(--g-info); }
 .dshgit-btn.ai:hover:not(:disabled) { background: var(--g-info); color: #04121f; }
 .dshgit-badge-count {
@@ -1195,6 +1214,16 @@ const VIEW_STYLES = `
   --g-danger: var(--dsw-alias-state-error-primary, #ef4444);
   --g-warn: var(--dsw-alias-state-warn-primary, #f59e0b);
   --g-info: var(--dsw-alias-state-business-primary, #3b82f6);
+  /* ACTION vs SUCCESS. --g-accent is state-success-primary, which means
+     "this went well" and stays green whatever accent the user picks. Painting
+     the primary BUTTON with it made the main action of every dialog read as
+     foreign next to dsh's own send button. dsh-mission-control already had this
+     right: button-info-fill is the surface the accent actually reaches
+     (dsh-theme's notes: brand-primary is a trap that paints nothing), so the
+     action colour follows the theme and the success colour stays a state. */
+  --g-action: var(--dsw-alias-button-info-fill, #4d6bfe);
+  --g-action-hover: var(--dsw-alias-button-info-hover, #679efe);
+  --g-on-action: var(--dsw-alias-label-primary-foreground, #ffffff);
   position: fixed; inset: 0; z-index: 2147483100;
   background: rgba(0, 0, 0, 0.55);
   display: flex; align-items: center; justify-content: center;
@@ -1223,6 +1252,20 @@ const VIEW_STYLES = `
 }
 /* Inside a dialog the form IS the surface: no border, no page padding. */
 .dshgit-modal .dshgit-form { padding: 0; border-bottom: 0; }
+
+
+/* ---- confirmation ---- */
+.dshgit-confirm { display: flex; flex-direction: column; gap: 10px; }
+.dshgit-confirm-text { color: var(--g-secondary); font-size: 13px; line-height: 20px; }
+/* The SUBJECT is quoted verbatim and monospaced: these questions name a branch
+   or a path, and a name the user cannot read exactly is a name they cannot
+   check before deleting it. */
+.dshgit-confirm-subject {
+  color: var(--g-primary); font-family: var(--ds-font-family-code, ui-monospace, monospace);
+  font-size: 12px; line-height: 18px;
+  border-left: 2px solid var(--g-danger); padding-left: 8px;
+  overflow-wrap: anywhere;
+}
 
 /* ---- commit box ---- */
 .dshgit-commit { flex: none; padding: 12px 20px; border-bottom: 1px solid var(--g-border); }
@@ -1822,7 +1865,10 @@ function Section({
   selected,
   store,
   onOpen,
+  confirm,
 }: {
+  /** The shared confirmation. Discarding is destructive and must ask. */
+  confirm: (request: ConfirmRequest) => Promise<boolean>
   title: string
   files: GitFileChange[]
   section: 'staged' | 'unstaged'
@@ -1845,7 +1891,17 @@ function Section({
                 className="dshgit-icon danger"
                 title="Discard all changes in this section"
                 onClick={() => {
-                  if (confirmDiscard(files.length)) void store.stage('discard', paths)
+                  void (async () => {
+                    const yes = await confirm({
+                      title: 'Discard all changes in this section?',
+                      message:
+                        'Untracked files are deleted and modified files revert to the index. This cannot be undone.',
+                      subject: files.length + (files.length === 1 ? ' file' : ' files'),
+                      confirmLabel: 'Discard changes',
+                      danger: true,
+                    })
+                    if (yes) void store.stage('discard', paths)
+                  })()
                 }}
               >
                 <Icon path={ICON.discard} />
@@ -1883,7 +1939,17 @@ function Section({
             onDiscard={
               section === 'unstaged'
                 ? () => {
-                    if (confirmDiscard(1, file.path)) void store.stage('discard', [file.path])
+                    void (async () => {
+                      const yes = await confirm({
+                        title: 'Discard changes to this file?',
+                        message:
+                          'An untracked file is deleted; a modified one reverts to the index. This cannot be undone.',
+                        subject: file.path,
+                        confirmLabel: 'Discard changes',
+                        danger: true,
+                      })
+                      if (yes) void store.stage('discard', [file.path])
+                    })()
                   }
                 : undefined
             }
@@ -2017,25 +2083,8 @@ function HistoryPane({
 }
 
 
-/**
- * Guard any destructive action behind a confirmation.
- *
- * The sibling of {@link confirmDiscard}, generalized: deleting a branch,
- * dropping a stash and removing a worktree all destroy work that is not
- * recoverable through the tab. A host without a usable `confirm` refuses rather
- * than proceeding, which is the safe direction for all three.
- *
- * @param message - the question, naming exactly what will be destroyed.
- * @returns true when the user accepted.
- */
-function confirmAction(message: string): boolean {
-  try {
-    if (typeof window === 'undefined' || typeof window.confirm !== 'function') return false
-    return window.confirm(message)
-  } catch {
-    return false
-  }
-}
+
+
 
 /**
  * Find the workspace registered at a directory, if any.
@@ -2676,6 +2725,110 @@ function Modal({
   )
 }
 
+
+/** What one confirmation asks. */
+export interface ConfirmRequest {
+  /** The dialog's heading, phrased as the question. */
+  title: string
+  /** What will happen, including what cannot be undone. */
+  message: string
+  /** The thing being acted on — a branch name, a path — shown verbatim. */
+  subject?: string
+  /** Label for the confirming button; never "OK". */
+  confirmLabel: string
+  /** Paints the confirm button red. True for anything unrecoverable. */
+  danger?: boolean
+}
+
+/**
+ * A promise-returning confirmation, replacing `window.confirm`.
+ *
+ * Promise-based DELIBERATELY. Every call site reads
+ * `if (!confirmAction(...)) return`, and `window.confirm` is synchronous, so a
+ * promise keeps that control flow intact with one `await`. That matters most in
+ * the worktree path, where two questions run in a documented order — ask before
+ * removing, and unregister only if the removal actually succeeded. A
+ * callback-style dialog would force a restructure of exactly the code whose
+ * ordering is load-bearing.
+ *
+ * A second ask while one is open resolves the FIRST as false rather than
+ * stranding it: an `await` that never settles is a dead code path, and the
+ * caller is mid-way through a destructive operation.
+ * @returns the open request (or null) and the `ask` function.
+ */
+function useConfirm(): {
+  pending: ConfirmRequest | null
+  ask: (request: ConfirmRequest) => Promise<boolean>
+  settle: (value: boolean) => void
+} {
+  const [pending, setPending] = React.useState<ConfirmRequest | null>(null)
+  // The resolver rides a ref, not state: React may invoke a state updater twice,
+  // and resolving a promise twice silently drops the second answer.
+  const resolver = React.useRef<((value: boolean) => void) | null>(null)
+
+  const ask = React.useCallback((request: ConfirmRequest): Promise<boolean> => {
+    resolver.current?.(false)
+    return new Promise<boolean>((resolve) => {
+      resolver.current = resolve
+      setPending(request)
+    })
+  }, [])
+
+  const settle = React.useCallback((value: boolean): void => {
+    const resolve = resolver.current
+    resolver.current = null
+    setPending(null)
+    resolve?.(value)
+  }, [])
+
+  return { pending, ask, settle }
+}
+
+/**
+ * The confirmation dialog itself, on the shared {@link Modal}.
+ *
+ * Dismissing answers NO — backdrop, Escape, Cancel and ✕ alike — which is the
+ * Modal's own rule and the only safe default for a question whose yes deletes
+ * something.
+ * @param request - what to ask.
+ * @param onSettle - receives the answer.
+ */
+function ConfirmDialog({
+  request,
+  onSettle,
+}: {
+  request: ConfirmRequest
+  onSettle: (value: boolean) => void
+}): React.JSX.Element {
+  return (
+    <Modal
+      title={request.title}
+      onClose={() => onSettle(false)}
+      footer={
+        <>
+          <span className="dshgit-spacer" />
+          <button className="dshgit-btn" onClick={() => onSettle(false)}>
+            Cancel
+          </button>
+          <button
+            className={'dshgit-btn ' + (request.danger === true ? 'danger' : 'primary')}
+            onClick={() => onSettle(true)}
+          >
+            {request.confirmLabel}
+          </button>
+        </>
+      }
+    >
+      <div className="dshgit-confirm">
+        <span className="dshgit-confirm-text">{request.message}</span>
+        {request.subject !== undefined ? (
+          <span className="dshgit-confirm-subject">{request.subject}</span>
+        ) : null}
+      </div>
+    </Modal>
+  )
+}
+
 export function GitView({
   store,
   openWorktree,
@@ -2849,6 +3002,9 @@ export function GitView({
     },
     [store, selected],
   )
+
+  /** The confirmation dialog, shared by every destructive action in this tab. */
+  const { pending: confirmRequest, ask, settle: settleConfirm } = useConfirm()
 
   /** Sha of the stash whose file list is open, and that list once it arrives. */
   const [openStash, setOpenStash] = React.useState<string | null>(null)
@@ -3230,8 +3386,17 @@ export function GitView({
             title="Abandon the merge and restore the pre-merge state"
             disabled={busy !== null}
             onClick={() => {
-              if (!confirmAction('Abort this merge? Any conflict resolutions are discarded.')) return
-              void store.merge('abort')
+              void (async () => {
+                const yes = await ask({
+                  title: 'Abort this merge?',
+                  message:
+                    'Any conflict resolutions you have made are discarded and the tree returns to its pre-merge state.',
+                  confirmLabel: 'Abort merge',
+                  danger: true,
+                })
+                if (!yes) return
+                void store.merge('abort')
+              })()
             }}
           >
             {busy === 'merge:abort' ? '…' : 'Abort'}
@@ -3268,6 +3433,10 @@ export function GitView({
             Dismiss
           </button>
         </div>
+      ) : null}
+
+      {confirmRequest !== null ? (
+        <ConfirmDialog request={confirmRequest} onSettle={settleConfirm} />
       ) : null}
 
       {newBranch !== null ? (
@@ -3552,8 +3721,15 @@ export function GitView({
               loading={state.refsLoading}
               busy={busy}
               onStash={(action, index) => {
-                if (action === 'drop' && !confirmAction('Delete this stash? It cannot be recovered.')) {
-                  return
+                void (async () => {
+                if (action === 'drop') {
+                  const yes = await ask({
+                    title: 'Delete this stash?',
+                    message: 'A dropped stash cannot be recovered.',
+                    confirmLabel: 'Delete stash',
+                    danger: true,
+                  })
+                  if (!yes) return
                 }
                 void store.stash(action, {
                   ...(index !== undefined ? { index } : {}),
@@ -3561,6 +3737,7 @@ export function GitView({
                   // precisely the work someone stashing expects to be safe.
                   ...(action === 'push' ? { includeUntracked: true } : {}),
                 })
+                })()
               }}
               onWorktree={(action, path) => {
                 if (action !== 'remove') {
@@ -3568,24 +3745,32 @@ export function GitView({
                   return
                 }
                 if (path === undefined) return
-                if (
-                  !confirmAction('Remove this worktree? Uncommitted changes inside it are lost.')
-                ) {
-                  return
-                }
+                const target = path
+                void (async () => {
+                const yes = await ask({
+                  title: 'Remove this worktree?',
+                  message: 'Uncommitted changes inside it are lost.',
+                  subject: target,
+                  confirmLabel: 'Remove worktree',
+                  danger: true,
+                })
+                if (!yes) return
                 // Look the workspace up BEFORE removing anything, and ask now —
                 // a second prompt after the directory is already gone reads as an
                 // afterthought, and the user is deciding about one thing.
-                const linked = workspaceLink?.find(path)
+                const linked = workspaceLink?.find(target)
                 const alsoUnregister =
                   linked !== undefined &&
-                  confirmAction(
-                    'Also remove the workspace "' +
-                      linked.title +
-                      '"? Otherwise it stays in your workspace list pointing at a directory ' +
-                      'that no longer exists. Its sessions are kept.',
-                  )
-                void store.worktree('remove', { path }).then((result) => {
+                  (await ask({
+                    title: 'Also remove its workspace?',
+                    message:
+                      'Otherwise it stays in your workspace list pointing at a directory that no ' +
+                      'longer exists. Its sessions are kept.',
+                    subject: linked.title,
+                    confirmLabel: 'Remove workspace',
+                    danger: true,
+                  }))
+                void store.worktree('remove', { path: target }).then((result) => {
                   // ONLY unregister when the worktree actually went away. Git
                   // refuses removal of a dirty worktree, and unregistering one
                   // that still exists on disk is the opposite of the bug this
@@ -3594,6 +3779,7 @@ export function GitView({
                   if (result === null || !result.ok) return
                   void workspaceLink?.remove(linked.workspaceId)
                 })
+                })()
               }}
               openStash={openStash}
               stashFiles={stashFiles}
@@ -3660,6 +3846,7 @@ export function GitView({
                 selected={selected}
                 store={store}
                 onOpen={openDiff}
+                confirm={ask}
               />
               <Section
                 title="Changes"
@@ -3667,6 +3854,7 @@ export function GitView({
                 section="unstaged"
                 selected={selected}
                 store={store}
+                confirm={ask}
                 onOpen={openDiff}
               />
             </>
@@ -3722,10 +3910,17 @@ export function GitView({
           }}
           onDelete={(name) => {
             setMenuRect(null)
-            if (!confirmAction('Delete branch "' + name + '"? Unmerged commits on it are lost.')) {
-              return
-            }
-            void store.branch('delete', { name })
+            void (async () => {
+              const yes = await ask({
+                title: 'Delete this branch?',
+                message: 'Commits only on this branch are lost. Git refuses if it is unmerged.',
+                subject: name,
+                confirmLabel: 'Delete branch',
+                danger: true,
+              })
+              if (!yes) return
+              void store.branch('delete', { name })
+            })()
           }}
         />
       ) : null}
@@ -3769,28 +3964,7 @@ function firstLine(text: string): string {
   return ''
 }
 
-/**
- * Guard the one destructive action. Discarding rewrites the working tree and
- * deletes untracked files, so it must ask.
- *
- * A host without `confirm` (or one that throws) refuses rather than proceeding:
- * unlike an archive, this cannot be undone.
- * @param count - how many files are affected.
- * @param path - the single path, when only one.
- * @returns true when the user accepted.
- */
-function confirmDiscard(count: number, path?: string): boolean {
-  try {
-    if (typeof window === 'undefined' || typeof window.confirm !== 'function') return false
-    const what = path !== undefined ? `"${path}"` : `${count} file${count === 1 ? '' : 's'}`
-    return window.confirm(
-      `Discard changes to ${what}? Untracked files are deleted. This cannot be undone.`,
-    )
-  } catch {
-    return false
-  }
-}
-
+/** The state a view shows when it has no store: no repo, nothing in flight. */
 const MISSING: GitState = {
   status: null,
   phase: 'ready',

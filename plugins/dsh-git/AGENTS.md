@@ -947,6 +947,45 @@ first because the branch drives the path, so the order matches the causality; be
 container query's breakpoint the labels move above their fields, where three columns would
 squeeze the inputs to nothing.
 
+
+## Confirmations, and the action colour
+
+**Every destructive action goes through one `ConfirmDialog`, on the shared `Modal`.**
+`window.confirm` is gone from this package and `test:modal` asserts it is absent from the
+BUILT bundle — the same guard `dsh-todo` keeps, for the same reason: a browser's grey box
+beside a themed dialog is two confirmation UIs in one tab.
+
+**`useConfirm` returns a PROMISE, deliberately.** Every call site read
+`if (!confirmAction(...)) return`, and `window.confirm` is synchronous, so a promise keeps
+that control flow with one `await`. This matters most in the worktree path, where two
+questions run in a documented order — ask before removing, unregister only if the removal
+actually succeeded. A callback-style dialog would have forced a restructure of exactly the
+code whose ordering is load-bearing. Seven call sites: discard-file, discard-section, abort
+merge, drop stash, remove worktree, remove its workspace, delete branch.
+
+The resolver rides a **ref, not state** — React may invoke a state updater twice, and
+resolving a promise twice silently drops the second answer. A second `ask` while one is open
+resolves the FIRST as false rather than stranding it: an `await` that never settles is a dead
+code path, and the caller is mid-way through a destructive operation.
+
+**The primary button was painted with a STATE token, and that is why it never matched the
+theme.** `--g-accent` is `state-success-primary` — it means "this went well" and stays green
+whatever accent the user picks, so the main action of every dialog read as foreign next to
+dsh's own send button. `dsh-mission-control` already had this right, and is the precedent
+copied here: `--dsw-alias-button-info-fill` is the surface the accent actually reaches
+(`dsh-theme`'s notes: `brand-primary` is a trap that paints nothing). So `--g-action` /
+`--g-on-action` drive actions, `--g-accent` stays for genuine success, and `--g-danger` paints
+anything unrecoverable.
+
+**Only this package had the bug.** `dsh-todo`'s green is progress bars, the done status and a
+checkbox — success semantics, correct as-is; recolouring it would have turned done-markers
+blue. `dsh-mission-control` already separates `--mc-accent` from `--mc-green`. Both were run
+as regression checks rather than changed.
+
+**esbuild will build a dangling `/**` without complaint.** Deleting a JSDoc body but leaving
+its opener turned the next two declarations into comment text; the bundle wrote fine and only
+`npx tsc --noEmit` caught it. Typecheck is not optional after a comment edit.
+
 ## Environment isolation (git's location variables)
 
 **`runGit` scrubs GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE and friends from the
