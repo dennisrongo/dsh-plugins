@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-plan-board",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Durable plans for DeepSeek Harness (dsh) — captures every exit_plan_mode plan to <workspace>/.dsh/plans as markdown, opens a review window when one is presented, and keeps the history",
   "type": "module",
   "license": "MIT",
