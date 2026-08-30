@@ -56,32 +56,60 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
     'ctx.get(name) must stay the safe probe that yields undefined')
 }
 
-// --- the SUB-KEY rule, which is the opposite of the property rule -----------
-// Reading a missing key off an ALREADY-INJECTED service object is safe and
-// yields undefined — which is why launchContext can read `c.remote?.agentPresets`
-// directly. But the NAMESPACED form the harness uses to register that same
-// service, `ctx['remote.agentPresets']`, is a service name and DOES throw.
-// The two look interchangeable and are not; anyone "tidying" the first into the
-// second reintroduces the outage. Pinned in both directions.
+// --- a NAMESPACED service is not a key on its parent object -----------------
+// This is the rule an earlier version of this file got exactly backwards, and
+// the mistake cost a shipped feature: the launch button never appeared on a
+// harness that had ui-agent-preset loaded the whole time.
+//
+// The harness registers `remote.agentPresets` as a SERVICE whose name contains
+// a dot. It is reachable ONLY as `ctx['remote.agentPresets']`. It is NOT a key
+// on the `remote` object: `ctx.remote.agentPresets` is permanently undefined
+// however the deployment is composed — so a gate reading the key form fails
+// closed forever, silently, with no error anywhere.
+//
+// The namespaced read still needs a guard, because an undeclared one throws
+// like any other service. Both halves are pinned, with the service PRESENT —
+// the previous version tested only the absent case, which is why it passed
+// while encoding the wrong conclusion.
 {
-  let subKey = 'not-run'
-  let namespacedThrew = false
+  let keyForm = 'not-run'
+  let namespacedForm = 'not-run'
+  let undeclaredThrew = false
   const ctx = new Context()
   ctx.provide('slots'); ctx.provide('remote')
   ctx.slots = {}
-  ctx.remote = { $mount: async () => {} } // deliberately no agentPresets
+  ctx.remote = { $mount: async () => {} }
+  // Registered the way the harness registers it: a dotted SERVICE name.
+  ctx.provide('remote.agentPresets')
+  ctx['remote.agentPresets'] = { list: async () => ({ ok: true }) }
+
   ctx.plugin({
-    inject: ['slots', 'remote'],
+    inject: ['slots', 'remote', 'remote.agentPresets'],
     apply(scoped) {
-      try { subKey = scoped.remote.agentPresets } catch { subKey = 'threw' }
-      try { void scoped['remote.agentPresets'] } catch { namespacedThrew = true }
+      try { keyForm = scoped.remote.agentPresets } catch { keyForm = 'threw' }
+      try { namespacedForm = scoped['remote.agentPresets'] } catch { namespacedForm = 'threw' }
     },
   })
-  await new Promise((r) => setTimeout(r, 150))
-  assert.equal(subKey, undefined,
-    'a missing key on an injected service object must yield undefined, not throw')
-  assert.equal(namespacedThrew, true,
-    'the NAMESPACED service form still throws — never swap c.remote?.agentPresets for ctx["remote.agentPresets"]')
+  // An undeclared read is VISIBLE while the service is provided, and throws only
+  // when it is absent — which is the case a slim profile hits, so the guard has
+  // to stay. Exercised on a context that never provides it at all.
+  const bare = new Context()
+  bare.provide('slots')
+  bare.slots = {}
+  bare.plugin({
+    inject: ['slots'],
+    apply(scoped) {
+      try { void scoped['remote.agentPresets'] } catch { undeclaredThrew = true }
+    },
+  })
+  await new Promise((r) => setTimeout(r, 200))
+
+  assert.equal(keyForm, undefined,
+    'ctx.remote.agentPresets must stay undefined — reading the KEY form is what hid the launch button')
+  assert.ok(namespacedForm && namespacedForm !== 'threw',
+    "ctx['remote.agentPresets'] is the ONLY way to reach a namespaced service")
+  assert.equal(undeclaredThrew, true,
+    'a namespaced read on a profile that never provides the service throws — the guard must stay')
 }
 
 // --- load the real built bundle ---------------------------------------------
@@ -133,7 +161,12 @@ async function mount(have) {
     $mount: async () => { ctx.provide('remote.dshTodo'); ctx['remote.dshTodo'] = dshTodo; return async () => {} },
     dshTodo,
   }
-  if (have.includes('agentPresets')) {
+  // The harness registers this as a NAMESPACED SERVICE, never as a key on
+  // `remote`. Stubbing the key form is what let this matrix pass green while the
+  // launch button was invisible in the real UI, so 'agentPresets' now means the
+  // namespaced registration and 'agentPresetsKey' is kept only to prove the
+  // legacy shape still works.
+  if (have.includes('agentPresetsKey')) {
     remote.agentPresets = { list: async () => ({ ok: true, value: { presets: [] } }), select: async () => ({ ok: true }) }
   }
   ctx.remote = remote
@@ -148,6 +181,13 @@ async function mount(have) {
   if (have.includes('uiWorkspace')) {
     ctx.provide('uiWorkspace')
     ctx.uiWorkspace = { archiveSession: async () => {} }
+  }
+  if (have.includes('agentPresets')) {
+    ctx.provide('remote.agentPresets')
+    ctx['remote.agentPresets'] = {
+      list: async () => ({ ok: true, value: { presets: [] } }),
+      select: async () => ({ ok: true }),
+    }
   }
   ctx.plugin(plugin)
   await new Promise((r) => setTimeout(r, 400))
@@ -165,6 +205,9 @@ const MATRIX = [
   { label: 'sessions + modelDirectories, no agentPresets', have: ['sessions', 'modelDirectories'], launch: 'absent' },
   { label: 'all three, no uiWorkspace', have: ['sessions', 'modelDirectories', 'agentPresets'], launch: 'present' },
   { label: 'everything', have: ['sessions', 'modelDirectories', 'agentPresets', 'uiWorkspace'], launch: 'present' },
+  // The legacy key-on-remote shape must keep working, but it is NOT what the
+  // harness does — see the namespaced-service block above.
+  { label: 'legacy key-form agentPresets', have: ['sessions', 'modelDirectories', 'agentPresetsKey'], launch: 'present' },
 ]
 
 for (const row of MATRIX) {

@@ -226,8 +226,14 @@ missing key with `undefined`, so this entire class of bug is invisible to them.
 slot's `inject` callback, no store reached the view, and every task vanished from a tab
 that still drew its own header — with four green suites and two green browser probes.
 Guard an optional read with try/catch (`ctx.get(name)` is the safe probe and yields
-`undefined`), or declare the service. A missing KEY on an already-injected service object
-(`ctx.remote?.foo`) is safe; the namespaced service form (`ctx['remote.foo']`) is not.
+`undefined`), or declare the service. **A service whose name contains a dot is reachable
+ONLY as `ctx['remote.foo']` — it is never a key on the parent, so `ctx.remote.foo` is
+permanently `undefined` however the deployment is composed.** That one cost a second
+shipped bug: `dsh-todo`'s launch button gated on `ctx.remote?.agentPresets` and stayed
+invisible on a harness that had the service loaded the whole time. Reading it that way
+fails CLOSED and silently. An earlier version of this very paragraph asserted the
+opposite, and the test pinning it only exercised the ABSENT case, so it passed while
+encoding the wrong rule — a test must exercise the shape that actually exists.
 `node scripts/check-context.mjs` mounts every built client bundle on a REAL `Context`
 with only its declared services and calls each registered slot's `inject` callback — the
 deferred path where the failure actually lands. It runs LAST in `pnpm test` because it

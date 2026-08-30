@@ -2723,6 +2723,28 @@ const getMissingSnapshot = (): TodoState => MISSING
  * @param workspaceId - the workspace a launched session belongs to.
  * @returns the launch context, or undefined when a required service is missing.
  */
+/**
+ * Read a NAMESPACED cordis service (a name containing a dot) without throwing.
+ *
+ * These cannot be reached through the parent object — `ctx.remote.agentPresets`
+ * is undefined no matter what is composed — only as `ctx['remote.agentPresets']`,
+ * which throws when the fiber never declared it. Both halves of that are
+ * counter-intuitive, so this is one guarded helper rather than a rule to
+ * remember at each call site.
+ *
+ * @param ctx - the (proxied) context to read from.
+ * @param name - the dotted service name.
+ * @returns the service, or undefined when it is absent or undeclared.
+ */
+function probeNamespaced(ctx: unknown, name: string): unknown {
+  const c = ctx as Record<string, unknown> & { get?: (n: string) => unknown }
+  try {
+    return c[name] ?? c.get?.(name)
+  } catch {
+    return undefined
+  }
+}
+
 function launchContext(
   ctx: unknown,
   workspaceId: string,
@@ -2749,18 +2771,14 @@ function launchContext(
   }
   const sessions = probe('sessions')
   const modelDirectories = probe('modelDirectories')
-  // `remote` IS declared in this plugin's inject, and reading a missing KEY off
-  // an injected service object yields undefined rather than throwing — so this
-  // one read needs no guard. It is wrapped anyway because the distinction is
-  // invisible at the call site, and the namespaced form of the same service
-  // (`ctx['remote.agentPresets']`) very much does throw. test/context-probe.mjs
-  // pins both halves so this comment cannot quietly become wrong.
-  let agentPresets: unknown
-  try {
-    agentPresets = c.remote?.agentPresets
-  } catch {
-    agentPresets = undefined
-  }
+  // agentPresets is a NAMESPACED SERVICE, reachable only as
+  // `ctx['remote.agentPresets']` — it is NOT a key on the `remote` object, and
+  // `c.remote?.agentPresets` is permanently undefined however the deployment is
+  // composed. Reading the key form is what hid this button on a harness that
+  // had the service loaded the whole time, and an earlier comment here asserted
+  // the opposite. The namespaced read still needs its guard: a profile without
+  // ui-agent-preset never provides the service, and an undeclared read throws.
+  const agentPresets = probeNamespaced(c, 'remote.agentPresets') ?? c.remote?.agentPresets
   if (!sessions || !modelDirectories || !agentPresets) return undefined
   return {
     workspaceId,

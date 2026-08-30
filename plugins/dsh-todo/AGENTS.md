@@ -148,15 +148,24 @@ sessions.create". So a launch is a five-step sequence, and its order is load-bea
   objects and a stub returns `undefined` for a missing key. Rules:
   - `ctx.get(name)` is the SAFE probe (returns `undefined`); the bare property read
     is the trap. `launchContext()` wraps both in try/catch regardless.
-  - A missing KEY on an already-injected service object (`c.remote?.agentPresets`) is
-    safe. The NAMESPACED service form of the same thing
-    (`ctx['remote.agentPresets']`) throws. They look interchangeable; swapping the
-    first for the second reintroduces the outage.
+  - **A dotted service name is NOT a key on its parent.** `remote.agentPresets` is a
+    SERVICE, reachable only as `ctx['remote.agentPresets']`; `ctx.remote.agentPresets`
+    is permanently `undefined` however the deployment is composed. Gating the launch
+    button on the key form is what made it invisible on a harness that had
+    ui-agent-preset loaded all along — it fails CLOSED, with no error anywhere. An
+    earlier version of this file asserted the reverse, and the test pinning it only
+    exercised the ABSENT case, so it stayed green while documenting the wrong rule.
+    `probeNamespaced()` is the single guarded helper for this; the guard is still
+    needed, because a profile that never provides the service does throw.
   - `test/context-probe.mjs` pins all of it against a REAL `Context` and the REAL
-    built bundle, over a five-row deployment matrix. The matrix is exhaustive on
-    purpose: with the guard removed, THREE separate rows fail on three different
-    reads — including a fully-configured deployment that still dies on
-    `uiWorkspace`. Testing only the all-absent case would have caught one of them.
+    built bundle, over a six-row deployment matrix. The matrix is exhaustive on
+    purpose: with the property guard removed, THREE separate rows fail on three
+    different reads — including a fully-configured deployment that still dies on
+    `uiWorkspace` — and the namespaced row is what catches the hidden button.
+    Testing only the all-absent case would have caught one of the four.
+    **Stub the service the way the harness registers it**, not the way the code
+    happens to read it: the earlier matrix stubbed `remote.agentPresets` as a key
+    and so stayed green against a UI where the button never appeared.
 - **Superpowers and the skills catalog need nothing here.** `dsh-superpowers` registers
   a system-prompt section on the context-GLOBAL layer, and `dsh-scope` merges every
   view starting from that layer before overlaying preset shadows — so a launched
