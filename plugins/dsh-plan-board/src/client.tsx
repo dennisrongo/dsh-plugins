@@ -244,6 +244,43 @@ function conversationColumn(): HTMLElement | null {
   return (host.firstElementChild as HTMLElement | null) ?? host.parentElement
 }
 
+/**
+ * The shell frame — the element other overlays reserve space on.
+ *
+ * `dsh-mission-control` docks its rail by setting `padding-right` on this
+ * element (it reaches it the same way, via `[data-shell-overlay]`), which
+ * shrinks the grid and with it the conversation column. The dock has to respect
+ * that reservation: aligning only to the column's right edge puts this panel's
+ * top-right corner — its Close button — underneath the rail whenever the two
+ * measurements disagree, which they do while the rail is opening and whenever
+ * the column has not caught up yet.
+ * @returns the frame element, or null when the shell is not mounted.
+ */
+function shellFrame(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-shell-overlay]')?.parentElement ?? null
+}
+
+/**
+ * Top edge of the conversation VIEW, below the session header and tab strip.
+ *
+ * The dock is aligned to this rather than to the column's own top, and the
+ * reason is not tidiness. The shell's top band is where other `shell.overlay`
+ * entries live, and they are entitled to be there: `dsh-weather` renders a
+ * fixed bar at `z-index: 2147482900`. A panel whose header shares that band has
+ * its controls covered by whatever floats above it — the Close button becomes
+ * unclickable, which reads as the panel being broken. Starting below the tab
+ * strip sidesteps the whole stacking question instead of escalating it, and it
+ * leaves the tabs visible, which is where the user goes next anyway.
+ * @returns the view's top in viewport coordinates, or undefined when absent.
+ */
+function conversationViewTop(): number | undefined {
+  const host = document.querySelector<HTMLElement>('[data-slot="conversation.view"]')
+  const el = host?.firstElementChild as HTMLElement | null
+  if (!el) return undefined
+  const rect = el.getBoundingClientRect()
+  return rect.height > 0 ? rect.top : undefined
+}
+
 /** Attribute this plugin sets on the column while the dock is open. */
 const DOCK_ATTR = 'data-dshpb-docked'
 /** Custom property carrying the dock's current width to the column's padding. */
@@ -324,6 +361,17 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
         return
       }
       frames = 0
+      // Never extend past whatever the shell has reserved on the right. The
+      // frame's padding is how a docked overlay (mission control's rail) claims
+      // that space, so its content edge — not the viewport edge, and not the
+      // column's own right edge — is the real boundary.
+      const frame = shellFrame()
+      let boundary = rect.right
+      if (frame !== null) {
+        const frameRect = frame.getBoundingClientRect()
+        const reserved = parseFloat(getComputedStyle(frame).paddingRight) || 0
+        boundary = Math.min(boundary, frameRect.right - reserved)
+      }
       const width = Math.round(Math.max(DOCK_MIN, Math.min(DOCK_MAX, rect.width * 0.5)))
       column.setAttribute(DOCK_ATTR, '')
       // Inline, not a stylesheet rule. The column's own class selector has the
@@ -334,10 +382,14 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
       column.style.setProperty(DOCK_WIDTH_VAR, `${width}px`)
       column.style.paddingRight = `${width}px`
       setBox((prev) => {
+        // Below the tab strip, down to the bottom of the column: the dock fills
+        // exactly the strip the padding above reserved for it.
+        const viewTop = conversationViewTop()
+        const top = viewTop !== undefined && viewTop > rect.top && viewTop < rect.bottom ? viewTop : rect.top
         const next = {
-          top: Math.round(rect.top),
-          height: Math.round(rect.height),
-          right: Math.round(window.innerWidth - rect.right),
+          top: Math.round(top),
+          height: Math.round(rect.bottom - top),
+          right: Math.round(window.innerWidth - boundary),
           width,
         }
         return prev &&
@@ -353,6 +405,12 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
     sync()
     const resize = new ResizeObserver(sync)
     resize.observe(column)
+    // The frame's CONTENT box shrinks when another overlay reserves space, even
+    // though its border box stays the full width — which is exactly the event
+    // that moves this dock's boundary, and it does not always resize the column
+    // in the same frame.
+    const frameEl = shellFrame()
+    if (frameEl !== null) resize.observe(frameEl)
     // The column's own attributes, not its subtree: a React re-render that
     // strips DOCK_ATTR is the failure this is here for, and watching children
     // would fire on every streamed token.
@@ -360,12 +418,15 @@ function useDock(open: boolean): { top: number; height: number; right: number; w
       if (!column.hasAttribute(DOCK_ATTR) || column.style.paddingRight === '') sync()
     })
     mutation.observe(column, { attributes: true, attributeFilter: [DOCK_ATTR, 'style'] })
+    const frameWatch = new MutationObserver(sync)
+    if (frameEl !== null) frameWatch.observe(frameEl, { attributes: true, attributeFilter: ['style'] })
     window.addEventListener('resize', sync)
 
     return () => {
       if (raf !== 0) cancelAnimationFrame(raf)
       resize.disconnect()
       mutation.disconnect()
+      frameWatch.disconnect()
       window.removeEventListener('resize', sync)
       column.removeAttribute(DOCK_ATTR)
       column.style.removeProperty(DOCK_WIDTH_VAR)
@@ -686,6 +747,8 @@ const CSS = `
   /* Only the inner edge is drawn: the panel is flush with the column's right
      side, so a full border would double up against the shell's own chrome. */
   border-left: 1px solid var(--dsw-alias-border-l2);
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  border-top-left-radius: 10px;
   font-family: var(--dsw-font-family);
   color: var(--dsw-alias-label-primary);
   z-index: 40;

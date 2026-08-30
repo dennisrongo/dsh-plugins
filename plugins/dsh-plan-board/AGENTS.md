@@ -118,3 +118,25 @@ cannot be found at all — overlaying the chat beats showing no plan.
 `.dshpb-dock` must keep `pointer-events: auto`: the shell's overlay layer is
 `pointer-events: none` so it cannot swallow clicks meant for the app, and a child
 that does not opt back in renders perfectly and does nothing.
+
+## Why the dock starts below the tab strip
+
+It is aligned to `[data-slot="conversation.view"]`, not to the column's own top,
+and that is a stacking decision rather than a cosmetic one. The shell's top band
+belongs to other `shell.overlay` entries and they are entitled to it —
+`dsh-weather` renders a fixed bar at `z-index: 2147482900`. A panel whose header
+shares that band has its controls painted over: the Close button stops
+responding and the panel reads as broken. Raising this plugin's z-index to
+compete would be an arms race against a near-INT_MAX value and would hide a bar
+the user chose to have. Starting below the tab strip removes the overlap
+instead, and leaves the tabs visible.
+
+The right edge is separately clamped to the frame's content edge, because
+`dsh-mission-control` reserves its rail by setting `padding-right` on the frame.
+Aligning only to the column puts this panel's top-right corner under the rail
+whenever the two measurements disagree — which they do while the rail animates.
+`useDock` observes the frame's content box and its inline style for exactly that.
+
+The acceptance test for both is not a screenshot: it is
+`document.elementFromPoint()` at the Close button's centre returning something
+inside `.dshpb-close`. A panel can look perfect and still be unclickable.
