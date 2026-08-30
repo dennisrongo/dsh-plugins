@@ -84,6 +84,7 @@ function migrateSchema(db) {
   add("release", "release TEXT");
   add("sprint", "sprint TEXT");
   add("due_date", "due_date TEXT");
+  add("session_id", "session_id TEXT");
   if (addedTitle && columns.has("text")) {
     db.exec("UPDATE todo SET title = text WHERE title IS NULL");
   }
@@ -99,7 +100,7 @@ function readList(db) {
   const updatedAt = Number(db.prepare("SELECT value FROM meta WHERE key = 'updatedAt'").get()?.value ?? 0);
   const rows = db.prepare(
     `SELECT id, title, description, status, priority, release, sprint, due_date,
-              created_at, completed_at, archived_at
+              session_id, created_at, completed_at, archived_at
        FROM todo ORDER BY position ASC`
   ).all();
   const text = (v) => v === null || v === void 0 ? void 0 : String(v);
@@ -114,6 +115,7 @@ function readList(db) {
       ...normalizeLabel(row.release) !== void 0 ? { release: normalizeLabel(row.release) } : {},
       ...normalizeLabel(row.sprint) !== void 0 ? { sprint: normalizeLabel(row.sprint) } : {},
       ...normalizeDueDate(row.due_date) !== void 0 ? { dueDate: normalizeDueDate(row.due_date) } : {},
+      ...text(row.session_id) !== void 0 ? { sessionId: text(row.session_id) } : {},
       createdAt: Number(row.created_at),
       ...row.completed_at !== null && row.completed_at !== void 0 ? { completedAt: Number(row.completed_at) } : {},
       ...row.archived_at !== null && row.archived_at !== void 0 ? { archivedAt: Number(row.archived_at) } : {}
@@ -127,8 +129,8 @@ function writeList(db, items, revision, updatedAt = Date.now()) {
     db.prepare("DELETE FROM todo").run();
     const insert = db.prepare(
       `INSERT INTO todo (id, title, description, status, priority, release, sprint, due_date,
-                         text, done, created_at, completed_at, archived_at, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                         session_id, text, done, created_at, completed_at, archived_at, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     items.forEach((item, index) => {
       insert.run(
@@ -140,6 +142,7 @@ function writeList(db, items, revision, updatedAt = Date.now()) {
         item.release ?? null,
         item.sprint ?? null,
         item.dueDate ?? null,
+        item.sessionId ?? null,
         item.title,
         item.status === "done" ? 1 : 0,
         item.createdAt,
@@ -293,6 +296,7 @@ function formatItem(item) {
   if (item.release) meta.push(`release=${item.release}`);
   if (item.sprint) meta.push(`sprint=${item.sprint}`);
   if (item.dueDate) meta.push(`due=${item.dueDate}`);
+  if (item.sessionId) meta.push(`session=${item.sessionId}`);
   if (isArchived(item)) meta.push("archived");
   return bits.join(" ") + (meta.length ? `  (${meta.join(" ")})` : "");
 }
@@ -321,6 +325,8 @@ Options
   --release <n[.n[.n]]>      e.g. 1.5 or 0.5.1   (empty string clears)
   --sprint <n[.n]>           e.g. 24             (empty string clears)
   --due <YYYY-MM-DD>         Calendar day       (empty string clears)
+  --session <id>             Harness session working the task (update only;
+                             empty string clears)
   --description <text>       Body text          (empty string clears)
   --title <text>             Rename (update only)
 
@@ -368,6 +374,7 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
         `release     ${item.release ?? "-"}`,
         `sprint      ${item.sprint ?? "-"}`,
         `due         ${item.dueDate ?? "-"}`,
+        `session     ${item.sessionId ?? "-"}`,
         `created     ${new Date(item.createdAt).toISOString()}`,
         ...item.completedAt ? [`completed   ${new Date(item.completedAt).toISOString()}`] : [],
         ...item.archivedAt ? [`archived    ${new Date(item.archivedAt).toISOString()}`] : [],
@@ -413,12 +420,13 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
       const release = str(options, "release");
       const sprint = str(options, "sprint");
       const due = str(options, "due");
+      const session = str(options, "session");
       if (due !== void 0 && due !== "" && normalizeDueDate(due) === void 0) {
         throw new CliError(`--due must be a real calendar date as YYYY-MM-DD (got "${due}")`);
       }
       assertLabel("release", release);
       assertLabel("sprint", sprint);
-      if (status === void 0 && priority === void 0 && title === void 0 && description === void 0 && release === void 0 && sprint === void 0 && due === void 0) {
+      if (status === void 0 && priority === void 0 && title === void 0 && description === void 0 && release === void 0 && sprint === void 0 && due === void 0 && session === void 0) {
         throw new CliError("update needs at least one field to change");
       }
       let updated;
@@ -448,6 +456,10 @@ function run(parsed, cwd, now = Date.now, rand = Math.random) {
             const value = normalizeDueDate(due);
             if (value !== void 0) next.dueDate = value;
             else delete next.dueDate;
+          }
+          if (session !== void 0) {
+            if (session) next.sessionId = session.slice(0, MAX_LABEL);
+            else delete next.sessionId;
           }
           updated = next;
           return next;

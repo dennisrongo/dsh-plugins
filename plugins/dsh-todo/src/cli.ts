@@ -29,6 +29,7 @@ import { resolve } from 'node:path'
 import { openDb, readList, writeList } from './db.ts'
 import {
   MAX_DESC,
+  MAX_LABEL,
   MAX_TEXT,
   PRIORITIES,
   STATUSES,
@@ -276,6 +277,9 @@ export function formatItem(item: TodoItem): string {
   if (item.release) meta.push(`release=${item.release}`)
   if (item.sprint) meta.push(`sprint=${item.sprint}`)
   if (item.dueDate) meta.push(`due=${item.dueDate}`)
+  // The launched session, so an agent reading the list can see which tasks
+  // already have work under way without a second call.
+  if (item.sessionId) meta.push(`session=${item.sessionId}`)
   if (isArchived(item)) meta.push('archived')
   return bits.join(' ') + (meta.length ? `  (${meta.join(' ')})` : '')
 }
@@ -306,6 +310,8 @@ Options
   --release <n[.n[.n]]>      e.g. 1.5 or 0.5.1   (empty string clears)
   --sprint <n[.n]>           e.g. 24             (empty string clears)
   --due <YYYY-MM-DD>         Calendar day       (empty string clears)
+  --session <id>             Harness session working the task (update only;
+                             empty string clears)
   --description <text>       Body text          (empty string clears)
   --title <text>             Rename (update only)
 
@@ -379,6 +385,7 @@ export function run(
         `release     ${item.release ?? '-'}`,
         `sprint      ${item.sprint ?? '-'}`,
         `due         ${item.dueDate ?? '-'}`,
+        `session     ${item.sessionId ?? '-'}`,
         `created     ${new Date(item.createdAt).toISOString()}`,
         ...(item.completedAt ? [`completed   ${new Date(item.completedAt).toISOString()}`] : []),
         ...(item.archivedAt ? [`archived    ${new Date(item.archivedAt).toISOString()}`] : []),
@@ -431,6 +438,7 @@ export function run(
       const release = str(options, 'release')
       const sprint = str(options, 'sprint')
       const due = str(options, 'due')
+      const session = str(options, 'session')
       if (due !== undefined && due !== '' && normalizeDueDate(due) === undefined) {
         throw new CliError(`--due must be a real calendar date as YYYY-MM-DD (got "${due}")`)
       }
@@ -439,7 +447,7 @@ export function run(
       if (
         status === undefined && priority === undefined && title === undefined &&
         description === undefined && release === undefined && sprint === undefined &&
-        due === undefined
+        due === undefined && session === undefined
       ) {
         throw new CliError('update needs at least one field to change')
       }
@@ -474,6 +482,13 @@ export function run(
             const value = normalizeDueDate(due)
             if (value !== undefined) next.dueDate = value
             else delete next.dueDate
+          }
+          // Unvalidated on purpose: a session id is an opaque harness token, so
+          // there is no shape to check and no list to check it against from a
+          // bare checkout. An empty value clears it, like every other field.
+          if (session !== undefined) {
+            if (session) next.sessionId = session.slice(0, MAX_LABEL)
+            else delete next.sessionId
           }
           updated = next
           return next

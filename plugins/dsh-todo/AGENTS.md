@@ -11,7 +11,7 @@ An item is a **task**, not a checklist line:
 
 ```ts
 { id, title, description?, status, priority, release?, sprint?, dueDate?,
-  createdAt, completedAt?, archivedAt? }
+  sessionId?, createdAt, completedAt?, archivedAt? }
 ```
 
 - `status` (`backlog | todo | in-progress | blocked | done`) is the source of truth and
@@ -46,15 +46,29 @@ An item is a **task**, not a checklist line:
 - Pure transforms return the SAME array when nothing changed. The store treats a new array as a
   reason to write, so a no-op that allocated would put a round-trip on the wire per keystroke.
 
-### Adding a field is a FIVE-place change
+### Adding a field is a SIX-place change
 
 Miss one and it fails silently — the field simply never arrives:
 
 1. `src/types.ts` — the interface.
 2. `src/remote.ts` — both wire schemas. **Strict codecs strip fields they do not name.**
 3. `src/index.ts` — the zod read schema AND `sanitizeItems`.
-4. `src/index.ts` — the SQLite `CREATE TABLE`, `migrateSchema`, and the `readList`/`writeList` SQL.
+4. `src/db.ts` — `migrateSchema` (an `add()` line: `CREATE TABLE IF NOT EXISTS` will NOT
+   add a column to an existing table), plus the `readList` SELECT and the `writeList`
+   INSERT columns **and** its value list.
 5. `src/client.tsx` — `coerceItems`, or it is dropped on reload.
+6. `src/cli.ts` — the third face on the same database. `--json` emits the whole item so it
+   follows for free, but the human `show` / `list` views and any write flag do not.
+
+Only place 4 fails loudly (`no such column`); the other five drop the field in silence.
+The cheapest check that covers all six is an end-to-end CLI round-trip against a temp
+workspace — write the field, read it back, confirm it survives:
+
+```bash
+node lib/bin.js add "probe" --workspace /tmp/x --json
+node lib/bin.js update <id> --workspace /tmp/x --session sess-1 --json
+node lib/bin.js show <id> --workspace /tmp/x --json   # the field must be here
+```
 
 ### The task modal
 
@@ -84,6 +98,100 @@ inline, and the chevron still expands the cheap in-row peek.
 
 `pnpm run test:modal` drives headless Chrome against the built CSS and fails if the panel is
 clipped, off-screen, transparent, or under the drag strip.
+
+### Launching a session from a task
+
+The rocket button on a row (and **Launch session** in the task modal) opens
+`LaunchDialog`: a model picker, a mode picker, and an editable prompt composed from
+the task. Confirming starts a real session on the work. `src/launch.ts` owns the flow
+and is deliberately dependency-free — it imports `./types.ts` and nothing else — so
+`lib/launch.js` can be imported by the smoke test under plain Node, with no React and
+no harness packages on the import path.
+
+**There is no single harness call that creates a session with a model and a mode.**
+`sessions.create()` accepts only `{ workspaceId, sessionId? }`; the shipped
+`dsh-client-ui-agent-preset` says a pick "cannot simply ride along on
+sessions.create". So a launch is a five-step sequence, and its order is load-bearing:
+
+1. `ctx.sessions.create({ workspaceId })`
+2. `ctx.remote.agentPresets.select(sessionId, presetId)`
+3. `ctx.modelDirectories.directoryFor(sessionId).select({ provider, model })`
+4. `binding.session.prompt([{ type: 'text', text }], 'queue')`
+5. `ctx.sessions.open(sessionId)`
+
+- **Steps 2–3 MUST precede step 4, and getting it wrong fails SILENTLY.** The preset
+  applier drops a pick aimed at a session that is no longer `blank`, and prompting is
+  exactly what un-blanks it. Prompt first and the session runs the DEFAULT mode with no
+  rejected promise, no console warning and no visible difference — until the agent
+  behaves unexpectedly many turns later. `test/smoke.mjs` compares source indices to
+  pin the order, and asserts the prompt has exactly ONE call site so a second path
+  cannot bypass it.
+- **The session is created when the dialog OPENS, not on confirm.** The model directory
+  is per-session (`directoryFor(sessionId)`), so an accurate picker needs a session to
+  bind to; a catalog read without one can offer a model the session then refuses. The
+  price is `discardSession()`, which archives the blank session when the dialog is
+  cancelled — without it every dismissed dialog litters the sidebar.
+- **The task flips to `in-progress` only after the prompt is accepted**, inside
+  `onLaunched`. A failed launch must not leave a task claiming work that never started.
+- **The launch services are NOT in the plugin's `inject` array.** `sessions`,
+  `modelDirectories` and `remote.agentPresets` are read opportunistically by
+  `launchContext()`; a profile composing none of them still gets a working todo tab
+  with the button simply absent. Parking the tab on services it needs for one button
+  would make the whole list vanish on a slim profile.
+- **…and reading an undeclared service THROWS, so every such read must be guarded.**
+  A cordis context is a Proxy: inside a plugin fiber, `ctx.sessions` for a service
+  not in `inject` raises `cannot get property "sessions" without inject` — it does
+  NOT yield `undefined`. This shipped an outage: the unguarded read threw inside the
+  `conversation.view` slot's `inject` callback, no store reached the view, and every
+  task vanished from a tab that still drew its own chrome. **Three green suites and a
+  green icon probe all passed**, because `smoke.mjs` renders against plain stub
+  objects and a stub returns `undefined` for a missing key. Rules:
+  - `ctx.get(name)` is the SAFE probe (returns `undefined`); the bare property read
+    is the trap. `launchContext()` wraps both in try/catch regardless.
+  - A missing KEY on an already-injected service object (`c.remote?.agentPresets`) is
+    safe. The NAMESPACED service form of the same thing
+    (`ctx['remote.agentPresets']`) throws. They look interchangeable; swapping the
+    first for the second reintroduces the outage.
+  - `test/context-probe.mjs` pins all of it against a REAL `Context` and the REAL
+    built bundle, over a five-row deployment matrix. The matrix is exhaustive on
+    purpose: with the guard removed, THREE separate rows fail on three different
+    reads — including a fully-configured deployment that still dies on
+    `uiWorkspace`. Testing only the all-absent case would have caught one of them.
+- **Superpowers and the skills catalog need nothing here.** `dsh-superpowers` registers
+  a system-prompt section on the context-GLOBAL layer, and `dsh-scope` merges every
+  view starting from that layer before overlaying preset shadows — so a launched
+  session gets the identical bootstrap to one started from the sidebar. The launcher
+  always selects a preset explicitly, so it never hits the "published without joining
+  an agent preset" path that resolves against the empty global layer.
+- The dialog's prompt textarea is **12px**, not 13px: `test/icon-probe.mjs` allows only
+  12/14/16/20 in this package, which is stricter than the repo-wide scale.
+
+**`sessionId` records where the work went** — the sixth field, and the first to cross all
+SIX faces (the five places above plus the CLI). `launchSession()` returns the id and
+`onLaunched` writes it in the SAME `store.update` as the `in-progress` flip, so the
+status and the session can never disagree about whether work started.
+
+- **It is a HINT, not a foreign key.** Sessions are deletable and a task outlives the one
+  that worked it. The row asks `sessions.binding(id) !== undefined` before offering
+  **Open session**, so a dangling id falls back to Launch rather than rendering a button
+  that errors on click. A miss **never clears the field** — an archived session can be
+  restored, and this is the only record work was ever started. Storage stays honest; the
+  UI decides what is actionable.
+- **Single, last-launch-wins.** A relaunch overwrites it; follow-up work belongs in its own
+  task, where the roadmap can see it. An array would hide that history in a field nobody
+  reads.
+- **v2 → v3 is one `add('session_id', 'session_id TEXT')` line**, backfill-free — every
+  pre-v3 row correctly has no session. `todoDomainSpec.version` stays 2 deliberately: it
+  is a dead compat marker for old test imports, NOT the SQLite schema version, and bumping
+  it would imply a storage-domain migration that does not exist.
+- The smoke test pins each boundary separately (wire codec, `coerceItems`, and a real v2
+  database upgraded and reopened), because one round-trip passing hides which of the six
+  places is broken. Verified against sabotages: dropping the `ALTER TABLE` fails loudly
+  with `no such column: session_id` at the first read, and removing it from the wire
+  schema or `coerceItems` each trips its own assertion.
+- On the CLI: `--session <id>` on `update` (empty value clears, as with every optional
+  field), shown by `show` and as `session=` in `list`. Unvalidated on purpose — a session
+  id is an opaque harness token with no shape to check from a bare checkout.
 
 ### Destructive actions
 

@@ -114,6 +114,27 @@ await build({
   logLevel: 'info',
 })
 
+// 1e) the launch helpers as a plain ESM module.
+//
+// Bundled separately so the smoke test can import the SHIPPED pure logic
+// (composePrompt/flattenModels/presetOptions) under plain Node. The client
+// bundle inlines the same source, but minified — asserting against that would
+// mean matching renamed identifiers, so the test reads this build for behaviour
+// and src/launch.ts for the ordering wiring.
+//
+// No externals: this module deliberately imports nothing but ./types.ts, which
+// keeps React and the harness packages out of the test's import path.
+await build({
+  entryPoints: [join(root, 'src/launch.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'neutral',
+  target: 'es2022',
+  minify: false,
+  outfile: join(outdir, 'launch.js'),
+  logLevel: 'info',
+})
+
 // 2) client half — CJS body wrapped in the __ModuleLoader__ load call.
 //
 // This half bundles zod, because the client `$mount` rejects any descriptor

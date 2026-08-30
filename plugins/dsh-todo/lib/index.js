@@ -135,6 +135,7 @@ function migrateSchema(db) {
   add("release", "release TEXT");
   add("sprint", "sprint TEXT");
   add("due_date", "due_date TEXT");
+  add("session_id", "session_id TEXT");
   if (addedTitle && columns.has("text")) {
     db.exec("UPDATE todo SET title = text WHERE title IS NULL");
   }
@@ -151,7 +152,7 @@ function readList(db) {
   const updatedAt = Number(db.prepare("SELECT value FROM meta WHERE key = 'updatedAt'").get()?.value ?? 0);
   const rows = db.prepare(
     `SELECT id, title, description, status, priority, release, sprint, due_date,
-              created_at, completed_at, archived_at
+              session_id, created_at, completed_at, archived_at
        FROM todo ORDER BY position ASC`
   ).all();
   const text = /* @__PURE__ */ __name((v) => v === null || v === void 0 ? void 0 : String(v), "text");
@@ -166,6 +167,7 @@ function readList(db) {
       ...normalizeLabel(row.release) !== void 0 ? { release: normalizeLabel(row.release) } : {},
       ...normalizeLabel(row.sprint) !== void 0 ? { sprint: normalizeLabel(row.sprint) } : {},
       ...normalizeDueDate(row.due_date) !== void 0 ? { dueDate: normalizeDueDate(row.due_date) } : {},
+      ...text(row.session_id) !== void 0 ? { sessionId: text(row.session_id) } : {},
       createdAt: Number(row.created_at),
       ...row.completed_at !== null && row.completed_at !== void 0 ? { completedAt: Number(row.completed_at) } : {},
       ...row.archived_at !== null && row.archived_at !== void 0 ? { archivedAt: Number(row.archived_at) } : {}
@@ -180,8 +182,8 @@ function writeList(db, items, revision, updatedAt = Date.now()) {
     db.prepare("DELETE FROM todo").run();
     const insert = db.prepare(
       `INSERT INTO todo (id, title, description, status, priority, release, sprint, due_date,
-                         text, done, created_at, completed_at, archived_at, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                         session_id, text, done, created_at, completed_at, archived_at, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     items.forEach((item, index) => {
       insert.run(
@@ -193,6 +195,7 @@ function writeList(db, items, revision, updatedAt = Date.now()) {
         item.release ?? null,
         item.sprint ?? null,
         item.dueDate ?? null,
+        item.sessionId ?? null,
         item.title,
         item.status === "done" ? 1 : 0,
         item.createdAt,
@@ -223,6 +226,7 @@ var todoItemSchema = z.object({
   release: z.string().max(MAX_LABEL).optional(),
   sprint: z.string().max(MAX_LABEL).optional(),
   dueDate: z.string().optional(),
+  sessionId: z.string().optional(),
   createdAt: z.number(),
   completedAt: z.number().optional(),
   archivedAt: z.number().optional()
@@ -439,6 +443,7 @@ function sanitizeItems(value) {
     const release = normalizeLabel(e.release);
     const sprint = normalizeLabel(e.sprint);
     const dueDate = normalizeDueDate(e.dueDate);
+    const sessionId = typeof e.sessionId === "string" && e.sessionId.length > 0 ? e.sessionId.slice(0, MAX_LABEL) : void 0;
     const completedAt = typeof e.completedAt === "number" ? e.completedAt : void 0;
     const archivedAt = typeof e.archivedAt === "number" ? e.archivedAt : void 0;
     out.push({
@@ -450,6 +455,7 @@ function sanitizeItems(value) {
       ...release !== void 0 ? { release } : {},
       ...sprint !== void 0 ? { sprint } : {},
       ...dueDate !== void 0 ? { dueDate } : {},
+      ...sessionId !== void 0 ? { sessionId } : {},
       createdAt: typeof e.createdAt === "number" ? e.createdAt : 0,
       // completedAt is meaningless on an unfinished item; drop it rather than store a lie.
       ...done && completedAt !== void 0 ? { completedAt } : {},

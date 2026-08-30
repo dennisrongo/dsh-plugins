@@ -76,6 +76,19 @@ export interface TodoItem {
    * timezone and let the same task show two different days.
    */
   dueDate?: string
+  /**
+   * The harness session launched for this task, if one was.
+   *
+   * A HINT, not a foreign key: sessions are deletable and a task outlives the
+   * one that worked it, so this id may dangle. Readers must treat an
+   * unresolvable id as "no session" rather than an error — and must NOT clear
+   * it on a miss, because an archived session can be restored and this is the
+   * only record that work was ever started.
+   *
+   * Single by design: a relaunch overwrites it. Follow-up work belongs in its
+   * own task, where the roadmap can see it.
+   */
+  sessionId?: string
   /** Epoch ms. */
   createdAt: number
   /** Epoch ms, set when `status` becomes `done`. */

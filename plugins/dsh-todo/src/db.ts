@@ -126,6 +126,9 @@ export function migrateSchema(db: DatabaseSync): void {
   add('release', 'release TEXT')
   add('sprint', 'sprint TEXT')
   add('due_date', 'due_date TEXT')
+  // v3: the session launched for a task. Nullable and backfill-free — every
+  // pre-v3 row correctly has no session.
+  add('session_id', 'session_id TEXT')
 
   // Backfill from the v1 columns, but only where they still exist.
   if (addedTitle && columns.has('text')) {
@@ -153,7 +156,7 @@ export function readList(db: DatabaseSync): TodoList {
   const rows = db
     .prepare(
       `SELECT id, title, description, status, priority, release, sprint, due_date,
-              created_at, completed_at, archived_at
+              session_id, created_at, completed_at, archived_at
        FROM todo ORDER BY position ASC`,
     )
     .all()
@@ -170,6 +173,7 @@ export function readList(db: DatabaseSync): TodoList {
       ...(normalizeLabel(row.release) !== undefined ? { release: normalizeLabel(row.release) } : {}),
       ...(normalizeLabel(row.sprint) !== undefined ? { sprint: normalizeLabel(row.sprint) } : {}),
       ...(normalizeDueDate(row.due_date) !== undefined ? { dueDate: normalizeDueDate(row.due_date) } : {}),
+      ...(text(row.session_id) !== undefined ? { sessionId: text(row.session_id) } : {}),
       createdAt: Number(row.created_at),
       ...(row.completed_at !== null && row.completed_at !== undefined
         ? { completedAt: Number(row.completed_at) }
@@ -202,8 +206,8 @@ export function writeList(
     // keeping them current means a downgrade still reads a sane list.
     const insert = db.prepare(
       `INSERT INTO todo (id, title, description, status, priority, release, sprint, due_date,
-                         text, done, created_at, completed_at, archived_at, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                         session_id, text, done, created_at, completed_at, archived_at, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     items.forEach((item, index) => {
       insert.run(
@@ -215,6 +219,7 @@ export function writeList(
         item.release ?? null,
         item.sprint ?? null,
         item.dueDate ?? null,
+        item.sessionId ?? null,
         item.title,
         item.status === 'done' ? 1 : 0,
         item.createdAt,

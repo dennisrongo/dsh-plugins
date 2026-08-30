@@ -81,6 +81,7 @@ const todoItemSchema = z.object({
   release: z.string().max(MAX_LABEL).optional(),
   sprint: z.string().max(MAX_LABEL).optional(),
   dueDate: z.string().optional(),
+  sessionId: z.string().optional(),
   createdAt: z.number(),
   completedAt: z.number().optional(),
   archivedAt: z.number().optional(),
@@ -389,6 +390,12 @@ function sanitizeItems(value: unknown): TodoItem[] {
     const release = normalizeLabel(e.release)
     const sprint = normalizeLabel(e.sprint)
     const dueDate = normalizeDueDate(e.dueDate)
+    // A hint at a harness session. Length-capped like every other free string
+    // so a hand-edited payload cannot park unbounded data in the list.
+    const sessionId =
+      typeof e.sessionId === 'string' && e.sessionId.length > 0
+        ? e.sessionId.slice(0, MAX_LABEL)
+        : undefined
     const completedAt = typeof e.completedAt === 'number' ? e.completedAt : undefined
     const archivedAt = typeof e.archivedAt === 'number' ? e.archivedAt : undefined
     out.push({
@@ -400,6 +407,7 @@ function sanitizeItems(value: unknown): TodoItem[] {
       ...(release !== undefined ? { release } : {}),
       ...(sprint !== undefined ? { sprint } : {}),
       ...(dueDate !== undefined ? { dueDate } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
       createdAt: typeof e.createdAt === 'number' ? e.createdAt : 0,
       // completedAt is meaningless on an unfinished item; drop it rather than store a lie.
       ...(done && completedAt !== undefined ? { completedAt } : {}),

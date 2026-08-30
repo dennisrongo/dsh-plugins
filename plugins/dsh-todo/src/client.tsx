@@ -20,6 +20,16 @@ import { createPortal } from 'react-dom'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { TODO_REMOTE } from './remote.ts'
 import {
+  composePrompt,
+  discardSession,
+  flattenModels,
+  launchSession,
+  presetOptions,
+  type LaunchContext,
+  type ModelOption,
+  type PresetOption,
+} from './launch.ts'
+import {
   DEFAULT_PRIORITY,
   DEFAULT_STATUS,
   MAX_DESC,
@@ -52,6 +62,7 @@ export { TODO_REMOTE }
  * apply() forever waiting on a service only apply() can create.
  */
 export const inject = ['slots', 'remote', 'workspaces']
+
 
 export type { TodoItem, TodoStatus, TodoPriority }
 export { STATUSES, PRIORITIES }
@@ -537,6 +548,7 @@ export function coerceItems(data: unknown): TodoItem[] {
       release: normalizeLabel(e.release),
       sprint: normalizeLabel(e.sprint),
       dueDate: normalizeDueDate(e.dueDate),
+      sessionId: typeof e.sessionId === 'string' && e.sessionId.length > 0 ? e.sessionId : undefined,
       createdAt: typeof e.createdAt === 'number' ? e.createdAt : 0,
       completedAt: typeof e.completedAt === 'number' ? e.completedAt : undefined,
       // Presence of a number is the archived flag, so anything else must decay
@@ -1144,6 +1156,35 @@ body[data-ds-dark-theme] .dshtd-status option {
 }
 .dshtd-btn.primary:hover { background: var(--dsw-alias-button-primary-hover, #e1e5ee); }
 
+/* ---- launch dialog ----
+   Sized between the confirm prompt and the task modal: it carries two pickers
+   and a prompt preview, but never the full field grid. */
+.dshtd-launch { width: min(560px, 100%); }
+.dshtd-launch-body {
+  padding: 16px; display: flex; flex-direction: column; gap: 14px;
+  overflow-y: auto; min-height: 0;
+}
+.dshtd-launch-title { color: var(--td-primary); font-size: 16px; line-height: 24px; font-weight: 600; }
+.dshtd-launch-sub { color: var(--td-caption); font-size: 12px; line-height: 18px; }
+.dshtd-launch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.dshtd-launch-label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 18px; color: var(--td-caption); }
+/* The prompt is editable, so it is a real textarea: a preview you cannot
+   correct is worse than no preview at all. */
+.dshtd-launch-prompt {
+  width: 100%; min-height: 140px; resize: vertical;
+  border: 1px solid var(--td-border); border-radius: 8px; background: transparent;
+  color: var(--td-secondary); font: inherit; font-size: 12px; line-height: 18px;
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+  padding: 8px 10px;
+}
+.dshtd-launch-prompt:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #6b7280); }
+.dshtd-launch-foot {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid var(--td-border);
+  color: var(--td-caption); font-size: 12px; line-height: 18px;
+}
+.dshtd-launch-err { color: var(--td-danger); font-size: 12px; line-height: 18px; }
+
 /* Overdue is the one state worth colouring in the list: it is the thing a
    standup escalates. Due-today is warned, not alarmed. */
 .dshtd-chip.due-over { color: var(--td-danger); border-color: currentColor; font-weight: 500; }
@@ -1241,6 +1282,11 @@ const ICON = {
   archive: 'M2.5 5.5h11M3.5 5.5v7h9v-7M6.5 8.5h3',
   expand: 'M6 4l4 4-4 4',
   collapse: 'M4 6l4 4 4-4',
+  // A paper plane: "send this off to an agent". Drawn on the same 16-unit grid
+  // as the rest, so it needs no viewBox of its own.
+  launch: 'M14 2L7 9M14 2l-4.5 12-2.5-5-5-2.5L14 2z',
+  // A speech bubble: the session already talking about this task.
+  session: 'M13.5 10.5a1.5 1.5 0 0 1-1.5 1.5H6l-3 2.5v-2.5H4a1.5 1.5 0 0 1-1.5-1.5v-6A1.5 1.5 0 0 1 4 3h8a1.5 1.5 0 0 1 1.5 1.5v6z',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -1354,6 +1400,207 @@ export function ConfirmDialog({
 }
 
 /**
+ * The launch dialog: pick a model and a mode, review the prompt, start a session.
+ *
+ * The session is created by the CALLER before this renders, and its id arrives
+ * as a prop. That is what lets the model picker bind to the session's own
+ * directory and offer only models it can actually route to — a catalog read
+ * without a session can list one the session would then refuse. The cost is
+ * that dismissing has to discard the unused session, which the caller does.
+ *
+ * Shares the portal and z-index reasoning of the other two dialogs: it renders
+ * into `document.body` to escape the list's scroller, and stays below DSH
+ * Desktop's window-drag strip, which swallows clicks regardless of z-index.
+ */
+export function LaunchDialog({
+  item,
+  session,
+  ctx,
+  onClose,
+  onLaunched,
+}: {
+  item: TodoItem
+  /** The blank session created for this dialog, or null while it is being made. */
+  session: { id: string } | null
+  ctx: LaunchContext
+  onClose: () => void
+  /**
+   * Called once the prompt is away, with the session now working the task, so
+   * the caller can advance it and record where the work went.
+   */
+  onLaunched: (sessionId: string) => void
+}): React.JSX.Element {
+  const panel = React.useRef<HTMLDivElement | null>(null)
+  const [prompt, setPrompt] = React.useState(() => composePrompt(item))
+  const [models, setModels] = React.useState<ModelOption[]>([])
+  const [modelKey, setModelKey] = React.useState('')
+  const [presets, setPresets] = React.useState<PresetOption[]>([])
+  const [presetId, setPresetId] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  // Load both pickers once the session exists. Failures are reported but never
+  // block the launch: a session with no explicit pick runs the deployment
+  // default, which is the same thing the New Session screen would have done.
+  React.useEffect(() => {
+    if (session === null) return
+    let cancelled = false
+
+    const directory = ctx.modelDirectories.directoryFor(session.id)
+    void directory
+      .load()
+      .then(() => {
+        if (cancelled) return
+        const snapshot = directory.store.getSnapshot()
+        const options = flattenModels(snapshot.groups)
+        setModels(options)
+        const current = snapshot.current
+        if (current) setModelKey(`${current.provider}/${current.model}`)
+        else if (options[0]) setModelKey(`${options[0].provider}/${options[0].model}`)
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(describe(cause))
+      })
+
+    void ctx.remote.agentPresets
+      .list()
+      .then((reply) => {
+        if (cancelled || !reply.ok) return
+        const { options, defaultId } = presetOptions(reply.value.presets)
+        setPresets(options)
+        if (defaultId !== undefined) setPresetId(defaultId)
+      })
+      .catch(() => {
+        // A deployment may compose no presets at all; that is not an error.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [session, ctx])
+
+  const launch = (): void => {
+    if (session === null || busy) return
+    const text = prompt.trim()
+    if (!text) {
+      setError('The prompt is empty.')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    const chosen = models.find((m) => `${m.provider}/${m.model}` === modelKey)
+    void launchSession(ctx, {
+      sessionId: session.id,
+      presetId: presetId === '' ? undefined : presetId,
+      model: chosen === undefined ? undefined : { provider: chosen.provider, model: chosen.model },
+      prompt: text,
+    }).then(
+      (launchedSessionId) => {
+        onLaunched(launchedSessionId)
+        onClose()
+      },
+      (cause: unknown) => {
+        setBusy(false)
+        setError(describe(cause))
+      },
+    )
+  }
+
+  // Dismissing is always allowed, matching the task modal: a dialog you cannot
+  // leave because a picker failed to load is a trap.
+  const onKeyDown = (e: React.KeyboardEvent): void => {
+    e.stopPropagation()
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onClose()
+    }
+  }
+
+  return createPortal(
+    <div className="dshtd-modal-backdrop" onClick={onClose} onKeyDown={onKeyDown}>
+      <div
+        className="dshtd-modal dshtd-launch"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Launch a session for "${item.title}"`}
+        tabIndex={-1}
+        ref={panel}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="dshtd-launch-body">
+          <span className="dshtd-launch-title">Launch a session</span>
+          <span className="dshtd-launch-sub">
+            {session === null
+              ? 'Preparing a session…'
+              : 'A new session starts with the prompt below.'}
+          </span>
+
+          <div className="dshtd-launch-grid">
+            <label className="dshtd-launch-label">
+              Model
+              <select
+                className="dshtd-select"
+                value={modelKey}
+                disabled={session === null || models.length === 0}
+                onChange={(e) => setModelKey(e.target.value)}
+              >
+                {models.length === 0 ? <option value="">Default</option> : null}
+                {models.map((m) => (
+                  <option key={`${m.provider}/${m.model}`} value={`${m.provider}/${m.model}`}>
+                    {m.group ? `${m.group} · ${m.label}` : m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="dshtd-launch-label">
+              Mode
+              <select
+                className="dshtd-select"
+                value={presetId}
+                disabled={session === null || presets.length === 0}
+                onChange={(e) => setPresetId(e.target.value)}
+              >
+                {presets.length === 0 ? <option value="">Default</option> : null}
+                {presets.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <label className="dshtd-launch-label">
+            Prompt
+            <textarea
+              className="dshtd-launch-prompt"
+              value={prompt}
+              spellCheck={false}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+          </label>
+
+          {error ? <span className="dshtd-launch-err">{error}</span> : null}
+        </div>
+
+        <div className="dshtd-launch-foot">
+          <span>Marks the task as in progress.</span>
+          <span style={{ display: 'flex', gap: 8 }}>
+            <button className="dshtd-btn" onClick={onClose}>Cancel</button>
+            <button
+              className="dshtd-btn primary"
+              disabled={session === null || busy}
+              onClick={launch}
+            >
+              {busy ? 'Starting…' : 'Launch'}
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+/**
  * The full task detail dialog.
  *
  * Portalled to `document.body` because the tab's list is an `overflow-y: auto`
@@ -1373,12 +1620,15 @@ export function TodoModal({
   onClose,
   knownReleases,
   knownSprints,
+  onLaunch,
 }: {
   item: TodoItem
   store: TodoStore
   onClose: () => void
   knownReleases: string[]
   knownSprints: string[]
+  /** Absent when the harness services a launch needs did not resolve. */
+  onLaunch?: () => void
 }): React.JSX.Element {
   const [title, setTitle] = React.useState(item.title)
   const [desc, setDesc] = React.useState(item.description ?? '')
@@ -1622,7 +1872,25 @@ export function TodoModal({
             {item.completedAt ? ` · completed ${fmtAge(item.completedAt)} ago` : ''}
             {overdue ? ' · overdue' : ''}
           </span>
-          <button className="dshtd-btn primary" onClick={save}>Done</button>
+          <span style={{ display: 'flex', gap: 8 }}>
+            {onLaunch && !isDone(item) ? (
+              <button
+                className="dshtd-btn"
+                title="Start a session for this task"
+                onClick={() => {
+                  // Commit the open edits first: the prompt is composed from the
+                  // STORED task, so launching on an uncommitted title would send
+                  // the old text.
+                  flush()
+                  onLaunch()
+                  onClose()
+                }}
+              >
+                Launch session
+              </button>
+            ) : null}
+            <button className="dshtd-btn primary" onClick={save}>Done</button>
+          </span>
         </div>
       </div>
     </div>,
@@ -1667,6 +1935,8 @@ function TodoRow({
   knownSprints,
   onOpen,
   onDelete,
+  onLaunch,
+  onOpenSession,
 }: {
   item: TodoItem
   index: number
@@ -1676,6 +1946,10 @@ function TodoRow({
   knownSprints: string[]
   onOpen: () => void
   onDelete: () => void
+  /** Absent when the harness services a launch needs did not resolve. */
+  onLaunch?: () => void
+  /** Present only when this task's recorded session still resolves. */
+  onOpenSession?: () => void
 }): React.JSX.Element {
   const [editing, setEditing] = React.useState(false)
   const [draft, setDraft] = React.useState(item.title)
@@ -1799,6 +2073,29 @@ function TodoRow({
           </span>
         ) : null}
         <span className="dshtd-rowbtns">
+          {/* Open replaces Launch rather than joining it: the row is at its
+              40px budget, and the two are mutually exclusive anyway. A task
+              whose recorded session no longer resolves falls back to Launch —
+              never a button that errors on click. */}
+          {onOpenSession ? (
+            <button
+              className="dshtd-icon"
+              title="Open the session working this task"
+              aria-label={`Open the session for "${item.title}"`}
+              onClick={onOpenSession}
+            >
+              <Icon path={ICON.session} />
+            </button>
+          ) : onLaunch && !done ? (
+            <button
+              className="dshtd-icon"
+              title="Start a session for this task"
+              aria-label={`Start a session for "${item.title}"`}
+              onClick={onLaunch}
+            >
+              <Icon path={ICON.launch} />
+            </button>
+          ) : null}
           <button
             className="dshtd-icon"
             title={open ? 'Hide details' : 'Show details'}
@@ -2023,7 +2320,14 @@ function filterCount(items: TodoItem[], id: TodoFilter, stats: TodoStats): numbe
  * the `conversation.view` ring when its tab is active, filling the session pane.
  * @param props - the per-workspace store, or null when no workspace owns the session.
  */
-export function TodoView({ store }: { store: TodoStore | null }): React.JSX.Element {
+export function TodoView({
+  store,
+  launch,
+}: {
+  store: TodoStore | null
+  /** The harness services a launch needs; absent when they did not resolve. */
+  launch?: LaunchContext & { workspaceId: string }
+}): React.JSX.Element {
   const [filter, setFilter] = React.useState<TodoFilter>('all')
   const [groupBy, setGroupBy] = React.useState<TodoGroupBy>('none')
   const [draft, setDraft] = React.useState('')
@@ -2036,6 +2340,13 @@ export function TodoView({ store }: { store: TodoStore | null }): React.JSX.Elem
   // a boolean per call site, so every delete path routes through the same
   // dialog and none can quietly skip the guard.
   const [pending, setPending] = React.useState<PendingConfirm | null>(null)
+  // The task being launched, plus the blank session created to receive it. The
+  // session is made when the dialog OPENS so the model picker can bind to it,
+  // which is why cancelling has to discard it again.
+  const [launching, setLaunching] = React.useState<{
+    item: TodoItem
+    session: { id: string } | null
+  } | null>(null)
 
   React.useEffect(() => {
     injectStyles()
@@ -2098,6 +2409,45 @@ export function TodoView({ store }: { store: TodoStore | null }): React.JSX.Elem
       confirmLabel: 'Delete',
       onConfirm: () => store.update((list) => list.filter((i) => i.id !== item.id)),
     })
+  }
+
+  /**
+   * Open the launch dialog, creating the session it will configure.
+   *
+   * The dialog opens immediately with a null session and fills in once the
+   * create resolves, so a slow host shows a disabled dialog rather than a
+   * frozen row with no feedback.
+   */
+  const askLaunch = (item: TodoItem): void => {
+    if (!launch) return
+    setLaunching({ item, session: null })
+    void launch.sessions.create({ workspaceId: launch.workspaceId }).then(
+      (sessionId) => setLaunching((cur) => (cur?.item.id === item.id ? { item, session: { id: sessionId } } : cur)),
+      () => setLaunching(null),
+    )
+  }
+
+  /**
+   * A handler that opens this task's recorded session, or undefined.
+   *
+   * The id is a HINT: sessions get deleted, and `binding()` answering
+   * undefined is how the harness reports one that no longer exists. Checking it
+   * here is what keeps a dangling id from rendering a button that errors on
+   * click. The stored id is deliberately NOT cleared on a miss — an archived
+   * session can be restored, and this is the only record work ever started.
+   */
+  const openSessionFor = (item: TodoItem): (() => void) | undefined => {
+    const id = item.sessionId
+    if (!launch || id === undefined) return undefined
+    if (launch.sessions.binding(id) === undefined) return undefined
+    return () => launch.sessions.open(id)
+  }
+
+  /** Close the launch dialog, discarding a session that never got its prompt. */
+  const closeLaunch = (launched: boolean): void => {
+    const open = launching
+    setLaunching(null)
+    if (!launched && launch && open?.session) void discardSession(launch, open.session.id)
   }
 
   return (
@@ -2257,6 +2607,8 @@ export function TodoView({ store }: { store: TodoStore | null }): React.JSX.Elem
                         knownSprints={knownSprints}
                         onOpen={() => setOpenId(item.id)}
                         onDelete={() => askDelete(item)}
+                        onLaunch={launch ? () => askLaunch(item) : undefined}
+                        onOpenSession={openSessionFor(item)}
                       />
                     ))}
                   </ul>
@@ -2315,6 +2667,28 @@ export function TodoView({ store }: { store: TodoStore | null }): React.JSX.Elem
           onClose={() => setOpenId(null)}
           knownReleases={knownReleases}
           knownSprints={knownSprints}
+          onLaunch={launch ? () => askLaunch(openTask) : undefined}
+        />
+      ) : null}
+
+      {launching && launch ? (
+        <LaunchDialog
+          item={launching.item}
+          session={launching.session}
+          ctx={launch}
+          onClose={() => closeLaunch(false)}
+          onLaunched={(sessionId) => {
+            // Only after the prompt is away: a failed launch must not leave the
+            // task claiming work that never started. Both facts about a launch
+            // land in ONE update, so the status and the session can never
+            // disagree about whether work started.
+            store.update((list) =>
+              setStatus(list, launching.item.id, 'in-progress').map((i) =>
+                i.id === launching.item.id ? { ...i, sessionId } : i,
+              ),
+            )
+            closeLaunch(true)
+          }}
         />
       ) : null}
 
@@ -2336,6 +2710,67 @@ const getMissingSnapshot = (): TodoState => MISSING
  * list as a tab in the conversation view ring beside Chat (0) and Trajectory (10).
  * @param ctx - client root context.
  */
+/**
+ * Resolve the launch services off a context, or undefined when the deployment
+ * does not compose them.
+ *
+ * Read through `ctx.get` rather than a top-level inject so a profile without
+ * model selection or agent presets still gets a working todo list — the launch
+ * button simply does not appear. `uiWorkspace` is optional even among these:
+ * it is only needed to tidy up a cancelled dialog.
+ *
+ * @param ctx - a context on which the launch services may be registered.
+ * @param workspaceId - the workspace a launched session belongs to.
+ * @returns the launch context, or undefined when a required service is missing.
+ */
+function launchContext(
+  ctx: unknown,
+  workspaceId: string,
+): (LaunchContext & { workspaceId: string }) | undefined {
+  const c = ctx as {
+    get?: (name: string) => unknown
+    sessions?: unknown
+    modelDirectories?: unknown
+    remote?: Record<string, unknown>
+    uiWorkspace?: unknown
+  }
+  // A cordis context is a PROXY: reading a property for a service this fiber
+  // did not declare in `inject` THROWS "cannot get property X without inject"
+  // — it does not yield undefined. Since these services are deliberately
+  // optional, every read must be guarded, or a profile that composes none of
+  // them takes the whole tab down with it. `ctx.get(name)` is the safe probe;
+  // the bare property read is the trap. test/context-probe.mjs pins both.
+  const probe = (name: 'sessions' | 'modelDirectories' | 'uiWorkspace'): unknown => {
+    try {
+      return c[name] ?? c.get?.(name)
+    } catch {
+      return undefined
+    }
+  }
+  const sessions = probe('sessions')
+  const modelDirectories = probe('modelDirectories')
+  // `remote` IS declared in this plugin's inject, and reading a missing KEY off
+  // an injected service object yields undefined rather than throwing — so this
+  // one read needs no guard. It is wrapped anyway because the distinction is
+  // invisible at the call site, and the namespaced form of the same service
+  // (`ctx['remote.agentPresets']`) very much does throw. test/context-probe.mjs
+  // pins both halves so this comment cannot quietly become wrong.
+  let agentPresets: unknown
+  try {
+    agentPresets = c.remote?.agentPresets
+  } catch {
+    agentPresets = undefined
+  }
+  if (!sessions || !modelDirectories || !agentPresets) return undefined
+  return {
+    workspaceId,
+    sessions,
+    modelDirectories,
+    remote: { agentPresets },
+    uiWorkspace: probe('uiWorkspace'),
+  } as LaunchContext & { workspaceId: string }
+}
+
 export function apply(ctx: ClientContext): void {
   // One store per workspace, so every tab viewing the same workspace shares
   // one list and one in-flight write chain.
@@ -2384,6 +2819,9 @@ export function apply(ctx: ClientContext): void {
   // already mounted their contract, whereas this plugin mounts its own, which
   // would deadlock apply() against an effect that never runs.
   ctx.effect(() => {
+    // The launch services are NOT listed here: a profile that composes none of
+    // them must still get a todo tab. They are read opportunistically via
+    // launchContext(), which yields undefined and hides the button instead.
     const fiber = anyCtx.inject(['remote.dshTodo', 'workspaces', 'slots'], (scoped) => {
       const readyCtx = scoped as ClientContext & {
         workspaces: { list: { getSnapshot(): { items: readonly unknown[] } } }
@@ -2408,7 +2846,7 @@ export function apply(ctx: ClientContext): void {
                 store = new TodoStore(readyCtx.remote.dshTodo, workspaceId)
                 stores.set(workspaceId, store)
               }
-              return { store }
+              return { store, launch: launchContext(readyCtx, workspaceId) }
             },
           },
           TodoView,

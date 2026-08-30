@@ -39,6 +39,7 @@ const todoItemSchema = z.object({
   release: z.string().optional(),
   sprint: z.string().optional(),
   dueDate: z.string().optional(),
+  sessionId: z.string().optional(),
   createdAt: z.number(),
   completedAt: z.number().optional(),
   archivedAt: z.number().optional(),

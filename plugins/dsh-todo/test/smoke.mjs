@@ -38,6 +38,9 @@ assert.ok(!/^\s*@Remote\s*$/m.test(hostSource), 'decorators were emitted nativel
 
 // --- host half --------------------------------------------------------------
 const host = await import(pathToFileURL(join(root, 'lib/index.js')).href)
+// The launch helpers ship as their own module so this suite can exercise the
+// BUILT pure logic without dragging React or the harness packages in.
+const launch = await import(pathToFileURL(join(root, 'lib/launch.js')).href)
 assert.equal(typeof host.TodoService, 'function', 'host half must export TodoService')
 // The legacy storage-domain export is kept as a versioned marker; the SQLite
 // path no longer uses a domain unit.
@@ -261,6 +264,71 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   assert.equal(wrote.list.items[0].status, 'blocked')
 
   svc.close()
+  rmSync(dir, { recursive: true, force: true })
+}
+
+
+// --- v2 -> v3 schema migration (the sessionId column) ------------------------
+// Same defect class as v1 -> v2, and same blind spot: it breaks ONLY for users
+// who already have a v2 database, so a fresh-install test cannot see it.
+{
+  const { mkdtempSync, rmSync, mkdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { DatabaseSync } = await import('node:sqlite')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-todo-v2-'))
+  mkdirSync(join(dir, '.dsh'), { recursive: true })
+
+  // A genuine v2 table: every v2 column, and deliberately NO session_id.
+  const v2 = new DatabaseSync(join(dir, '.dsh', 'todo.db'))
+  v2.exec(`
+    CREATE TABLE todo (
+      id           TEXT PRIMARY KEY,
+      text         TEXT NOT NULL,
+      done         INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL,
+      completed_at INTEGER,
+      archived_at  INTEGER,
+      position     INTEGER NOT NULL,
+      title        TEXT,
+      status       TEXT,
+      description  TEXT,
+      priority     TEXT,
+      release      TEXT,
+      sprint       TEXT,
+      due_date     TEXT
+    );
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `)
+  v2.prepare('INSERT INTO todo (id, text, done, created_at, position, title, status, priority) VALUES (?,?,?,?,?,?,?,?)')
+    .run('v2a', 'pre-session task', 0, 200, 0, 'pre-session task', 'todo', 'p1')
+  v2.prepare("INSERT INTO meta VALUES ('revision', '3')").run()
+  v2.close()
+
+  const svc = new host.TodoService(new Context())
+  svc.ctx.workspaceRegistry = { list: () => [{ id: 'w', path: dir }] }
+  const read = await svc.list({ workspaceId: 'w' })
+  assert.equal(read.list.items.length, 1, 'a v2 database must still read after the v3 upgrade')
+  assert.equal(read.list.items[0].title, 'pre-session task')
+  assert.equal(read.list.items[0].sessionId, undefined,
+    'a pre-v3 row correctly has no session — the column is backfill-free')
+
+  // The upgraded table must accept and persist the new column.
+  const wrote = await svc.replace({
+    workspaceId: 'w',
+    items: [{ id: 'v2a', title: 'pre-session task', status: 'in-progress', priority: 'p1', sessionId: 'sess-xyz', createdAt: 200 }],
+    ifRevision: 3,
+  })
+  assert.equal(wrote.ok, true, 'a migrated database must accept a v3 write')
+  assert.equal(wrote.list.items[0].sessionId, 'sess-xyz',
+    'sessionId must persist into a migrated table — missing the ALTER TABLE drops it silently')
+
+  // And it must survive a genuine reopen, not just the in-memory echo.
+  svc.close()
+  const reopened = new host.TodoService(new Context())
+  reopened.ctx.workspaceRegistry = { list: () => [{ id: 'w', path: dir }] }
+  const again = await reopened.list({ workspaceId: 'w' })
+  assert.equal(again.list.items[0].sessionId, 'sess-xyz', 'sessionId must survive a reopen')
+  reopened.close()
   rmSync(dir, { recursive: true, force: true })
 }
 
@@ -765,6 +833,7 @@ assert.deepEqual(parsed, [
     id: 'a', title: 'hi', status: 'done', priority: 'p2', createdAt: 7,
     completedAt: 9, archivedAt: undefined, description: undefined,
     release: undefined, sprint: undefined, dueDate: undefined,
+    sessionId: undefined,
   },
 ])
 assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a missing status is not done')
@@ -916,6 +985,139 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   const delegated = source.match(/onClick=\{onDelete\}/g) ?? []
   assert.equal(delegated.length, 2, 'both the active and archived delete buttons must call onDelete')
   assert.ok(/askDelete/.test(source), 'the shared delete prompt builder must exist')
+}
+
+// --- launching a session from a task ----------------------------------------
+// The ordering rule here is the one defect in this feature that fails SILENTLY:
+// the agent-preset applier drops a pick aimed at a session that is no longer
+// blank, and prompting is exactly what un-blanks it. A launch that sends the
+// prompt first therefore runs the DEFAULT mode with no error anywhere — no
+// rejected promise, no console warning, nothing to notice until the agent
+// behaves oddly much later. Asserted on the SOURCE of src/launch.ts, because
+// the client bundle is minified and a bundle-level regex would match nothing
+// and pass vacuously.
+{
+  const launchSource = readFileSync(join(root, 'src/launch.ts'), 'utf8')
+
+  // 1. A launch must always try to set the mode. Without this a session joins
+  //    no preset and resolves against the empty global layer.
+  assert.ok(/agentPresets\.select\(/.test(launchSource),
+    'launchSession must select an agent preset')
+
+  // 2. THE ordering invariant: preset and model both precede the prompt.
+  const iPreset = launchSource.indexOf('agentPresets.select(')
+  const iModel = launchSource.indexOf('directoryFor(sessionId).select(')
+  const iPrompt = launchSource.search(/binding\.session\.prompt\(/)
+  assert.ok(iPreset !== -1 && iModel !== -1 && iPrompt !== -1,
+    'launchSession must select a preset, select a model, and send a prompt')
+  assert.ok(iPreset < iPrompt,
+    'the agent preset must be selected BEFORE the prompt — a non-blank session silently ignores it')
+  assert.ok(iModel < iPrompt,
+    'the model must be selected BEFORE the prompt')
+
+  // 3. Exactly one prompt call site, mirroring the single-removal rule: a
+  //    second path would bypass the ordering above.
+  const prompts = launchSource.match(/\.prompt\(\[\{ type: 'text'/g) ?? []
+  assert.equal(prompts.length, 1, 'a launch must send the prompt in exactly one place')
+
+  // 4. Create-on-open is only safe if cancelling cleans up after itself.
+  assert.ok(/archiveSession\(/.test(launchSource),
+    'discardSession must archive the session a cancelled dialog created')
+
+  // 5. The status flip is gated on the launch succeeding: a failed launch must
+  //    not leave the task claiming work that never started.
+  const clientSource = readFileSync(join(root, 'src/client.tsx'), 'utf8')
+  assert.ok(/onLaunched=\{\(sessionId\) => \{[\s\S]{0,500}?'in-progress'/.test(clientSource),
+    "the in-progress flip must happen in onLaunched, after the prompt is away")
+  // Status and session id land in ONE update, so they cannot disagree about
+  // whether work started.
+  assert.ok(/onLaunched=\{\(sessionId\) => \{[\s\S]{0,500}?sessionId \}/.test(clientSource),
+    'the launched session id must be recorded in the same update as the status')
+  const flips = clientSource.match(/setStatus\(list, launching\.item\.id, 'in-progress'\)/g) ?? []
+  assert.equal(flips.length, 1, 'the task status must be advanced in exactly one place')
+}
+
+// composePrompt — the brief a launched session opens with
+{
+  const bare = { id: 'a', title: 'Fix token refresh', status: 'todo', priority: 'p2', createdAt: 1 }
+  assert.equal(launch.composePrompt(bare), '# Fix token refresh\n\nPriority: P2',
+    'a bare task yields a heading plus its priority')
+
+  const full = {
+    ...bare,
+    description: 'The refresh token is dropped on 401.',
+    release: '1.5',
+    sprint: '24',
+    dueDate: '2026-03-14',
+  }
+  const text = launch.composePrompt(full)
+  assert.ok(text.startsWith('# Fix token refresh'), 'the title leads as a heading')
+  assert.ok(text.includes('The refresh token is dropped on 401.'), 'the description is the brief')
+  assert.ok(text.includes('Release: 1.5') && text.includes('Sprint: 24') && text.includes('Due: 2026-03-14'),
+    'set roadmap fields are carried as context')
+
+  // Absent fields must not produce empty rows — an empty "Release:" teaches the
+  // model the metadata is meaningless.
+  assert.ok(!launch.composePrompt(bare).includes('Release:'), 'an unset field is omitted entirely')
+  assert.ok(!launch.composePrompt(bare).includes('Due:'), 'an unset due date is omitted entirely')
+}
+
+// flattenModels — tolerant of the shell's internal catalog shape
+{
+  const flat = launch.flattenModels([
+    { label: 'DeepSeek', models: [{ provider: 'deepseek', model: 'deepseek-chat', label: 'Chat' }] },
+    { title: 'Other', items: [{ provider: 'x', id: 'y' }] },
+  ])
+  assert.equal(flat.length, 2, 'both group and model key spellings are accepted')
+  assert.deepEqual(flat[0], { provider: 'deepseek', model: 'deepseek-chat', label: 'Chat', group: 'DeepSeek' })
+  assert.equal(flat[1].label, 'y', 'a model with no label falls back to its id')
+  // A malformed entry is skipped, never crashed on: this shape is the shell's
+  // internal projection, not a contract published for plugins.
+  assert.equal(launch.flattenModels([{ models: [{ label: 'no ids' }] }]).length, 0,
+    'an entry without provider/model is skipped')
+  assert.equal(launch.flattenModels([]).length, 0)
+}
+
+// presetOptions — broken presets are unusable and the default leads
+{
+  const { options, defaultId } = launch.presetOptions([
+    { id: 'standard', label: 'Standard' },
+    { id: 'broken', label: 'Broken', broken: { reason: 'bad yml' } },
+    { id: 'cordis', label: 'Cordis', isDefault: true },
+  ])
+  assert.deepEqual(options.map((o) => o.id), ['standard', 'cordis'], 'a broken preset must not be offered')
+  assert.equal(defaultId, 'cordis', 'the deployment default is preselected')
+  assert.equal(launch.presetOptions([{ id: 'only' }]).defaultId, 'only',
+    'with no explicit default the first healthy preset wins')
+  assert.equal(launch.presetOptions([]).defaultId, undefined, 'no presets is a valid deployment')
+}
+
+// --- sessionId reaches every face -------------------------------------------
+// The field crosses six places (types, wire schema, host schema + sanitizeItems,
+// SQLite migration + SQL, client coerceItems, CLI). Missing ANY of them drops it
+// silently, so each boundary is pinned rather than trusting one round-trip.
+{
+  const withSession = {
+    id: 's1', title: 'has a session', status: 'in-progress', priority: 'p2',
+    sessionId: 'sess-1', createdAt: 1,
+  }
+
+  // The wire codec is STRICT: a field it does not name is stripped in transit,
+  // which fails silently — the UI would show a session the host never receives.
+  const replaceDescriptor = m.TODO_REMOTE.descriptors.find((d) => d.method === 'replace')
+  assert.ok(replaceDescriptor, 'the replace descriptor must exist')
+  const parsed = replaceDescriptor.parameters[0].codec.schema.parse({
+    workspaceId: 'w', items: [withSession], ifRevision: null,
+  })
+  assert.equal(parsed.items[0].sessionId, 'sess-1',
+    'the wire schema must name sessionId or it is stripped off the wire')
+
+  assert.equal(m.coerceItems([withSession])[0].sessionId, 'sess-1',
+    'coerceItems must keep sessionId or it is lost on reload')
+  assert.equal(m.coerceItems([{ ...withSession, sessionId: 42 }])[0].sessionId, undefined,
+    'a non-string session id must decay to undefined, not survive as junk')
+  assert.equal(m.coerceItems([{ ...withSession, sessionId: '' }])[0].sessionId, undefined,
+    'an empty session id is absence, not a stored empty string')
 }
 
 // workspaceIdForSession — the per-workspace routing rule
