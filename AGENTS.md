@@ -39,9 +39,11 @@ plugins/dsh-plan-board   host + client — durable plans, service key dshPlans. 
 plugins/dsh-memory       host + client — /remember + instruction inspector, service key
                          dshMemory. Writes into the AGENTS.md hierarchy and
                          reports what dsh-agent-instructions' byte budget kept.
-scripts/                 verify.mjs, anchor.mjs, check-type-scale.mjs, check-tokens.mjs,
-                         link-superpowers-skills.mjs (all portable)
-                         dev-link.ps1 (Windows: anchors + junctions into profiles)
+scripts/                 verify.mjs, anchor.mjs, host-deps.mjs, check-type-scale.mjs,
+                         check-tokens.mjs, link-superpowers-skills.mjs (all portable)
+                         dev-link.mjs (entry point; the root postinstall runs it)
+                         -> dev-link.ps1 (Windows) / dev-link.sh (macOS/Linux):
+                            anchors + junctions into profiles
 ```
 
 Workspace globs are `plugins/*`, so anything added under `plugins/` becomes a package.

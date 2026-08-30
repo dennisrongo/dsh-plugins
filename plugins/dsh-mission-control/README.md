@@ -21,7 +21,6 @@ Docked as a right rail that the shell's layout reflows around:
 - **Stats strip** — session count, running, subagents, waiting-on-you
 - **Token burn** — estimated spend broken down by model
 - **Permission inbox** — sessions blocked on `approval` / `question` / `plan-review`
-- **Feed** — a running log of fleet events
 
 Built on public faces only: `ctx.sessions.list` and `ctx.workspaces.list`
 (ObservableSnapshot → React), `sessionStats` projections (turns / steps / llmMs

@@ -17,7 +17,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | Package | npm | Adds | Halves | Endpoints |
 |---|---|---|---|---|
 | [`dsh-todo`](plugins/dsh-todo) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-todo) | per-workspace sprint/roadmap task list, plus a `dsh-todo` CLI | host + client + CLI | `dshTodo/list`, `replace` |
-| [`dsh-git`](plugins/dsh-git) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-git) | source-control tab — changes, history, branches, stash, worktrees | host + client | `dshGit/status`, `diff`, `commitFiles`, `commitDiff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken`, `refs`, `branch`, `merge`, `stash`, `worktree`, `suggestBranch` |
+| [`dsh-git`](plugins/dsh-git) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-git) | source-control tab — changes, history, branches, stash, worktrees | host + client | `dshGit/status`, `diff`, `commitFiles`, `commitDiff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken`, `refs`, `branch`, `merge`, `stash`, `worktree`, `suggestBranch`, `stashFiles`, `stashDiff` |
 | [`dsh-weather`](plugins/dsh-weather) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-weather) | weather bar in the shell overlay | client only | — |
 | [`dsh-headless-plus`](plugins/dsh-headless-plus) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
 | [`dsh-superpowers`](plugins/dsh-superpowers) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) | Superpowers methodology as a system-prompt section | host | — |
@@ -103,7 +103,7 @@ so a dependency install doesn't spam the watcher. And the debounce has a **maxim
 because a pure trailing-edge debounce is a starvation bug: a watch-mode build re-arms it
 forever and the list would stay stale for exactly as long as work is happening.
 
-**Endpoints.** `status`, `diff`, `commitFiles`, `commitDiff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken`, `refs`, `branch`, `merge`, `stash`, `worktree`, `suggestBranch` under `POST /api/dshGit/<method>`, each taking one parameter named `request`.
+**Endpoints.** `status`, `diff`, `commitFiles`, `commitDiff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken`, `refs`, `branch`, `merge`, `stash`, `worktree`, `suggestBranch`, `stashFiles`, `stashDiff` under `POST /api/dshGit/<method>`, each taking one parameter named `request`.
 
 **Requires.** `workspaceRegistry` and `llm` (both composed by `dsh-base`) and `agentDefaultModel` for message drafting.
 

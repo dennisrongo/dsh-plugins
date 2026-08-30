@@ -8,8 +8,10 @@
 A per-workspace **source-control tab** for the DeepSeek Harness web UI. It adds
 a **Source Control** tab beside Chat, Trajectory, and Todo that shows everything
 that differs in the workspace's repository, and lets you stage, commit (with an
-AI-written message), initialize, sync, and browse history — without leaving the
-session. The tab holds two panes, **Changes** and **History**.
+AI-written message), initialize, sync, branch, merge, stash, manage worktrees,
+and browse history — without leaving the session. The tab holds three panes,
+**Changes**, **History** and **Repo**, switched by a segmented control below the
+branch header.
 
 ## What it does
 
@@ -32,9 +34,87 @@ session. The tab holds two panes, **Changes** and **History**.
   Initialize button with an editable initial branch name.
 - **Sync** — Fetch, Pull (fast-forward only), Push / Publish, and a combined
   pull-then-push, with ahead/behind counts on the buttons.
+- **Branches** — the branch name in the header is a menu: switch, create,
+  merge another branch in, delete, or rename. Nothing is ever auto-stashed; a
+  switch git refuses offers an explicit "Stash changes and switch" instead.
+- **Merge** — allowed to conflict. The repository is left mid-merge with a
+  banner offering Abort and Continue, and the conflicts appear in the Changes
+  list you already use, where staging a file marks it resolved.
+- **Stash** — push, pop, apply and drop from the Repo pane, and click a stash to
+  see the files it holds and their patches, the same way you read a commit.
+- **Worktrees** — add, remove and prune, each row with an **Open** button that
+  registers the directory as a workspace and switches to it.
 - **Live updates** — the list follows the repository on its own. An edit from
   an agent, your editor, or a terminal `git checkout` shows up within about a
   second, with no refresh click.
+
+## The Repo pane: stashes and worktrees
+
+A third pane lists your stashes and your worktrees. Both lists are fetched
+**lazily** — when you open the branch menu or enter the pane — and never polled,
+so the tab's idle cost is unchanged.
+
+A stash **is a commit**, so clicking one expands into the files it holds and each
+file opens its patch, exactly like a commit in History. It is specifically a
+*merge* commit: parent 1 is the base, parent 2 the index, and parent 3 — present
+only when the stash was taken with `-u` — is a commit whose entire tree is the
+untracked files. That third parent is why viewing a stash needs its own
+endpoints rather than reusing the commit reader, which walks `--first-parent`
+and would hide every new file.
+
+**Worktrees go beside the project, named `<project>-<branch>`.** Type a branch
+and the path fills itself in: `feature/login` in `myproj` suggests
+`../myproj-feature-login`, which puts the worktree next to the project on disk
+*and* next to it in dsh's workspace list, since workspaces are listed by title.
+Slashes are flattened, because `../myproj-feature/login` would quietly create a
+`myproj-feature` directory with the worktree buried inside it. The suggestion is
+editable and stops auto-filling the moment you type a path of your own.
+
+Open the form with nothing in mind and it is already usable: the path is
+prefilled with a readable `adjective-noun` name (`../myproj-brave-otter`), so
+"just give me a worktree" needs no typing at all. An empty branch box creates a
+new branch from that generated name — a worktree cannot check out a branch that
+is already checked out somewhere else, so reusing the current one is not an
+option git would allow.
+
+**The model names the branch, not the path.** Type a rough description — "fix
+login retry" — press ✦, and it becomes `fix/login-retry`, with the path
+following as `../myproj-fix-login-retry`. Naming is a judgement call worth a
+model; deriving a path from a branch is arithmetic with one right answer, so a
+regex does that. It fails soft: no provider configured, or any error, leaves
+your text untouched with the reason in the log strip.
+
+**Paths resolve like a terminal opened at the repository root.** `../worktree-test`
+lands exactly where `git worktree add ../worktree-test` would put it, and the
+form shows the resolved absolute path live as you type. A path landing *inside*
+the repository is refused — a checkout does not belong in the project, and
+whether it would even be clean depends on that project's `.gitignore`.
+
+A **from** select lets a worktree fork from a branch other than the one you are
+on, defaulting to the current one. Rows for the **main** worktree and the one you
+are currently in carry no Remove button: git refuses both, and on Windows it
+refuses the second with a file-lock `Permission denied` that reads like a bug in
+the tab. Removing a worktree dsh has registered as a workspace offers to remove
+that workspace too — registration was otherwise one-way, leaving a workspace
+pointing at a deleted directory.
+
+## Dialogs
+
+Both forms — New worktree and New branch — are **modals** on one shared
+component, as is the confirmation every destructive action goes through. A modal
+portals to `document.body`, traps Tab, closes on Escape or a backdrop click,
+focuses the first field on open, and hands focus back to the opener on close.
+**Dismissing never validates**: backdrop, Escape and ✕ all just close, and only
+the action button commits — a dialog you cannot leave while a field is half-typed
+is a trap, and this one holds a path.
+
+Two details are load-bearing and both shipped as bugs first. The backdrop sits
+*below* DSH Desktop's window-drag strip with padding to clear it, because that
+strip resolves drag regions before hit-testing and swallows clicks no z-index can
+outrank. And the plugin's palette is redeclared **on the backdrop**: every
+`--g-*` is declared on `.dshgit`, and a portalled dialog renders outside it, so
+without that the primary button — `background: var(--g-accent)` with hard-coded
+dark text — painted as a blank rectangle on a dark panel.
 
 ## Staying live without polling git
 
@@ -130,7 +210,7 @@ The plugin ships **two halves** that never share a process:
 | `src/git.ts` | host | The git engine: `execFile` wrapper and porcelain parsers. |
 | `src/watch.ts` | host | Filesystem watchers behind the change token, so the tab stays live without polling git. |
 | `src/remote.ts` | both | Strict zod Typert descriptors — the wire contract. |
-| `src/client.tsx` | browser | The Source Control tab (Changes + History), registered into the `conversation.view` slot at `order: 30`. |
+| `src/client.tsx` | browser | The Source Control tab (Changes + History + Repo), registered into the `conversation.view` slot at `order: 30`. |
 | `src/types.ts` | both | Shared, dependency-free vocabulary. |
 
 The browser never touches a repository: it calls `ctx.remote.dshGit.*` over the
@@ -159,7 +239,50 @@ Several details are easy to "clean up" and thereby break:
   stop symbol (only `Service.init`) and `dispose` is not in its `Events` map,
   so the two obvious spellings leak an OS handle per repository on each reload.
 - **Git is invoked with an argument array, never a shell.** Paths, branch names,
-  and commit messages are untrusted text.
+  and commit messages are untrusted text. Branch names and shas are additionally
+  validated, because git's *own* argument grammar is the risk: a leading `-` is
+  read as a flag, `..` forms a revision range, and `~`/`^`/`:`/`@{` all address
+  commits the UI never offered.
+- **A stash index is a cursor, not an identifier.** Dropping or popping an
+  earlier entry renumbers everything after it, so the client re-reads `refs`
+  after every mutation.
+- **`refs` returns a discriminated outcome, never bare arrays.** Collapsing a
+  failed read into empty lists renders "this repository has no branches" when the
+  truth is "restart the profile" — measured against a stale host half, where
+  `status` answered 200 while `refs` 404'd.
+- **Worktree paths are the one place this plugin writes outside the workspace**,
+  so they get `resolveWorktreePath` rather than `assertSafePath`, which refuses
+  absolute paths and `..` — correct for repo files, wrong for a worktree by
+  definition. The path arithmetic lives in `types.ts` because the host needs it
+  to build the command and the browser needs it to show where the input lands.
+
+## Endpoints
+
+`POST /api/dshGit/<method>`, each taking a single parameter named `request`:
+
+| Method | Does |
+| --- | --- |
+| `status` | One workspace's repository snapshot — branch, upstream, files, recent commits, plus `merging`, `mergeHead` and `stashCount` |
+| `diff` | A unified patch for the workspace or one path |
+| `commitFiles` | The paths one commit touched |
+| `commitDiff` | The patch one commit introduced |
+| `stage` | Stage, unstage or discard paths |
+| `commit` | Commit the staged tree |
+| `init` | Initialize a repository in the workspace |
+| `sync` | Pull, push, fetch, sync or publish |
+| `suggestMessage` | Draft a commit message from the diff via the LLM |
+| `refs` | Branches, stashes and worktrees in **one** read, fetched lazily |
+| `branch` | Create, switch, delete or rename a branch |
+| `merge` | Merge a branch, or abort/continue one in progress |
+| `stash` | Push, pop, apply, drop or clear stash entries |
+| `worktree` | Add, remove or prune a worktree |
+| `suggestBranch` | Draft a branch name from a short description via the LLM |
+| `stashFiles` | Every path a stash holds, untracked additions flagged |
+| `stashDiff` | The patch a stash holds, optionally narrowed to one path |
+| `changeToken` | The **polled** endpoint. Answers from an `fs.watch` counter and never spawns git; `0` means "not a repository" |
+
+**Requires** `workspaceRegistry` and `llm` (both composed by `dsh-base`), and
+`agentDefaultModel` for the two drafting endpoints.
 
 ## Install
 
@@ -208,15 +331,30 @@ pnpm typecheck
 pnpm test         # parsers, contract, and real-git operations
 ```
 
-The offline suite runs git against throwaway repositories. Four probes drive
-headless Chrome against the **built** `lib/client.js` and need no running
-harness:
+`pnpm test` runs git against throwaway repositories across three layers: the
+parsers (`test:branch`), the **host service** driven directly against real
+repositories (`test:worktree`, `test:ops`, `test:core`, `test:read`), and the
+wire contract pushed through the real zod codecs (`test:wire`). That middle
+layer exists because two bugs lived in the gap between the parsers below the
+endpoint and the client store above it — branch switching never worked at all,
+and every command reported `ok: true` even when git failed.
+
+The codecs matter more than they look: zod objects **strip** unknown keys rather
+than rejecting them, so a field the schema does not declare silently never
+arrives, in either direction. Every wire check asserts a lossless round trip
+rather than that parsing merely succeeded.
+
+Seven probes drive headless Chrome against the **built** `lib/client.js` and
+need no running harness:
 
 ```bash
 pnpm test:layout     # the diff sits beside the list at 1200px, below it at 560px
 pnpm test:stability  # opening a diff moves no row, and never covers the list
 pnpm test:skeleton   # the loading placeholder matches the real diff line's rhythm
 pnpm test:icons      # icon geometry and the 32px row budget
+pnpm test:history    # expanding a commit moves no row, and holds the row budget
+pnpm test:menu       # the branch menu stacks above the panes and stays on-screen
+pnpm test:modal      # the dialog clears the drag strip and is actually clickable
 ```
 
 Three further checks drive a real headless Chrome against a running server:
@@ -226,6 +364,12 @@ pnpm test:ui      # the tab registers, mounts, and renders
 pnpm test:ai      # the AI button produces a Conventional Commits message
 pnpm test:commit  # staging + committing changes real bytes on disk
 ```
+
+A probe passing proves less than it appears to. `test:menu`'s first version had
+no positioned elements to compete with, so deleting the menu's `z-index` still
+passed; `test:modal` measured only the panel, so it stayed green while every
+control inside it rendered unstyled. Both now assert against the real competitor
+and a real control.
 
 `test:layout` and `test:stability` both slice the CSS out of the built bundle,
 which is also why **a backtick must never appear in the stylesheet's comments**:
