@@ -61,6 +61,12 @@ export const TYPERT = {
           },
           {
             kind: 'method' as const,
+            name: 'pin',
+            signature: '@Remote pin(request: PlanPinRequest): Promise<PlanPinResult>',
+            summary: 'Pin one assistant message into the plan store by hand.',
+          },
+          {
+            kind: 'method' as const,
             name: 'discard',
             signature: '@Remote discard(request: PlanGetRequest): Promise<PlanRemoveResult>',
             summary: 'Delete one plan file.',
@@ -70,7 +76,7 @@ export const TYPERT = {
           {
             name: 'PlanMeta',
             declaration:
-              "export interface PlanMeta {\n    id: string;\n    title: string;\n    sessionId: string;\n    createdAt: number;\n    status: 'pending' | 'approved' | 'rejected';\n    decidedAt?: number;\n    feedback?: string;\n    bytes: number;\n}",
+              "export interface PlanMeta {\n    id: string;\n    title: string;\n    sessionId: string;\n    createdAt: number;\n    status: 'pending' | 'approved' | 'rejected' | 'proposed';\n    decidedAt?: number;\n    feedback?: string;\n    bytes: number;\n}",
           },
           {
             name: 'PlanRecord',
@@ -95,6 +101,15 @@ export const TYPERT = {
           {
             name: 'PlanTokenResult',
             declaration: 'export interface PlanTokenResult {\n    token: number;\n    pendingId?: string;\n}',
+          },
+          {
+            name: 'PlanPinRequest',
+            declaration: 'export interface PlanPinRequest {\n    workspaceId: string;\n    messageId: string;\n}',
+          },
+          {
+            name: 'PlanPinResult',
+            declaration:
+              'export type PlanPinResult = { ok: true; id: string; token: number } | { ok: false; reason: string };',
           },
           {
             name: 'PlanRemoveResult',

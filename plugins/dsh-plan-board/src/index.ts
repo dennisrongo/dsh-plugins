@@ -1,5 +1,19 @@
 /**
- * Host half of dsh-plan-board: durable plans, captured off `exit_plan_mode`.
+ * Host half of dsh-plan-board: durable plans, captured two ways.
+ *
+ * **Explicitly**, from `exit_plan_mode` — the plan-mode route, which carries a
+ * real review outcome. **Implicitly**, from a ```plan fence in an assistant
+ * message — the route for sessions that never enter plan mode, which is how
+ * most sessions actually work. Both land in the same store and the same panel;
+ * they differ only in status, because one was submitted for approval and the
+ * other was not.
+ *
+ * The implicit path is marker-based, not heuristic. A registered system-prompt
+ * section asks the model to fence its plans; detection is then exact. Sniffing
+ * prose for "plan-shaped" structure would fire on any answer with a heading and
+ * a list, and a plan store full of false positives is worse than one that
+ * occasionally misses — an unfenced plan simply stays in the transcript, which
+ * is the behaviour without this plugin anyway.
  *
  * dsh already has plan mode. `@deepseek-ai/dsh-plan-mode` logs a `plan/mode`
  * event, registers the `/plan` command, and exposes an `exit_plan_mode` tool
@@ -39,12 +53,13 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { ToolDispatchExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { PlanStore, isSafeId } from './store.ts'
-import { EXIT_PLAN_MODE, type PlanMeta, type PlanRecord } from './types.ts'
+import { EXIT_PLAN_MODE, PLAN_FENCE, extractFencedPlans, type PlanMeta, type PlanRecord } from './types.ts'
 
 export type * from './types.ts'
 export { PlanStore, parse, serialize, isSafeId } from './store.ts'
-export { firstHeading, slugify, stamp, MAX_PLAN_BYTES, MAX_PLANS } from './types.ts'
+export { firstHeading, slugify, stamp, extractFencedPlans, MAX_PLAN_BYTES, MAX_PLANS, PLAN_FENCE } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -88,6 +103,71 @@ export interface PlanRemoveResult {
   token: number
 }
 
+/** Request to pin one assistant message into the plan store by hand. */
+export interface PlanPinRequest {
+  workspaceId: string
+  /** Identity from the `assistant/message` event, as the action seat supplies it. */
+  messageId: string
+}
+
+/** Reply to a pin. */
+export type PlanPinResult = { ok: true; id: string; token: number } | { ok: false; reason: string }
+
+/**
+ * How many recent assistant messages stay pinnable.
+ *
+ * Enough to cover scrolling back a little in a live session; not a transcript
+ * mirror. A pin on something older simply reports that it is no longer
+ * available rather than silently doing nothing.
+ */
+const MAX_REMEMBERED_MESSAGES = 200
+
+/**
+ * Concatenate an assistant message's text blocks.
+ * @param content - the message's content blocks.
+ * @returns the text, or an empty string when it carries none.
+ */
+function messageText(content: unknown): string {
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((b): b is { type: 'text'; text: string } => {
+      const block = b as { type?: unknown; text?: unknown }
+      return block.type === 'text' && typeof block.text === 'string'
+    })
+    .map((b) => b.text)
+    .join('\n')
+}
+
+/**
+ * What the model is told about presenting plans.
+ *
+ * This is the whole reason capture works outside plan mode. Sniffing assistant
+ * prose for "plan-shaped" structure fires on any answer with a heading and a
+ * list; asking for one unambiguous marker makes detection exact, and a model
+ * that ignores it just leaves the plan in the transcript — which is the
+ * behaviour without this plugin anyway. Nothing here asks the model to change
+ * WHAT it writes, only to fence it.
+ */
+const PLAN_PROMPT_SECTION = [
+  'When you present an implementation plan, a design, or a proposed approach for',
+  'the user to review, wrap the plan itself in a fenced block tagged',
+  '`' + PLAN_FENCE + '`:',
+  '',
+  '    ```' + PLAN_FENCE,
+  '    # Title of the plan',
+  '',
+  '    ...the complete plan as markdown...',
+  '    ```',
+  '',
+  'Start it with a `#` heading naming the plan. Put ONLY the plan inside the',
+  'fence — any preamble or follow-up question belongs outside it. Fence a plan',
+  'once; do not repeat it verbatim in a later message.',
+  '',
+  'This is presentation only. It does not change whether you need approval, and',
+  'it is not a substitute for `' + EXIT_PLAN_MODE + '` when the session is in plan',
+  'mode — in plan mode, present through that tool as instructed there.',
+].join('\n')
+
 /**
  * Durable per-workspace plan storage.
  *
@@ -106,14 +186,53 @@ export class PlanService extends TypertRemoteService {
   private readonly dirs = new Map<string, string>()
 
   /**
+   * Recent assistant message text, keyed by message id.
+   *
+   * The manual pin arrives from the browser carrying only a `messageId` — that
+   * is all the assistant-actions seat is given — so the text has to be
+   * recoverable here. Bounded because this is a convenience cache, not a
+   * second copy of the transcript: the session log remains the record.
+   */
+  private readonly recentMessages = new Map<string, string>()
+
+  /**
    * @param ctx - host context carrying the tool registry and workspace registry.
    */
   constructor(ctx: Context) {
     super(ctx, 'dshPlans')
   }
 
-  /** Wrap `exit_plan_mode`'s dispatch so the plan and its outcome are kept. */
+  /**
+   * Wire both capture paths.
+   *
+   * They are deliberately independent. `exit_plan_mode` is the explicit route
+   * and carries a real review outcome; the fenced block is the implicit one and
+   * carries none. A session can use either, or both, and neither knows about
+   * the other.
+   */
   protected async [Service.init](): Promise<void> {
+    // Teaching the model to mark plans is what makes implicit capture exact.
+    // A fiber rather than an inject entry: system-prompt may mount after this
+    // service, and a deployment without one still gets explicit capture.
+    this.ctx.inject(['systemPrompt'], (scoped: Context) => {
+      scoped.effect(
+        () =>
+          scoped.systemPrompt.section({
+            name: 'dsh-plan-board:plan-fence',
+            // Before the persona (0) and well before tool guidance (100+):
+            // this is a presentation convention, not behaviour.
+            order: -40,
+            text: PLAN_PROMPT_SECTION,
+          }),
+        'dsh-plan-board: plan fence section',
+      )
+    })
+
+    this.ctx.on('session/event', (session: Session, event: SessionEvent) => {
+      if (event.type !== 'assistant/message') return
+      void this.captureFenced(session, event as SessionEvent<'assistant/message'>)
+    })
+
     this.ctx.on(
       'tools/execute',
       async (
@@ -152,15 +271,74 @@ export class PlanService extends TypertRemoteService {
           }
           return result
         } catch (err) {
-          // A throw here is the plan-mode tool refusing (kept planning, or the
-          // review dismissed). It still has to propagate untouched.
+          // A throw here is normally the plan-mode tool refusing — kept
+          // planning, or the review dismissed — which is a real outcome worth
+          // recording. But `exit_plan_mode` stays registered while plan mode is
+          // INACTIVE (the tool catalog is deliberately stable across
+          // transitions), and a stray call then fails before any review is
+          // raised. Keeping that would leave a plan marked "Kept planning" whose
+          // feedback is an internal error, so it is removed instead.
+          const message = err instanceof Error ? err.message : String(err)
           if (record !== undefined) {
-            await this.settle(dir, record.id, 'rejected', err instanceof Error ? err.message : String(err))
+            if (message.includes('only available in plan mode')) {
+              await this.store.enqueue(dir, () => this.store.remove(dir, record.id))
+            } else {
+              await this.settle(dir, record.id, 'rejected', message)
+            }
           }
           throw err
         }
       },
     )
+  }
+
+  /**
+   * Capture every `plan` fence in one assistant message.
+   *
+   * Stored as `proposed`: nothing was submitted for approval, so calling it
+   * pending would advertise a review that does not exist. Failures are swallowed
+   * — this observes the conversation and must never disturb it.
+   * @param session - the session whose log grew.
+   * @param event - the appended `assistant/message` event.
+   */
+  private async captureFenced(session: Session, event: SessionEvent): Promise<void> {
+    try {
+      const dir = session.header.cwd
+      if (dir === undefined) return
+      const message = (event as { data?: { message?: { content?: unknown } } }).data?.message
+      const blocks = Array.isArray(message?.content) ? message.content : []
+      const text = blocks
+        .filter((b): b is { type: 'text'; text: string } => {
+          const block = b as { type?: unknown; text?: unknown }
+          return block.type === 'text' && typeof block.text === 'string'
+        })
+        .map((b) => b.text)
+        .join('\n')
+      if (text === '') return
+      const plans = extractFencedPlans(text)
+      if (plans.length === 0) return
+      for (const plan of plans) {
+        await this.store.enqueue(dir, () =>
+          this.store.create(dir, plan, String(session.id), Date.now(), 'proposed'),
+        )
+      }
+    } catch (err) {
+      console.warn('[dsh-plan-board] could not store a fenced plan:', err)
+    }
+  }
+
+  /**
+   * Keep one assistant message's text for a later manual pin.
+   * @param id - the message id the browser will name.
+   * @param text - its concatenated text blocks.
+   */
+  private rememberMessage(id: string, text: string): void {
+    this.recentMessages.set(id, text)
+    if (this.recentMessages.size > MAX_REMEMBERED_MESSAGES) {
+      // Map iterates in insertion order, so the first key is the oldest.
+      const oldest = this.recentMessages.keys().next()
+      if (!oldest.done) this.recentMessages.delete(oldest.value)
+    }
   }
 
   /** Settle a stored plan without letting a storage failure reach the caller. */
@@ -236,6 +414,38 @@ export class PlanService extends TypertRemoteService {
       token: this.store.token(dir),
       ...(pending !== undefined ? { pendingId: pending.id } : {}),
     }
+  }
+
+  /**
+   * Pin one assistant message into the plan store by hand.
+   *
+   * The escape hatch for the marker: when the model writes a plan and does not
+   * fence it, nothing is captured, and a user who wants it in the panel has no
+   * other route. The whole message becomes the plan — the fence is what
+   * separates plan from prose, and without one there is nothing to trim by, so
+   * guessing where the plan starts would be the heuristic this design avoids.
+   * @param request - the workspace and the message to pin.
+   * @returns the stored plan id, or why it could not be pinned.
+   */
+  @Remote
+  async pin(request: PlanPinRequest): Promise<PlanPinResult> {
+    const dir = this.dirOf(request?.workspaceId)
+    const messageId = request?.messageId
+    if (typeof messageId !== 'string' || messageId === '') {
+      return { ok: false, reason: 'messageId must be a non-empty string' }
+    }
+    const text = this.recentMessages.get(messageId)
+    if (text === undefined) {
+      return { ok: false, reason: 'that message is no longer available to pin' }
+    }
+    // A fenced plan in the message is the plan; otherwise the message is.
+    const fenced = extractFencedPlans(text)
+    const body = fenced.length > 0 ? fenced.join('\n\n') : text
+    const record = await this.store.enqueue(dir, () =>
+      this.store.create(dir, body, '', Date.now(), 'proposed'),
+    )
+    if (record === undefined) return { ok: false, reason: 'that plan is already saved' }
+    return { ok: true, id: record.id, token: this.store.token(dir) }
   }
 
   /**

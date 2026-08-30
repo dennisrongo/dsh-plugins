@@ -4,6 +4,38 @@
 
 Plans that outlive the scrollback. Every plan the agent presents through `exit_plan_mode` is written to `<workspace>/.dsh/plans/` as markdown, a window opens so you can read it at full size, and a **Plans** tab keeps the history with each plan's outcome.
 
+## Two ways a plan gets captured
+
+**Explicitly — plan mode.** `/plan`, the model explores, then presents through
+`exit_plan_mode`. The plan is stored with the real review outcome: *Approved*,
+or *Kept planning* with the reviewer's own words.
+
+**Implicitly — a fenced block.** Most sessions never enter plan mode, and the
+model just writes the plan into the reply. So the plugin registers a
+system-prompt section asking it to wrap plans in a fence:
+
+    ```plan
+    # Title of the plan
+
+    ...the complete plan as markdown...
+    ```
+
+Anything inside that fence is captured as a plan, status **Proposed** — no
+review was raised, so it is not called "Awaiting review". Both routes land in
+the same store and the same panel.
+
+This is a **marker, not a heuristic**, and that is the whole design. Sniffing
+assistant prose for "plan-shaped" structure fires on any answer with a heading
+and a list; a plan store full of false positives is worse than one that
+occasionally misses. When the model does not fence, nothing is captured and the
+plan stays in the transcript — which is exactly the behaviour without this
+plugin.
+
+**Manually — Pin as plan.** For that case, every assistant message carries a
+*Pin as plan* action. The whole message becomes the plan, because without a
+fence there is nothing to trim by and guessing where the plan starts would be
+the heuristic this design avoids.
+
 ## Why this exists
 
 dsh already has plan mode, and it is good: `@deepseek-ai/dsh-plan-mode` logs a `plan/mode` event that survives resume and fork, registers `/plan`, and exposes an `exit_plan_mode` tool that presents the complete markdown for Approve / Keep planning.
@@ -61,6 +93,7 @@ Three storage details are deliberate. Writes go through a temp file and `rename`
 | `dshPlans/get` | `{ workspaceId, id }` | `{ plan? }` — with the markdown body |
 | `dshPlans/changeToken` | `{ workspaceId }` | `{ token, pendingId? }` — the polled endpoint |
 | `dshPlans/discard` | `{ workspaceId, id }` | `{ ok, token }` |
+| `dshPlans/pin` | `{ workspaceId, messageId }` | `{ ok, id, token }` or `{ ok: false, reason }` |
 
 All take a single parameter named `request`, and each reply is an **envelope** — `{ ok: true, value }` or `{ ok: false, error }` — never the bare payload.
 

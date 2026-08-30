@@ -113,7 +113,8 @@ export function parse(id: string, text: string): PlanRecord {
     title: typeof meta.title === 'string' ? meta.title : (firstHeading(body) ?? 'Untitled plan'),
     sessionId: typeof meta.sessionId === 'string' ? meta.sessionId : '',
     createdAt: typeof meta.createdAt === 'number' ? meta.createdAt : 0,
-    status: status === 'approved' || status === 'rejected' ? status : 'pending',
+    status:
+      status === 'approved' || status === 'rejected' || status === 'proposed' ? status : 'pending',
     ...(typeof meta.decidedAt === 'number' ? { decidedAt: meta.decidedAt } : {}),
     ...(typeof meta.feedback === 'string' ? { feedback: meta.feedback } : {}),
     bytes: Buffer.byteLength(body, 'utf8'),
@@ -215,7 +216,13 @@ export class PlanStore {
    * @param at - epoch millis, injected so tests are deterministic.
    * @returns the stored record, or undefined when the body was refused.
    */
-  create(workspaceDir: string, plan: string, sessionId: string, at = Date.now()): PlanRecord | undefined {
+  create(
+    workspaceDir: string,
+    plan: string,
+    sessionId: string,
+    at = Date.now(),
+    status: PlanStatus = 'pending',
+  ): PlanRecord | undefined {
     if (typeof plan !== 'string' || plan.trim() === '') return undefined
     if (Buffer.byteLength(plan, 'utf8') > MAX_PLAN_BYTES) return undefined
     const title = firstHeading(plan) ?? 'Untitled plan'
@@ -225,11 +232,15 @@ export class PlanStore {
       title,
       sessionId,
       createdAt: at,
-      status: 'pending',
+      status,
       bytes: Buffer.byteLength(plan, 'utf8'),
       body: plan,
     }
     const dir = this.dirFor(workspaceDir)
+    // A model that restates its plan — the same fence echoed in a later turn,
+    // or a message replayed on resume — must not create a second file. Identity
+    // is the body, because that is what the reader would see duplicated.
+    if (this.hasBody(workspaceDir, plan)) return undefined
     mkdirSync(dir, { recursive: true })
     writeAtomic(join(dir, `${id}.md`), serialize(record))
     this.bump(workspaceDir)
@@ -283,6 +294,24 @@ export class PlanStore {
     rmSync(path)
     this.bump(workspaceDir)
     return true
+  }
+
+  /**
+   * Whether a plan with this exact body is already stored.
+   * @param workspaceDir - absolute workspace directory.
+   * @param body - the candidate markdown.
+   * @returns true when an identical body is already on disk.
+   */
+  private hasBody(workspaceDir: string, body: string): boolean {
+    const wanted = body.trim()
+    const dir = this.dirFor(workspaceDir)
+    if (!existsSync(dir)) return false
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith('.md')) continue
+      const record = this.readFile(dir, name.slice(0, -3))
+      if (record !== undefined && record.body.trim() === wanted) return true
+    }
+    return false
   }
 
   /**

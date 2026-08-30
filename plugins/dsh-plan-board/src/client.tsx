@@ -69,6 +69,10 @@ interface PlansRemote {
   get(request: { workspaceId: string; id: string }): Promise<Reply<{ plan?: PlanRecord }>>
   changeToken(request: { workspaceId: string }): Promise<Reply<{ token: number; pendingId?: string }>>
   discard(request: { workspaceId: string; id: string }): Promise<Reply<{ ok: boolean; token: number }>>
+  pin(request: {
+    workspaceId: string
+    messageId: string
+  }): Promise<Reply<{ ok: true; id: string; token: number } | { ok: false; reason: string }>>
 }
 
 /** Minimal shape of the client's observable session list. */
@@ -186,6 +190,7 @@ const STATUS: Record<PlanMeta['status'], { label: string; token: string }> = {
   pending: { label: 'Awaiting review', token: 'var(--dsw-alias-state-warn-primary)' },
   approved: { label: 'Approved', token: 'var(--dsw-alias-state-success-primary)' },
   rejected: { label: 'Kept planning', token: 'var(--dsw-alias-state-business-primary)' },
+  proposed: { label: 'Proposed', token: 'var(--dsw-alias-label-tertiary)' },
 }
 
 /**
@@ -519,6 +524,9 @@ function PlanWindow({ plan, onClose }: { plan: PlanRecord; onClose: () => void }
           // Say plainly where the control is. A reading panel with no approve
           // button reads like a broken approve button unless it explains itself.
           <span>Approve or keep planning from the review prompt in the conversation.</span>
+        ) : plan.status === 'proposed' ? (
+          // No review was raised for this one, so do not imply one is waiting.
+          <span>Proposed in the conversation — no approval was requested.</span>
         ) : plan.feedback !== undefined && plan.feedback !== '' ? (
           <span className="dshpb-feedback">{plan.feedback}</span>
         ) : (
@@ -698,6 +706,74 @@ function PlansTab({
   )
 }
 
+/**
+ * The per-message action that sends an assistant reply to the plan panel.
+ *
+ * The escape hatch for the marker: when the model writes a plan without fencing
+ * it, nothing is captured automatically, and this is the only other route in.
+ * The seat supplies just a `messageId`, so the host resolves the text — it is
+ * already watching every assistant message for fences and keeps the recent ones
+ * for exactly this.
+ * @param props.remote - the mounted host contract.
+ * @param props.workspaceId - workspace to file the plan under.
+ * @param props.messageId - the message the seat addressed.
+ * @returns the action button.
+ */
+function PinAction({
+  remote,
+  workspaceId,
+  messageId,
+}: {
+  remote: PlansRemote | undefined
+  workspaceId: string | null
+  messageId: string
+}): React.ReactElement | null {
+  const [state, setState] = React.useState<'idle' | 'busy' | 'done' | 'failed'>('idle')
+  const [reason, setReason] = React.useState<string | undefined>(undefined)
+
+  React.useEffect(() => injectStyles(), [])
+
+  if (remote === undefined || workspaceId === null) return null
+
+  const pin = () => {
+    setState('busy')
+    void remote
+      .pin({ workspaceId, messageId })
+      .then((reply) => {
+        if (!reply.ok) {
+          setReason(reply.error?.message ?? 'the host rejected the request')
+          setState('failed')
+          return
+        }
+        if (reply.value.ok) {
+          setState('done')
+          return
+        }
+        // "already saved" is the common one, and it is not a failure worth a
+        // red state — the plan the user wanted IS in the panel.
+        setReason(reply.value.reason)
+        setState(reply.value.reason.includes('already') ? 'done' : 'failed')
+      })
+      .catch((err: unknown) => {
+        setReason(err instanceof Error ? err.message : String(err))
+        setState('failed')
+      })
+  }
+
+  return (
+    <button
+      type="button"
+      className="dshpb-pin"
+      onClick={pin}
+      disabled={state === 'busy' || state === 'done'}
+      title={reason ?? 'Save this message as a plan and open it in the panel'}
+      aria-label="Send to plan panel"
+    >
+      {state === 'done' ? 'In plan panel' : state === 'failed' ? 'Could not pin' : 'Pin as plan'}
+    </button>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
@@ -840,6 +916,26 @@ const CSS = `
   cursor: pointer;
 }
 .dshpb-btn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.dshpb-pin {
+  font-family: var(--dsw-font-family);
+  /* The action row is an icon strip, so it offers very little width and a
+     two-word label wraps into a three-line box beside 16px icons. */
+  white-space: nowrap;
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+.dshpb-pin:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.dshpb-pin:disabled { opacity: 0.6; cursor: default; }
 .dshpb-pill {
   display: inline-block;
   flex: 0 0 auto;
@@ -1012,6 +1108,26 @@ export function apply(ctx: ClientContext): void {
       readyCtx.slots.inject('shell.overlay', () =>
         readyCtx.slots.register({ name: 'shell.overlay', id: 'dsh-plan-board' }, () =>
           React.createElement(PlanOverlay, { ctx: readyCtx, remote }),
+        ),
+      )
+
+      readyCtx.slots.inject('conversation.chat.assistant-actions', () =>
+        readyCtx.slots.register(
+          { name: 'conversation.chat.assistant-actions', id: 'pin-as-plan', order: 60 },
+          ({ messageId }: { messageId: string }) => {
+            // The seat is shell-wide; resolve the workspace from the session the
+            // message belongs to, the same way the tab does.
+            const items = readyCtx.workspaces.list.getSnapshot().items
+            const current = (
+              readyCtx as unknown as { sessions: { list: SessionListLike } }
+            ).sessions.list.getSnapshot().current
+            const hit = items.find((ws) => ws.sessionIds.some((id) => String(id) === String(current)))
+            return React.createElement(PinAction, {
+              remote,
+              workspaceId: hit?.workspaceId ?? null,
+              messageId: String(messageId),
+            })
+          },
         ),
       )
 

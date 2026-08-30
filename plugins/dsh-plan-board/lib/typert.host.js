@@ -3,7 +3,7 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 
 // src/remote.ts
 import { z } from "zod";
-var statusSchema = z.enum(["pending", "approved", "rejected"]);
+var statusSchema = z.enum(["pending", "approved", "rejected", "proposed"]);
 var planMetaSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -21,6 +21,11 @@ var getRequestSchema = z.object({ workspaceId: z.string(), id: z.string() });
 var getResultSchema = z.object({ plan: planRecordSchema.optional() });
 var tokenResultSchema = z.object({ token: z.number(), pendingId: z.string().optional() });
 var removeResultSchema = z.object({ ok: z.boolean(), token: z.number() });
+var pinRequestSchema = z.object({ workspaceId: z.string(), messageId: z.string() });
+var pinResultSchema = z.union([
+  z.object({ ok: z.literal(true), id: z.string(), token: z.number() }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+]);
 var PACKAGE = "@dennisrongo/dsh-plan-board";
 function descriptor(method, request, result) {
   return {
@@ -58,7 +63,8 @@ var PLANS_REMOTE = {
     descriptor("list", listRequestSchema, listResultSchema),
     descriptor("get", getRequestSchema, getResultSchema),
     descriptor("changeToken", listRequestSchema, tokenResultSchema),
-    descriptor("discard", getRequestSchema, removeResultSchema)
+    descriptor("discard", getRequestSchema, removeResultSchema),
+    descriptor("pin", pinRequestSchema, pinResultSchema)
   ]
 };
 
@@ -98,6 +104,12 @@ var TYPERT = {
           },
           {
             kind: "method",
+            name: "pin",
+            signature: "@Remote pin(request: PlanPinRequest): Promise<PlanPinResult>",
+            summary: "Pin one assistant message into the plan store by hand."
+          },
+          {
+            kind: "method",
             name: "discard",
             signature: "@Remote discard(request: PlanGetRequest): Promise<PlanRemoveResult>",
             summary: "Delete one plan file."
@@ -106,7 +118,7 @@ var TYPERT = {
         types: [
           {
             name: "PlanMeta",
-            declaration: "export interface PlanMeta {\n    id: string;\n    title: string;\n    sessionId: string;\n    createdAt: number;\n    status: 'pending' | 'approved' | 'rejected';\n    decidedAt?: number;\n    feedback?: string;\n    bytes: number;\n}"
+            declaration: "export interface PlanMeta {\n    id: string;\n    title: string;\n    sessionId: string;\n    createdAt: number;\n    status: 'pending' | 'approved' | 'rejected' | 'proposed';\n    decidedAt?: number;\n    feedback?: string;\n    bytes: number;\n}"
           },
           {
             name: "PlanRecord",
@@ -131,6 +143,14 @@ var TYPERT = {
           {
             name: "PlanTokenResult",
             declaration: "export interface PlanTokenResult {\n    token: number;\n    pendingId?: string;\n}"
+          },
+          {
+            name: "PlanPinRequest",
+            declaration: "export interface PlanPinRequest {\n    workspaceId: string;\n    messageId: string;\n}"
+          },
+          {
+            name: "PlanPinResult",
+            declaration: "export type PlanPinResult = { ok: true; id: string; token: number } | { ok: false; reason: string };"
           },
           {
             name: "PlanRemoveResult",

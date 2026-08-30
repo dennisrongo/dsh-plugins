@@ -16,7 +16,7 @@
  */
 import { z } from 'zod'
 
-const statusSchema = z.enum(['pending', 'approved', 'rejected'])
+const statusSchema = z.enum(['pending', 'approved', 'rejected', 'proposed'])
 
 /** One plan's metadata, without its markdown. */
 const planMetaSchema = z.object({
@@ -41,6 +41,12 @@ const getResultSchema = z.object({ plan: planRecordSchema.optional() })
 
 const tokenResultSchema = z.object({ token: z.number(), pendingId: z.string().optional() })
 const removeResultSchema = z.object({ ok: z.boolean(), token: z.number() })
+
+const pinRequestSchema = z.object({ workspaceId: z.string(), messageId: z.string() })
+const pinResultSchema = z.union([
+  z.object({ ok: z.literal(true), id: z.string(), token: z.number() }),
+  z.object({ ok: z.literal(false), reason: z.string() }),
+])
 
 const PACKAGE = '@dennisrongo/dsh-plan-board'
 
@@ -89,6 +95,7 @@ export const PLANS_REMOTE = {
     descriptor('get', getRequestSchema, getResultSchema),
     descriptor('changeToken', listRequestSchema, tokenResultSchema),
     descriptor('discard', getRequestSchema, removeResultSchema),
+    descriptor('pin', pinRequestSchema, pinResultSchema),
   ],
 }
 

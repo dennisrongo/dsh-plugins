@@ -140,3 +140,31 @@ whenever the two measurements disagree — which they do while the rail animates
 The acceptance test for both is not a screenshot: it is
 `document.elementFromPoint()` at the Close button's centre returning something
 inside `.dshpb-close`. A panel can look perfect and still be unclickable.
+
+## Two capture paths, deliberately independent
+
+`exit_plan_mode` is the explicit route and carries a review outcome. A fenced
+```plan block in an assistant message is the implicit route and carries none —
+it is stored as `proposed`, which exists so those plans are not labelled
+"Awaiting review" and send the user looking for an approve control that was
+never raised. Neither path knows about the other.
+
+The implicit path is **marker-based on purpose**. The plugin registers a
+system-prompt section asking the model to fence its plans; `extractFencedPlans`
+then matches exactly that. Do not replace it with prose sniffing: a heading plus
+a list describes most structured answers, and false positives here write files
+into the user's repository. An unfenced plan staying in the transcript is the
+correct failure — it is the behaviour without this plugin.
+
+Three consequences worth keeping:
+
+- **`PLAN_FENCE` and the regex must agree.** The pattern is a literal, not
+  `new RegExp` built from the constant, because `'\s'` in a quoted string is not
+  a valid escape and degrades to `s` — `([\s\S]*?)` silently becomes `([sS]*?)`
+  and the fence matches almost nothing. A test pins the tag instead.
+- **Bodies are deduped.** A model that restates its plan, or a message replayed
+  on resume, must not create a second file; `create` refuses an identical body.
+- **The pin cache is bounded and is not a transcript.** `conversation.chat.assistant-actions`
+  supplies only a `messageId`, so the host keeps recent assistant text to resolve
+  it. A pin on something older reports that it is unavailable rather than
+  silently doing nothing.

@@ -27,6 +27,9 @@
         "./node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/index.d.ts"
       ],
       "@deepseek-ai/dsh-workspace": ["./node_modules/@deepseek-ai/dsh-workspace/lib/types/index.d.ts"],
+      // Type-only: the assistant/message event payload and Session shape.
+      "@deepseek-ai/dsh-session": ["./node_modules/@deepseek-ai/dsh-session/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-system-prompt": ["./node_modules/@deepseek-ai/dsh-system-prompt/lib/types/index.d.ts"],
       "@deepseek-ai/dsh-client-runtime/client": [
         "./node_modules/@deepseek-ai/dsh-client-runtime/lib/types/client/index.d.ts"
       ]

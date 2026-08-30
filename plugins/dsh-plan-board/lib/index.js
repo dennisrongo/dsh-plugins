@@ -68,6 +68,18 @@ import { join, resolve } from "node:path";
 var DOT_DSH = ".dsh";
 var PLANS_DIR = "plans";
 var EXIT_PLAN_MODE = "exit_plan_mode";
+var PLAN_FENCE = "plan";
+function extractFencedPlans(text) {
+  const pattern = /^[ \t]*```[ \t]*plan[ \t]*$([\s\S]*?)^[ \t]*```[ \t]*$/gm;
+  const out = [];
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const body = match[1].replace(/^\n+/, "").replace(/\s+$/, "");
+    if (body !== "") out.push(body);
+  }
+  return out;
+}
+__name(extractFencedPlans, "extractFencedPlans");
 var MAX_PLAN_BYTES = 512 * 1024;
 var MAX_PLANS = 200;
 function firstHeading(plan) {
@@ -129,7 +141,7 @@ ${FENCE}`, FENCE.length);
     title: typeof meta.title === "string" ? meta.title : firstHeading(body) ?? "Untitled plan",
     sessionId: typeof meta.sessionId === "string" ? meta.sessionId : "",
     createdAt: typeof meta.createdAt === "number" ? meta.createdAt : 0,
-    status: status === "approved" || status === "rejected" ? status : "pending",
+    status: status === "approved" || status === "rejected" || status === "proposed" ? status : "pending",
     ...typeof meta.decidedAt === "number" ? { decidedAt: meta.decidedAt } : {},
     ...typeof meta.feedback === "string" ? { feedback: meta.feedback } : {},
     bytes: Buffer.byteLength(body, "utf8"),
@@ -215,7 +227,7 @@ var _PlanStore = class _PlanStore {
    * @param at - epoch millis, injected so tests are deterministic.
    * @returns the stored record, or undefined when the body was refused.
    */
-  create(workspaceDir, plan, sessionId, at = Date.now()) {
+  create(workspaceDir, plan, sessionId, at = Date.now(), status = "pending") {
     if (typeof plan !== "string" || plan.trim() === "") return void 0;
     if (Buffer.byteLength(plan, "utf8") > MAX_PLAN_BYTES) return void 0;
     const title = firstHeading(plan) ?? "Untitled plan";
@@ -225,11 +237,12 @@ var _PlanStore = class _PlanStore {
       title,
       sessionId,
       createdAt: at,
-      status: "pending",
+      status,
       bytes: Buffer.byteLength(plan, "utf8"),
       body: plan
     };
     const dir = this.dirFor(workspaceDir);
+    if (this.hasBody(workspaceDir, plan)) return void 0;
     mkdirSync(dir, { recursive: true });
     writeAtomic(join(dir, `${id}.md`), serialize(record));
     this.bump(workspaceDir);
@@ -275,6 +288,23 @@ var _PlanStore = class _PlanStore {
     rmSync(path);
     this.bump(workspaceDir);
     return true;
+  }
+  /**
+   * Whether a plan with this exact body is already stored.
+   * @param workspaceDir - absolute workspace directory.
+   * @param body - the candidate markdown.
+   * @returns true when an identical body is already on disk.
+   */
+  hasBody(workspaceDir, body) {
+    const wanted = body.trim();
+    const dir = this.dirFor(workspaceDir);
+    if (!existsSync(dir)) return false;
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".md")) continue;
+      const record = this.readFile(dir, name.slice(0, -3));
+      if (record !== void 0 && record.body.trim() === wanted) return true;
+    }
+    return false;
   }
   /**
    * Keep the newest {@link MAX_PLANS} plans, plus every pending one.
@@ -338,7 +368,27 @@ function writeAtomic(path, text) {
 __name(writeAtomic, "writeAtomic");
 
 // src/index.ts
-var _discard_dec, _changeToken_dec, _get_dec, _list_dec, _a, _init, _b;
+var MAX_REMEMBERED_MESSAGES = 200;
+var PLAN_PROMPT_SECTION = [
+  "When you present an implementation plan, a design, or a proposed approach for",
+  "the user to review, wrap the plan itself in a fenced block tagged",
+  "`" + PLAN_FENCE + "`:",
+  "",
+  "    ```" + PLAN_FENCE,
+  "    # Title of the plan",
+  "",
+  "    ...the complete plan as markdown...",
+  "    ```",
+  "",
+  "Start it with a `#` heading naming the plan. Put ONLY the plan inside the",
+  "fence \u2014 any preamble or follow-up question belongs outside it. Fence a plan",
+  "once; do not repeat it verbatim in a later message.",
+  "",
+  "This is presentation only. It does not change whether you need approval, and",
+  "it is not a substitute for `" + EXIT_PLAN_MODE + "` when the session is in plan",
+  "mode \u2014 in plan mode, present through that tool as instructed there."
+].join("\n");
+var _discard_dec, _pin_dec, _changeToken_dec, _get_dec, _list_dec, _a, _init, _b;
 var _PlanService = class _PlanService extends (_b = TypertRemoteService) {
   /**
    * @param ctx - host context carrying the tool registry and workspace registry.
@@ -349,9 +399,41 @@ var _PlanService = class _PlanService extends (_b = TypertRemoteService) {
     __publicField(this, "store", new PlanStore());
     /** Resolved workspace directory per workspace id. */
     __publicField(this, "dirs", /* @__PURE__ */ new Map());
+    /**
+     * Recent assistant message text, keyed by message id.
+     *
+     * The manual pin arrives from the browser carrying only a `messageId` — that
+     * is all the assistant-actions seat is given — so the text has to be
+     * recoverable here. Bounded because this is a convenience cache, not a
+     * second copy of the transcript: the session log remains the record.
+     */
+    __publicField(this, "recentMessages", /* @__PURE__ */ new Map());
   }
-  /** Wrap `exit_plan_mode`'s dispatch so the plan and its outcome are kept. */
-  async [(_a = Service.init, _list_dec = [Remote], _get_dec = [Remote], _changeToken_dec = [Remote], _discard_dec = [Remote], _a)]() {
+  /**
+   * Wire both capture paths.
+   *
+   * They are deliberately independent. `exit_plan_mode` is the explicit route
+   * and carries a real review outcome; the fenced block is the implicit one and
+   * carries none. A session can use either, or both, and neither knows about
+   * the other.
+   */
+  async [(_a = Service.init, _list_dec = [Remote], _get_dec = [Remote], _changeToken_dec = [Remote], _pin_dec = [Remote], _discard_dec = [Remote], _a)]() {
+    this.ctx.inject(["systemPrompt"], (scoped) => {
+      scoped.effect(
+        () => scoped.systemPrompt.section({
+          name: "dsh-plan-board:plan-fence",
+          // Before the persona (0) and well before tool guidance (100+):
+          // this is a presentation convention, not behaviour.
+          order: -40,
+          text: PLAN_PROMPT_SECTION
+        }),
+        "dsh-plan-board: plan fence section"
+      );
+    });
+    this.ctx.on("session/event", (session, event) => {
+      if (event.type !== "assistant/message") return;
+      void this.captureFenced(session, event);
+    });
     this.ctx.on(
       "tools/execute",
       async (exec, next) => {
@@ -380,13 +462,62 @@ var _PlanService = class _PlanService extends (_b = TypertRemoteService) {
           }
           return result;
         } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
           if (record !== void 0) {
-            await this.settle(dir, record.id, "rejected", err instanceof Error ? err.message : String(err));
+            if (message.includes("only available in plan mode")) {
+              await this.store.enqueue(dir, () => this.store.remove(dir, record.id));
+            } else {
+              await this.settle(dir, record.id, "rejected", message);
+            }
           }
           throw err;
         }
       }
     );
+  }
+  /**
+   * Capture every `plan` fence in one assistant message.
+   *
+   * Stored as `proposed`: nothing was submitted for approval, so calling it
+   * pending would advertise a review that does not exist. Failures are swallowed
+   * — this observes the conversation and must never disturb it.
+   * @param session - the session whose log grew.
+   * @param event - the appended `assistant/message` event.
+   */
+  async captureFenced(session, event) {
+    try {
+      const dir = session.header.cwd;
+      if (dir === void 0) return;
+      const message = event.data?.message;
+      const blocks = Array.isArray(message?.content) ? message.content : [];
+      const text = blocks.filter((b) => {
+        const block = b;
+        return block.type === "text" && typeof block.text === "string";
+      }).map((b) => b.text).join("\n");
+      if (text === "") return;
+      const plans = extractFencedPlans(text);
+      if (plans.length === 0) return;
+      for (const plan of plans) {
+        await this.store.enqueue(
+          dir,
+          () => this.store.create(dir, plan, String(session.id), Date.now(), "proposed")
+        );
+      }
+    } catch (err) {
+      console.warn("[dsh-plan-board] could not store a fenced plan:", err);
+    }
+  }
+  /**
+   * Keep one assistant message's text for a later manual pin.
+   * @param id - the message id the browser will name.
+   * @param text - its concatenated text blocks.
+   */
+  rememberMessage(id, text) {
+    this.recentMessages.set(id, text);
+    if (this.recentMessages.size > MAX_REMEMBERED_MESSAGES) {
+      const oldest = this.recentMessages.keys().next();
+      if (!oldest.done) this.recentMessages.delete(oldest.value);
+    }
   }
   /** Settle a stored plan without letting a storage failure reach the caller. */
   async settle(dir, id, status, feedback) {
@@ -430,6 +561,25 @@ var _PlanService = class _PlanService extends (_b = TypertRemoteService) {
       ...pending !== void 0 ? { pendingId: pending.id } : {}
     };
   }
+  async pin(request) {
+    const dir = this.dirOf(request?.workspaceId);
+    const messageId = request?.messageId;
+    if (typeof messageId !== "string" || messageId === "") {
+      return { ok: false, reason: "messageId must be a non-empty string" };
+    }
+    const text = this.recentMessages.get(messageId);
+    if (text === void 0) {
+      return { ok: false, reason: "that message is no longer available to pin" };
+    }
+    const fenced = extractFencedPlans(text);
+    const body = fenced.length > 0 ? fenced.join("\n\n") : text;
+    const record = await this.store.enqueue(
+      dir,
+      () => this.store.create(dir, body, "", Date.now(), "proposed")
+    );
+    if (record === void 0) return { ok: false, reason: "that plan is already saved" };
+    return { ok: true, id: record.id, token: this.store.token(dir) };
+  }
   async discard(request) {
     const dir = this.dirOf(request?.workspaceId);
     const ok = await this.store.enqueue(dir, () => this.store.remove(dir, request?.id));
@@ -440,6 +590,7 @@ _init = __decoratorStart(_b);
 __decorateElement(_init, 1, "list", _list_dec, _PlanService);
 __decorateElement(_init, 1, "get", _get_dec, _PlanService);
 __decorateElement(_init, 1, "changeToken", _changeToken_dec, _PlanService);
+__decorateElement(_init, 1, "pin", _pin_dec, _PlanService);
 __decorateElement(_init, 1, "discard", _discard_dec, _PlanService);
 __decoratorMetadata(_init, _PlanService);
 __name(_PlanService, "PlanService");
@@ -459,9 +610,11 @@ var index_default = PlanService;
 export {
   MAX_PLANS,
   MAX_PLAN_BYTES,
+  PLAN_FENCE,
   PlanService,
   PlanStore,
   index_default as default,
+  extractFencedPlans,
   firstHeading,
   isSafeId,
   parse,

@@ -15,7 +15,7 @@ import { join } from 'node:path'
 const lib = await import('../lib/index.js')
 // The SHIPPED manifest — what the loader registers and the browser mounts.
 const { TYPERT } = await import('../lib/typert.host.js')
-const { PlanStore, parse, serialize, isSafeId, firstHeading, slugify, stamp, PlanService, MAX_PLANS } = lib
+const { PlanStore, parse, serialize, isSafeId, firstHeading, slugify, stamp, PlanService, MAX_PLANS, extractFencedPlans, PLAN_FENCE } = lib
 
 let passed = 0
 /**
@@ -98,6 +98,79 @@ test('the manifest and the wire agree on every method', () => {
   const manifest = TYPERT.model.services[0].members.map((m) => m.name).sort()
   assert.deepEqual(manifest, wire, 'the ./typert manifest drifted from the mounted descriptors')
 })
+
+// -- implicit capture: the plan fence ---------------------------------------
+
+test('the fence tag the prompt asks for is the one the parser looks for', () => {
+  assert.equal(PLAN_FENCE, 'plan')
+})
+
+test('a fenced plan is extracted from surrounding prose', () => {
+  const message = [
+    'Here is how I would approach it.',
+    '',
+    '```plan',
+    '# Add retry to the client',
+    '',
+    '- back off exponentially',
+    '- cap at five attempts',
+    '```',
+    '',
+    'Want me to go ahead?',
+  ].join('\n')
+  const found = extractFencedPlans(message)
+  assert.equal(found.length, 1)
+  assert.ok(found[0].startsWith('# Add retry to the client'))
+  assert.ok(found[0].includes('cap at five attempts'))
+  assert.ok(!found[0].includes('Want me to go ahead?'), 'the follow-up question stays outside')
+})
+
+test('plan-shaped PROSE is never captured', () => {
+  // The whole reason for a marker: a heuristic would misfire on exactly this.
+  const message = ['# My plan for the refactor', '', 'Goal: make it faster.', '', '1. Measure'].join('\n')
+  assert.deepEqual(extractFencedPlans(message), [])
+})
+
+test('other fenced languages are left alone', () => {
+  assert.deepEqual(extractFencedPlans('```ts\nconst x = 1\n```'), [])
+  assert.deepEqual(extractFencedPlans('```planner\nnot a plan\n```'), [])
+})
+
+test('several fences in one message each become a plan', () => {
+  const message = ['```plan', '# First', 'a', '```', 'between', '```plan', '# Second', 'b', '```'].join('\n')
+  assert.deepEqual(extractFencedPlans(message).map((p) => p.split('\n')[0]), ['# First', '# Second'])
+})
+
+test('an unterminated fence is not captured', () => {
+  assert.deepEqual(extractFencedPlans('```plan\n# Half a plan\nno closing fence'), [])
+})
+
+// -- proposed plans ---------------------------------------------------------
+
+test('a proposed plan is stored as proposed, not pending', () => {
+  inWorkspace((dir, store) => {
+    const record = store.create(dir, '# From the chat\n\nbody', 's1', Date.UTC(2026, 7, 29), 'proposed')
+    assert.equal(record.status, 'proposed')
+    assert.equal(store.get(dir, record.id).status, 'proposed')
+  })
+})
+
+test('the same plan body is never stored twice', () => {
+  inWorkspace((dir, store) => {
+    const body = '# Restated plan\n\nsame every time'
+    assert.ok(store.create(dir, body, 's1', Date.UTC(2026, 7, 29), 'proposed'))
+    assert.equal(store.create(dir, body, 's1', Date.UTC(2026, 7, 30), 'proposed'), undefined)
+    assert.equal(store.list(dir).length, 1)
+  })
+})
+
+test('a proposed plan survives the round trip through the file', () => {
+  const back = parse('x', serialize({
+    id: 'x', title: 'T', sessionId: 's', createdAt: 1, status: 'proposed', bytes: 0, body: '# T\n',
+  }))
+  assert.equal(back.status, 'proposed')
+})
+
 
 // ── helpers ────────────────────────────────────────────────────────────────
 

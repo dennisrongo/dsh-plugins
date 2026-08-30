@@ -9,7 +9,7 @@
  * @module @dennisrongo/dsh-plan-board/types
  */
 
-/** Where a plan stands in its review. */
+/** Where a plan stands. */
 export type PlanStatus =
   /** Presented through `exit_plan_mode`, review not yet settled. */
   | 'pending'
@@ -17,6 +17,16 @@ export type PlanStatus =
   | 'approved'
   /** The user chose to keep planning, or the review was dismissed. */
   | 'rejected'
+  /**
+   * Written straight into the conversation rather than presented for review —
+   * a `plan` fence in an assistant message, or one you pinned by hand.
+   *
+   * It gets its own status rather than borrowing `pending` because `pending`
+   * means "a review is open and waiting for you", and there is no review here.
+   * Labelling these "Awaiting review" would send you looking for an approve
+   * control that was never raised.
+   */
+  | 'proposed'
 
 /** One plan's metadata — everything except the markdown body. */
 export interface PlanMeta {
@@ -56,6 +66,41 @@ export const PLANS_DIR = 'plans'
 
 /** The model-facing tool whose argument this plugin captures. */
 export const EXIT_PLAN_MODE = 'exit_plan_mode'
+
+/**
+ * The fence the system-prompt section asks the model to wrap plans in.
+ *
+ * A marker rather than a heuristic: sniffing assistant prose for
+ * "plan-shaped" structure fires on any answer with a heading and a list, and a
+ * plan store full of false positives is worse than one that occasionally
+ * misses. An unmarked plan simply stays in the transcript, which is the
+ * behaviour without this plugin anyway.
+ */
+export const PLAN_FENCE = 'plan'
+
+/**
+ * Extract every fenced plan block from one assistant message.
+ *
+ * Matches ```plan … ``` with optional surrounding whitespace on the info
+ * string. Nothing else in the message is considered, so ordinary prose — even
+ * prose that looks like a plan — is never captured.
+ * @param text - the assistant message's text content.
+ * @returns each fenced plan body, trimmed, in document order.
+ */
+export function extractFencedPlans(text: string): string[] {
+  // A literal, not `new RegExp(...)` built from PLAN_FENCE: in a quoted string
+  // `\s` is not a valid escape and silently degrades to `s`, so `([\s\S]*?)`
+  // becomes `([sS]*?)` and the fence matches almost nothing. The info string is
+  // pinned to PLAN_FENCE by the test rather than by construction.
+  const pattern = /^[ \t]*```[ \t]*plan[ \t]*$([\s\S]*?)^[ \t]*```[ \t]*$/gm
+  const out: string[] = []
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    const body = match[1].replace(/^\n+/, '').replace(/\s+$/, '')
+    if (body !== '') out.push(body)
+  }
+  return out
+}
 
 /**
  * Largest plan body accepted, in bytes.
