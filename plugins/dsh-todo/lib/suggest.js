@@ -38,6 +38,8 @@ function composeScanPrompt(digest, excludeTitles) {
 function unfence(raw) {
   const open = /```[ \t]*[A-Za-z0-9_-]*[ \t]*\r?\n?/.exec(raw);
   if (open === null) return raw;
+  const lead = raw.slice(0, open.index);
+  if (lead.includes("[") || lead.includes("{")) return raw;
   const body = raw.slice(open.index + open[0].length);
   const close = body.lastIndexOf("```");
   return close === -1 ? raw : body.slice(0, close);

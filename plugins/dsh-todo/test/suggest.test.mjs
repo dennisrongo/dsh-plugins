@@ -112,12 +112,41 @@ test('an uppercase language tag is unwrapped', () => {
 })
 
 test('CRLF line endings still unwrap', () => {
-  // Pinned because the rewrite touches exactly the newline handling that made
-  // CRLF work before it.
+  // A regression pin on the newline handling, NOT evidence the widening works:
+  // CRLF parsed under the original anchored regex too, so this row could not
+  // have gone red in the sabotage that verified the other fence shapes.
   const raw = '```json\r\n[{"title":"T","rationale":"R","priority":"p2"}]\r\n```'
   const out = parseSuggestions(raw)
   assert.equal(out.ok, true)
   assert.equal(out.suggestions.length, 1)
+})
+
+// --- the other side of the boundary: backticks as CONTENT, not a fence ------
+// Widening the fence search to find a run anywhere made an UNFENCED payload
+// that merely quotes backticks get mined as if it were fenced, truncating the
+// array to a fragment. The prompt asks the model to cite TODO/FIXME/HACK
+// evidence, so a code snippet inside a `rationale` is invited behaviour.
+// Both rows are pinned because the failure has a THRESHOLD: one run was
+// always harmless, two or more broke it.
+
+test('an unfenced payload quoting two backtick runs still parses', () => {
+  const fence = '```'
+  const raw = `[{"title":"T","rationale":"use ${fence}code${fence} here","priority":"p2"}]`
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 1)
+  // The rationale must survive INTACT — a truncating unwrap that still happened
+  // to parse would be just as wrong as one that throws.
+  assert.equal(out.suggestions[0].rationale, `use ${fence}code${fence} here`)
+})
+
+test('an unfenced payload quoting one backtick run still parses', () => {
+  const fence = '```'
+  const raw = `[{"title":"T","rationale":"use ${fence}code here","priority":"p2"}]`
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 1)
+  assert.equal(out.suggestions[0].rationale, `use ${fence}code here`)
 })
 
 test('prose with no fence and no JSON still fails', () => {

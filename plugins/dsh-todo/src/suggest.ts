@@ -73,13 +73,30 @@ export function composeScanPrompt(digest: string, excludeTitles: readonly string
  * a lead-in sentence before the open, no newline before the close, and an
  * uppercase `JSON` tag — each of which cost a Refresh round-trip.
  *
- * Deliberately mechanical: when no fence is present the input is returned
+ * A run only OPENS a fence when nothing resembling JSON precedes it. Widening
+ * the anchored match to find a fence anywhere made an UNFENCED payload whose
+ * own content quotes backticks — `{"rationale": "use ```code``` here"}` — get
+ * mined as if it were fenced, slicing the array down to a fragment that fails
+ * to parse. That is not a contrived input: `composeScanPrompt` asks the model
+ * to hunt TODO/FIXME/HACK comments and cite evidence, so a code snippet inside
+ * a `rationale` is the behaviour the feature invites. One backtick run was
+ * harmless; two or more truncated the payload.
+ *
+ * `[` or `{` before the first run is what separates the two cases — a lead-in
+ * sentence carries neither, while a bare payload starts with one. An
+ * "opening fence must sit at index 0" rule would be simpler and WRONG: it
+ * re-breaks the prose-before-the-fence shape this function exists to handle.
+ *
+ * Deliberately mechanical: when no fence opens, the input is returned
  * UNTOUCHED, so prose containing no JSON still fails at `JSON.parse` instead
  * of being mined for something that looks parseable.
  */
 function unfence(raw: string): string {
   const open = /```[ \t]*[A-Za-z0-9_-]*[ \t]*\r?\n?/.exec(raw)
   if (open === null) return raw
+  // Anything JSON-ish ahead of the run means the run is CONTENT, not a fence.
+  const lead = raw.slice(0, open.index)
+  if (lead.includes('[') || lead.includes('{')) return raw
   const body = raw.slice(open.index + open[0].length)
   const close = body.lastIndexOf('```')
   return close === -1 ? raw : body.slice(0, close)
