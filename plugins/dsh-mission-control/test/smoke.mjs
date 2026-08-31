@@ -1106,7 +1106,189 @@ assert.equal(exports.fmtMs(90_000), '1.5m')
   assert.equal(shouldOpenHistory(undefined), true, 'missing field → treat as cold (open is idempotent)')
   assert.equal(shouldOpenHistory('loading'), false, 'in-flight open is not duplicated')
   assert.equal(shouldOpenHistory('open'), false, 'already open → no refetch')
+  // 'error' is TERMINAL per snapshot flush but must not be terminal per mount.
+  // The host only retries a failed open when the session is next STAGED, and a
+  // stage tile is by definition not staged — so a tile that lost this race
+  // (open() racing a reconnect, or a transport blip) sat on its fallback
+  // caption forever. This is a real gap, but NOT the cause of the reported
+  // empty-tile bug: see the chatViewSource block below for that one.
   assert.equal(shouldOpenHistory('error'), false, 'failed open is not retried every flush')
+
+  // Retry is gated on ATTEMPTS, not on the flush: a tile re-arms a failed
+  // window a bounded number of times rather than never.
+  const { shouldRetryHistory } = exports
+  assert.equal(typeof shouldRetryHistory, 'function', 'exports shouldRetryHistory')
+  assert.equal(shouldRetryHistory('error', 0), true, 'a first failure is retried')
+  assert.equal(shouldRetryHistory('error', 2), true, 'still retrying inside the budget')
+  assert.equal(shouldRetryHistory('error', 3), false, 'the retry budget is bounded')
+  assert.equal(shouldRetryHistory('open', 0), false, 'a healthy window is never re-opened')
+  assert.equal(shouldRetryHistory('loading', 0), false, 'an in-flight open is not duplicated')
+  assert.equal(shouldRetryHistory('cold', 0), false, 'cold is the first-open path, not the retry path')
+
+  // --- the ACTUAL empty-tile cause: the transcript moved between harnesses.
+  //
+  // Up to 0.1.1-rc.2 the Session snapshot carried the conversation. In
+  // 0.1.2-alpha.1 buildSnapshot() was cut down to status only and assembly
+  // moved to the `uiConversation` service. DSH Desktop bundles its own harness
+  // and upgraded ahead of the CLI, so both eras are live at once and the tile
+  // must read whichever one is present.
+  const { chatViewSource } = exports
+  assert.equal(typeof chatViewSource, 'function', 'exports chatViewSource')
+
+  // 0.1.1: no uiConversation service -> undefined, so the caller keeps using
+  // the session snapshot's own `chat`.
+  const oldCtx = { get: (name) => (name === 'uiConversation' ? undefined : undefined) }
+  assert.equal(chatViewSource(oldCtx, 's1'), undefined, 'no uiConversation → fall back to snap.chat')
+
+  // 0.1.2: the chat view target is returned for the requested session.
+  const chatSnap = { order: ['n1'], nodes: new Map([['n1', {}]]) }
+  const calls = []
+  const newCtx = {
+    get: (name) => name === 'uiConversation'
+      ? {
+        binding: (sid) => {
+          calls.push(sid)
+          return { target: (t) => (t === 'chat' ? { getSnapshot: () => chatSnap, subscribe: () => () => {} } : undefined) }
+        },
+      }
+      : undefined,
+  }
+  const src = chatViewSource(newCtx, 's1')
+  assert.ok(src && typeof src.getSnapshot === 'function', '0.1.2 → a chat view source')
+  assert.equal(src.getSnapshot(), chatSnap, 'reads the chat target of that session')
+  assert.deepEqual(calls, ['s1'], 'binds the requested session, not the current one')
+
+  // uiConversation.binding THROWS for a session the controller does not know.
+  // A tile for an unlisted session must degrade, never take down the overlay.
+  const throwingCtx = {
+    get: () => ({ binding: () => { throw new Error('unknown session') } }),
+  }
+  assert.equal(chatViewSource(throwingCtx, 's1'), undefined, 'a throwing binding degrades to undefined')
+
+  // A ctx whose `get` itself throws (a proxy trap) must not escape either.
+  const hostileCtx = { get: () => { throw new Error('no inject') } }
+  assert.equal(chatViewSource(hostileCtx, 's1'), undefined, 'a throwing ctx.get degrades to undefined')
+  assert.equal(chatViewSource(newCtx, undefined), undefined, 'no session id → no source')
+
+  // The new API ships NO published .d.ts, so it is observed rather than
+  // promised: a later alpha can move it again. When that happens neither era
+  // resolves a chat container, and the tile must SAY so rather than render an
+  // empty chat indistinguishable from an idle session — precisely how this bug
+  // reached a user in the first place.
+  const { transcriptUnavailable } = exports
+  assert.equal(typeof transcriptUnavailable, 'function', 'exports transcriptUnavailable')
+  assert.equal(transcriptUnavailable('open', false), true, 'open window + no chat container → unsupported harness')
+  assert.equal(transcriptUnavailable('open', true), false, 'a resolved chat container is never "unavailable"')
+  // Only an OPEN window can make this claim: the others have their own copy,
+  // and asserting it mid-load would be the same false claim in a new place.
+  assert.equal(transcriptUnavailable('loading', false), false, 'a loading window is loading, not unsupported')
+  assert.equal(transcriptUnavailable('cold', false), false, 'a cold window is loading, not unsupported')
+  assert.equal(transcriptUnavailable('error', false), false, 'a failed window keeps the error copy')
+  assert.equal(transcriptUnavailable(undefined, false), false, 'no snapshot yet is not a harness verdict')
+
+  // extractTail must walk the 0.1.2 chat shape identically: the view target is
+  // the same { order, nodes } pair the old snapshot carried inline.
+  assert.equal(
+    extractTail({ chat: { order: ['n1'], nodes: new Map([['n1', { key: 'n1', kind: 'user', visibility: 'visible', data: { content: [{ type: 'text', text: 'hi' }] } }]]) } }, 30).length,
+    1,
+    'the relocated chat target parses with the existing reader',
+  )
+
+  // --- Stage renders the CONVERSATION, so it must not clip messages.
+  //
+  // The old tile passed maxChars=1200 (and hard-sliced user text at 220),
+  // sized for a small preview card. On a full-screen conversation that cut
+  // mid-sentence, and because the text renders as markdown it could slice a
+  // `**` off its partner, leaving the delimiter visible as literal text.
+  {
+    const long = 'x'.repeat(3000)
+    const node = (kind, payload) => ({ key: 'n1', kind, visibility: 'visible', data: payload })
+    const snapOf = (n) => ({ chat: { order: ['n1'], nodes: new Map([['n1', n]]) } })
+
+    const asst = snapOf(node('assistant-step', { blocks: [{ kind: 'text', text: long }] }))
+    assert.equal(extractTail(asst, 30)[0].text.length, 3000, 'assistant text is not clipped by default')
+    assert.equal(extractTail(asst, 30, 1200)[0].text.length, 1200, 'an explicit cap still clips (opt-in)')
+
+    const user = snapOf(node('user', { content: [{ type: 'text', text: long }] }))
+    assert.equal(extractTail(user, 30)[0].text.length, 3000, 'user text is not clipped either')
+
+    // The concrete markdown corruption: a bold span whose closer sat past the
+    // old 1200-char cap used to render as a literal `**`.
+    const bold = snapOf(node('assistant-step', { blocks: [{ kind: 'text', text: `${'a'.repeat(1190)}**bold**` }] }))
+    const out = extractTail(bold, 30)[0].text
+    assert.ok(out.endsWith('**bold**'), 'a bold span survives intact rather than losing its closer')
+  }
+
+  // --- Image sending from a tile: same verbs as the real composer.
+  {
+    const { isPromptImage } = exports
+    assert.equal(typeof isPromptImage, 'function', 'exports isPromptImage')
+    // Exactly the host's own allowlist — anything else throws
+    // UnsupportedImageMediaTypeError host-side, so the tile filters first
+    // rather than letting one stray file reject the whole send.
+    for (const ok of ['image/png', 'image/jpeg', 'image/webp', 'image/gif']) {
+      assert.equal(isPromptImage(ok), true, `${ok} is accepted`)
+    }
+    for (const no of ['image/svg+xml', 'image/heic', 'text/plain', 'application/pdf', '', undefined]) {
+      assert.equal(isPromptImage(no), false, `${String(no)} is refused`)
+    }
+    assert.equal(typeof exports.encodePromptImage, 'function', 'exports encodePromptImage')
+  }
+
+  // --- Waits moved too: 0.1.2 dropped `pending` from buildSnapshot AND
+  // `pendingInteraction` from the session summary, publishing both on
+  // `uiSession.pendingInteractions` instead. Without reading it, a session
+  // parked on ask_user_question shows no question box, the fleet's amber dot
+  // never lights, and the permission inbox stays empty — one relocation, four
+  // symptoms.
+  {
+    const { adaptPendingInteraction, pendingKindOf, withPendingKinds } = exports
+    assert.equal(typeof adaptPendingInteraction, 'function', 'exports adaptPendingInteraction')
+
+    // A question carrier: the tile's respond({ok,value}) must reach answer().
+    let got
+    const q = adaptPendingInteraction({
+      sessionId: 's1',
+      kind: 'question',
+      key: 'question:1',
+      questions: [{ id: 'q1', question: 'pick', options: [{ label: 'a' }] }],
+      answer: async (payload) => { got = payload },
+    })
+    assert.ok(q, 'a question interaction adapts')
+    assert.equal(q.kind, 'question')
+    assert.equal(q.sessionId, 's1')
+    assert.equal(q.payload.questions.length, 1, 'questions ride the payload the inbox reads')
+    const receipt = await q.respond({ ok: true, value: { sessionId: 's1', answer: { answers: [{ id: 'q1', selected: ['a'] }] } } })
+    assert.deepEqual(got, { answers: [{ id: 'q1', selected: ['a'] }] }, 'answer() gets the BARE batch, not the envelope')
+    assert.equal(receipt.accepted, true, 'a settled answer reports acceptance')
+
+    // An approval carrier: answer() takes the bare outcome string.
+    let outcome
+    const a = adaptPendingInteraction({
+      sessionId: 's2', kind: 'approval', key: 'approval:1', toolName: 'pwsh', approvalId: 'ap1',
+      answer: async (payload) => { outcome = payload },
+    })
+    assert.equal(a.kind, 'approval')
+    assert.equal(a.payload.toolName, 'pwsh', 'approval detail rides the payload')
+    await a.respond({ ok: true, value: { sessionId: 's2', approvalId: 'ap1', outcome: 'allowed-once' } })
+    assert.equal(outcome, 'allowed-once', 'answer() gets the bare outcome, not the envelope')
+
+    // Anything unanswerable is refused rather than rendered as a dead card.
+    assert.equal(adaptPendingInteraction(undefined), undefined, 'no interaction → no carrier')
+    assert.equal(adaptPendingInteraction({ kind: 'question' }), undefined, 'missing answer() → no carrier')
+
+    // The KIND feeds the amber dot and the "needs you first" sort.
+    assert.equal(pendingKindOf('approval', undefined), 'approval', '0.1.1 summary wins when present')
+    assert.equal(pendingKindOf(undefined, { kind: 'question' }), 'question', '0.1.2 falls back to the interaction')
+    assert.equal(pendingKindOf(undefined, { kind: 'nonsense' }), undefined, 'an unknown kind is not invented')
+    assert.equal(pendingKindOf(undefined, undefined), undefined, 'nothing waiting → undefined')
+
+    // The post-pass fills kinds through the whole tree, children included.
+    const tree = [{ id: 'r1', pending: undefined, children: [{ id: 'c1', pending: undefined, children: [] }] }]
+    const filled = withPendingKinds(tree, new Map([['c1', { kind: 'approval' }]]))
+    assert.equal(filled[0].children[0].pending, 'approval', 'a waiting SUBAGENT is found too')
+    assert.equal(withPendingKinds(tree, new Map()), tree, 'an empty map keeps identity (no 0.1.1 re-render)')
+  }
 
   // the cold snapshot really is empty — this is what produced the fallback
   assert.deepEqual(
@@ -1135,8 +1317,17 @@ assert.equal(exports.fmtMs(90_000), '1.5m')
 // plugin touches must therefore appear in `exports.inject` or this blows up,
 // which makes the guard cover services added in the future, not just today's.
 
-/** Context members cordis always exposes; these are framework, not services. */
-const CTX_FRAMEWORK = new Set(['effect', 'inject'])
+/**
+ * Context members cordis always exposes; these are framework, not services.
+ *
+ * `get` belongs here on the framework's own terms: cordis documents it as
+ * "read a service from the store WITHOUT the inject requirement", returning
+ * undefined rather than throwing. It is the sanctioned probe for an optional
+ * service — which is exactly how the plugin reads `uiConversation` and
+ * `uiSession`, both of which exist only on harness 0.1.2 and must therefore
+ * never enter `inject` (that would park apply() forever on 0.1.1).
+ */
+const CTX_FRAMEWORK = new Set(['effect', 'inject', 'get'])
 
 /**
  * Gate `target` the way a cordis fiber gates a context, recording every
@@ -1267,6 +1458,166 @@ assert.equal(element.type.name, 'MissionControl', 'renders MissionControl')
   const { renderToStaticMarkup } = require('react-dom/server')
   const html = renderToStaticMarkup(getSsrSlot().component())
   assert.ok(html.length > 0, 'the panel server-renders through the guarded ctx')
+
+  /**
+   * Render the panel with Stage OPEN.
+   *
+   * The tile only exists inside the Stage takeover, which `MissionControl`
+   * gates on a `useState(false)` that SSR cannot click. Rather than export the
+   * tile purely for testing — which would let the real composition drift from
+   * what the test exercises — flip that one initial value by patching
+   * `useState` for the duration of the render. `stageOpen` is identified by its
+   * initial value and call order, so this stays honest: if the component stops
+   * holding Stage in that slot, the marker assertions below fail loudly rather
+   * than silently testing a panel with no tiles.
+   * @param element - the registered slot element.
+   * @returns the same element, rendered with Stage open.
+   */
+  function renderWithStageOpen(element) {
+    const realUseState = ssrReact.useState
+    let seen = 0
+    ssrReact.useState = function patched(initial) {
+      // The 2nd `useState(false)` inside MissionControl is stageOpen.
+      if (initial === false && ++seen === 2) return [true, () => {}]
+      return realUseState.apply(this, arguments)
+    }
+    try {
+      return renderToStaticMarkup(element)
+    } finally {
+      ssrReact.useState = realUseState
+    }
+  }
+
+  // REGRESSION (harness 0.1.2 END-TO-END): render the panel against a context
+  // shaped like the NEW harness and assert the transcript and the waits both
+  // arrive. The marker assertions in installed-copy.mjs only prove the strings
+  // are present; this proves the wiring actually resolves. Every 0.1.2 bug in
+  // this package was invisible until something exercised the real shapes.
+  {
+    const sessionId = 's-012'
+    const chatSnap = {
+      order: ['n1'],
+      nodes: new Map([['n1', {
+        key: 'n1', kind: 'user', visibility: 'visible',
+        data: { content: [{ type: 'text', text: 'MARKER_TRANSCRIPT' }] },
+      }]]),
+    }
+    let answered
+    // 0.1.2: the session face carries STATUS ONLY — no chat, no pending.
+    const face = {
+      getSnapshot: () => ({
+        sessionId, running: false, openState: 'open',
+        queue: [], removed: false, blank: false, promptAttempted: false,
+      }),
+      subscribe: () => () => {},
+      open: () => {},
+      prompt: async () => ({ ok: true, value: { accepted: true } }),
+    }
+    const { ctx: c12, getSlot: getSlot12 } = makeStubCtx()
+    c12.sessions.list = stubObservable({
+      ids: [sessionId],
+      byId: { [sessionId]: { id: sessionId, displayTitle: 'Tile', running: false, blank: false, updatedAt: Date.now() } },
+      current: sessionId,
+      subagentsByParent: {},
+    })
+    c12.sessions.scope = () => ({})
+    c12.sessions.sessionOf = () => face
+    // The two 0.1.2 services, reached ONLY through ctx.get.
+    c12.get = (name) => {
+      if (name === 'uiConversation') {
+        return { binding: () => ({ target: (t) => (t === 'chat' ? stubObservable(chatSnap) : undefined) }) }
+      }
+      if (name === 'uiSession') {
+        return {
+          pendingInteractions: stubObservable(new Map([[sessionId, {
+            sessionId, kind: 'question', key: 'question:1',
+            questions: [{ id: 'q1', question: 'MARKER_QUESTION', options: [{ label: 'yes' }] }],
+            answer: async (p) => { answered = p },
+          }]])),
+        }
+      }
+      return undefined
+    }
+    ssrExports.apply(guardCtx(c12, ssrExports.inject, new Set()))
+    const html12 = renderWithStageOpen(getSlot12().component())
+
+    // The transcript resolved through uiConversation, not snap.chat.
+    assert.ok(
+      html12.includes('MARKER_TRANSCRIPT'),
+      '0.1.2: the tile renders the transcript from uiConversation (empty tiles were the reported bug)',
+    )
+    // The wait resolved through uiSession, not snap.pending.
+    assert.ok(
+      html12.includes('MARKER_QUESTION'),
+      '0.1.2: the tile renders the pending question from uiSession (no question box was the reported bug)',
+    )
+    // And it must NOT claim the harness is unsupported when both resolved.
+    assert.ok(
+      !html12.includes('transcript unavailable on this harness'),
+      '0.1.2: a resolved transcript is never reported as an unsupported harness',
+    )
+  }
+
+  // REGRESSION (harness 0.1.1): the SAME bundle must still work where the
+  // session snapshot carries the conversation and the waits inline. Porting to
+  // 0.1.2 must not strand the dsh CLI, which is a release behind.
+  {
+    const sessionId = 's-011'
+    const face = {
+      getSnapshot: () => ({
+        sessionId, running: false, openState: 'open',
+        chat: {
+          order: ['n1'],
+          nodes: new Map([['n1', {
+            key: 'n1', kind: 'user', visibility: 'visible',
+            data: { content: [{ type: 'text', text: 'LEGACY_TRANSCRIPT' }] },
+          }]]),
+        },
+        pending: [],
+      }),
+      subscribe: () => () => {},
+      open: () => {},
+    }
+    const { ctx: c11, getSlot: getSlot11 } = makeStubCtx()
+    c11.sessions.list = stubObservable({
+      ids: [sessionId],
+      byId: { [sessionId]: { id: sessionId, displayTitle: 'Legacy', running: false, blank: false, updatedAt: Date.now() } },
+      current: sessionId,
+      subagentsByParent: {},
+    })
+    c11.sessions.scope = () => ({})
+    c11.sessions.sessionOf = () => face
+    // Neither 0.1.2 service exists here — exactly the older harness.
+    c11.get = () => undefined
+    ssrExports.apply(guardCtx(c11, ssrExports.inject, new Set()))
+    const html11 = renderWithStageOpen(getSlot11().component())
+    assert.ok(
+      html11.includes('LEGACY_TRANSCRIPT'),
+      '0.1.1: snap.chat still renders when uiConversation is absent (the CLI must not regress)',
+    )
+  }
+
+  // REGRESSION: a module-level `const` must be declared ABOVE every function
+  // that reads it. This suite renders from an ALREADY-EVALUATED module, so the
+  // temporal dead zone has closed and it cannot see the failure — but the
+  // browser renders while the module body is still running, where a
+  // use-before-declare throws `Cannot access 'X' before initialization` and
+  // takes the whole overlay down. A try/catch around the read does NOT help
+  // when the catch branch returns the same binding. Assert the emitted order
+  // instead, which is the only place the hazard is visible offline.
+  {
+    const bundle = readFileSync(join(root, 'lib/client.js'), 'utf8')
+    for (const name of ['EMPTY_PENDING', 'IMAGE_MEDIA_TYPES', 'IMAGE_ACCEPT']) {
+      const declared = bundle.indexOf(`${name} = `)
+      assert.ok(declared > 0, `${name} is present in the bundle`)
+      // Every other mention must come after the declaration.
+      const first = bundle.indexOf(name)
+      assert.ok(
+        first >= declared,
+        `${name} is read before its declaration (temporal dead zone: the panel would throw on first render)`,
+      )
+    }
+  }
 
   assert.deepEqual(
     [...touched].sort(),

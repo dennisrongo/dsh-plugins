@@ -161,6 +161,46 @@ async function checkInstall({ dir: installed, name: profileName }) {
   // Stage tiles must hydrate their own history window: the host opens it for the
   // STAGED session only, so off-stage tiles used to render "status only".
   assert.ok(code.includes('shouldOpenHistory'), 'installed bundle opens cold history windows')
+  // ...and re-arm a FAILED one. The host's only retry is "next time this session
+  // is staged", which for a stage tile never comes, so one lost race pinned the
+  // tile on its fallback caption for the life of the mount.
+  assert.ok(code.includes('shouldRetryHistory'), 'installed bundle retries failed history windows')
+  // Harness 0.1.2 moved the transcript off the Session snapshot onto the
+  // `uiConversation` service; without this read every tile renders empty on
+  // DSH Desktop (which upgraded ahead of the CLI) while working on the CLI.
+  assert.ok(code.includes('uiConversation'), 'installed bundle reads the 0.1.2 conversation service')
+  assert.ok(code.includes('chatViewSource'), 'installed bundle resolves the chat view target')
+  // That API ships no published types, so a later alpha can move it again;
+  // the tile must then say so rather than look like an idle session.
+  assert.ok(code.includes('transcript unavailable on this harness'), 'installed bundle names an unsupported harness')
+  // Stage is a conversation view, not a preview card: the tile must call
+  // extractTail with NO character cap. The unit tests exercise extractTail
+  // directly, so only the CALL SITE pins this — restoring the old 1200 cap
+  // left every unit assertion green while messages cut mid-sentence again.
+  assert.ok(!/extractTail\(\s*snap\s*,\s*30\s*,/.test(code), 'the tile passes no maxChars cap')
+  assert.ok(/extractTail\(\s*snap\s*,\s*30\s*\)/.test(code), 'the tile still bounds the entry count')
+  // Image sending: paste, drop, picker, and thumbnails.
+  assert.ok(code.includes('encodePromptImage'), 'installed bundle encodes prompt images')
+  assert.ok(code.includes('dshmc-stage-tile-thumb'), 'installed bundle renders staged image thumbnails')
+  assert.ok(code.includes('dshmc-stage-tile-attach'), 'installed bundle offers an attach control')
+  assert.ok(code.includes('onPaste'), 'installed bundle accepts pasted images')
+  // 0.1.2 moved waits off BOTH the snapshot and the session summary onto
+  // uiSession.pendingInteractions — without this read a session parked on
+  // ask_user_question shows no question box anywhere in the panel.
+  assert.ok(code.includes('pendingInteractions'), 'installed bundle reads 0.1.2 pending interactions')
+  assert.ok(code.includes('adaptPendingInteraction'), 'installed bundle adapts them to its carrier shape')
+  // MarkdownText gained a REQUIRED `labels` prop in 0.1.2 with no default, and
+  // its code-block renderer reads labels.code.copyLabel unguarded — omitting it
+  // throws inside the host component and takes the whole shell.overlay slot
+  // down, so the panel vanishes rather than degrading.
+  assert.ok(code.includes('MARKDOWN_LABELS'), 'installed bundle defines markdown labels')
+  assert.ok(code.includes('copiedLabel'), 'installed bundle supplies the code-block copy labels')
+  assert.ok(/labels:\s*MARKDOWN_LABELS/.test(code), 'installed bundle PASSES labels to MarkdownText')
+  // An empty tail is not an empty session: loading / failed / genuinely empty
+  // are distinct, and the old copy claimed "status only" for all three.
+  assert.ok(code.includes('loading conversation'), 'installed bundle reports a pending window as loading')
+  assert.ok(code.includes('conversation unavailable'), 'installed bundle reports a failed window honestly')
+  assert.ok(!code.includes('status only \\u2014 click'), 'the status-only fallback copy is gone')
   // Stage tiles name their workspace — a tile is detached from the grouped list.
   assert.ok(code.includes('dshmc-stage-tile-ws'), 'installed bundle labels stage tiles with their workspace')
   // A session waiting on a human must show WHAT it is waiting for inside its own

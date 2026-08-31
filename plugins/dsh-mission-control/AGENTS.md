@@ -5,8 +5,10 @@ permission inbox, floating over the stock web UI.
 
 The panel registers into dsh's additive `shell.overlay` slot and reads public faces
 only: `ctx.sessions.list` (an ObservableSnapshot bridged into React), `sessionStats`
-projections (turns / steps / llmMs / decodeTokens), and `PendingInteraction` off the session
-summaries. The fleet rendering stays a **pure consumer** — no tools, no presets.
+projections (turns / steps / llmMs / decodeTokens), and pending interactions — off the session
+summaries on harness `0.1.1`, and off `uiSession.pendingInteractions` on `0.1.2`, which moved
+them (see the waits section below). The fleet rendering stays a **pure consumer** — no tools,
+no presets.
 
 **It gained a minimal host half (v0.4.0) for exactly one reason: persistence that survives
 DSH Desktop restarts.** Desktop serves the UI from an ephemeral port per launch, and
@@ -73,6 +75,143 @@ than hardcoded:
 and **overridden on `.dshmc-stage`**. Hardcoding a px size in a rule both surfaces use is the
 bug this prevents: the rail's 11.5px/28px controls read as undersized on a full-screen grid
 of 420px tiles.
+
+**A stage tile is never STAGED, so it owns its own history window — including the
+retries.** `SessionRuntime.followCurrent` opens the window for the *current* session only,
+which is why an off-stage tile starts at `openState: 'cold'` with an empty chat and must call
+`session.open()` itself (`shouldOpenHistory`). The half that was missing is the failure path:
+a failed open lands on `'error'`, and the host's only retry is "the next time this session is
+staged" — which for a stage tile never comes. One lost race (an `open()` overlapping a
+reconnect's `resync`, a blip while the socket is down) therefore pinned the tile on its
+fallback caption for the life of the mount, and the caption told the user to go open the
+conversation — a workaround standing in for the bug. `shouldRetryHistory` re-arms `'error'` a
+bounded `HISTORY_RETRY_LIMIT` times, counted per face in a ref and keyed on the observed
+`openState` so the effect re-runs on the transition into `'error'`. Budgeted per mount, not
+per flush: retrying on every snapshot flush would hammer a genuinely broken session once per
+render, which is why `shouldOpenHistory` refuses `'error'` and stays that way.
+
+**The transcript LEFT the Session snapshot in 0.1.2, and both eras run on one machine.**
+Up to `0.1.1-rc.2`, `Session.buildSnapshot()` carried the whole conversation, so `snap.chat`
+was the tile's transcript. In `0.1.2-alpha.1` that method was cut down to status only —
+`chat`, `views`, `nodes`, `turnTimings`, `partial`, `runningCalls` and `pending` all left the
+Session face (`ConversationSnapshot` no longer exists, and `dsh-api-session-controller`
+contains no reference to chat at all) — and assembly moved to the `uiConversation` service:
+`uiConversation.binding(sessionId).target('chat')` is an ObservableSnapshot of the same
+`{ order, nodes }` pair, so `extractTail` parses it unchanged. **DSH Desktop bundles its own
+harness and upgraded ahead of the dsh CLI**, so a tile reading only `snap.chat` renders empty
+on Desktop while still working on the CLI — every tile, on every session, which is what an
+"empty chat" report actually means. `chatViewSource` reads the new service when present and
+returns `undefined` otherwise, and the merge preserves snapshot identity when there is nothing
+to merge so existing `useMemo([snap])` consumers keep caching. It is a **`ctx.get` probe,
+never an `inject` entry**: declaring it would park `apply()` forever on the older harness
+where the service does not exist.
+
+Diagnosing this from the `.d.ts` files under `~/.dsh` is how it stays hidden — those describe
+the **CLI's** harness, not the one Desktop is running, and they will confirm a contract the
+browser is not using. `Object.keys()` off the live face is what settles it: keys the installed
+CLI runtime never emits (`awaitingFirstTurn`, `pendingSubmissions`) prove which harness the
+page actually loaded. Two matching traps sit around it — the served bundle is pinned to a
+content hash taken **once at plugin activation**, so a rebuild needs a full app restart rather
+than a browser refresh (a refresh silently re-runs the old bundle), and `installed-copy.mjs`
+reads the file on disk rather than what the browser executes, so it passes either way.
+
+**That new API is OBSERVED, not promised — so its next move must be loud.** Both 0.1.2
+packages declare `lib/types/**/*.d.ts` in `files`, but the built packages ship **none**
+(`dsh-api-session-controller` ships 32 files under `lib/types` and every one is `.js`), so
+`uiConversation.binding(id).target('chat')` was read out of a shipped bundle rather than a
+published contract. It is the same path the harness's own chat UI takes, and the layering
+looks deliberate — a generic `target(name)` registry with `chat` as one target beside
+`trajectory` — but an alpha may still rename it without that being a breaking change on their
+part. The realistic failure is therefore not a crash: it is tiles silently going empty again,
+indistinguishable from idle sessions. `transcriptUnavailable` states that condition instead —
+an **open** window that resolved no chat container from either era is a harness mismatch, and
+the tile says so. It is deliberately gated on `'open'` alone: claiming it mid-load would be
+the same false-claim class, one rung further along.
+
+**Stage is a conversation view, so it does not clip messages — and the clip lived at the CALL
+SITE.** The tile used to pass `extractTail(snap, 30, 1200)` and hard-slice user text at 220,
+limits sized for a small preview card. On a full-screen grid that cuts mid-sentence, and
+because the text renders as markdown it can slice a `**` or a fence off its partner, so the
+orphaned delimiter renders literally — the visible symptom is "why is `**alpha.1**` showing
+asterisks", not "text is short". `maxChars` is now **opt-in** (`undefined` = no clipping) and
+the entry `limit` plus the tile scroller are what bound the DOM. Note where the test has to
+go: the unit assertions exercise `extractTail` directly, so restoring the cap at the call site
+leaves every one of them green — `installed-copy.mjs` pins the call site itself, and that
+assertion was verified by sabotage.
+
+**A tile composer sends images the same way the host composer does.** Paste, drag-drop and a
+picker stage `DraftImage`s (object URLs revoked on release, on unmount, and only after the
+host accepts the prompt), and `send()` submits `[...images, text]` through
+`session.prompt` — images first, matching the host's own order. `encodePromptImage` builds the
+canonical `{ type: 'image', mediaType, data, name? }` part **directly** rather than borrowing
+`conversation.serializeImages`: that service is unpublished, and its `sendSession` also drives
+`beginSubmission`, which does not exist on 0.1.1. The plain-`prompt` shape is what both eras
+accept and is the same fallback the host composer uses for subagent sessions. Filter with
+`isPromptImage` before staging — the host throws `UnsupportedImageMediaTypeError` on anything
+outside `png/jpeg/webp/gif`, so one stray HEIC would otherwise reject the whole send. An
+image-only message is valid: do not gate the send button on non-empty text.
+
+**The waits moved in 0.1.2 too — same relocation, four symptoms.** That release dropped
+`pending` from `buildSnapshot()` *and* `pendingInteraction` from the session summary, moving
+both onto `uiSession.pendingInteractions` (an ObservableSnapshot of
+`Map<sessionId, interaction>`, one winner per session by domain precedence). A plugin reading
+only the old fields therefore loses **the tile's question box, the fleet's amber dot, the
+"needs you first" sort, and the permission inbox** simultaneously — and every one of them
+fails as "nothing is waiting", which reads as calm rather than broken. `uiPendingMap` is the
+single replacement source; `pendingKindOf` feeds the dot and the sort, and `withPendingKinds`
+re-applies kinds as one post-pass over the built tree rather than threading a service-derived
+argument through all four pure row builders.
+
+`adaptPendingInteraction` normalizes an interaction to the carrier the inbox already renders,
+so `InboxQuestion`/`InboxApproval` and their pure answer-building logic are untouched. The
+verbs differ in more than name: 0.1.1's `respond()` takes the Remote-Event envelope
+(`{ ok, value }`) and returns a receipt, while 0.1.2's `answer()` takes the **bare** payload —
+just the batch for a question, just the outcome string for an approval — and resolves with
+nothing. Unwrapping lives in the adapter, and a sabotage test pins it: passing the envelope
+through unchanged fails.
+
+Both new services are read with `ctx.get` and **never** appear in `inject`. That is also why
+`get` belongs in the smoke test's `CTX_FRAMEWORK` set: cordis documents it as reading a
+service *without* the inject requirement, so counting it as a service read would force exactly
+the declaration that parks `apply()` forever on 0.1.1.
+
+**`MarkdownText` requires `labels` in 0.1.2, and omitting it deletes the whole panel.** The
+component gained a required `labels` prop with **no default**, and its code-block renderer
+reads `labels.code.copyLabel` unguarded. Passing only `text`/`streaming` therefore throws
+`Cannot read properties of undefined (reading 'code')` *inside the host component*, which the
+shell catches at the slot boundary — `slot entry crashed in 'shell.overlay'` — so Mission
+Control does not degrade, it **disappears**. `MARKDOWN_LABELS` supplies every key the markdown
+path reads (`code.copyLabel`, `code.copiedLabel`, `markdown`, `footnotes`,
+`contentTruncated`, `sourcesTruncated`) and is module-level and frozen because `MarkdownText`
+rebuilds its streaming renderer whenever the `labels` identity changes. Borrowing a host
+component means owning its prop contract across harness versions; `installed-copy.mjs` pins
+that the prop is actually passed, verified by sabotage.
+
+**A module-level `const` must be declared ABOVE every function that reads it.** `EMPTY_PENDING`
+sat below `uiPendingMap`, so the first render — which happens while the module body is still
+evaluating — hit the temporal dead zone and threw `Cannot access 'EMPTY_PENDING' before
+initialization`, again taking the whole overlay down. The `try/catch` around the read could not
+save it, because the catch branch returns the same binding. The smoke suite cannot see this
+class of bug: it renders from an already-evaluated module, where the dead zone has closed. The
+guard is therefore an assertion on the **emitted order** in the built bundle, and it is
+sabotage-verified. A `function` declaration hoists; a `const` does not.
+
+**Both harness eras are rendered end-to-end in `test/smoke.mjs`, and that is the only guard
+that would have caught any of this.** Marker assertions prove a string is in the bundle; they
+cannot prove the wiring resolves. So the suite renders the panel twice through the SSR
+instance — once against a 0.1.2-shaped context (status-only face, `uiConversation` and
+`uiSession` reachable only via `ctx.get`) and once against 0.1.1 (`snap.chat` and
+`snap.pending` inline, neither new service present) — and asserts a transcript marker and a
+question marker appear. Stage is opened by patching the second `useState(false)` for the
+duration of the render rather than exporting the tile, so the test exercises the real
+composition instead of a parallel one. Verified by sabotage: breaking the `uiConversation`
+lookup, the snapshot merge, the wait merge, or the `snap.chat` fallback each turns it red.
+
+**And an empty tail is not an empty session** — it is three states the tile must not conflate:
+the window is still loading (`cold`/`loading`/no snapshot yet), it failed (`error`), or the
+session really has no messages (`open`). Branch on `openState`, never infer from
+`tail.length === 0`; that inference is the same false-claim class as `dsh-plan-board`'s "No
+plans yet", and here it reported "status only" about a conversation that was about to render.
 
 **A to-do list is not a chat node.** `extractTail` walks `snap.chat`, and todos are not
 there — the host emits them as a per-session `todos` **projection** (on `todo/write` and
@@ -150,8 +289,14 @@ package's own `dshmc-burn-row` marker rot unnoticed. Running `test/smoke.mjs` di
 still skips the build, so prefer `pnpm test`.
 
 `scripts/dev-link.ps1` junctions the package into a profile so a rebuild self-deploys;
-client-half edits then land on a **browser refresh**, host-half edits need a **profile
-restart**. Re-run it, or `node scripts/anchor.mjs`, after any `pnpm install`. DSH
+host-half edits need a **profile restart**. Re-run it, or `node scripts/anchor.mjs`, after any
+`pnpm install`. **A client-half edit needs a full app restart too, not a browser refresh** —
+`dsh-client-modules` hashes each bundle **once at plugin activation** and serves it as
+`/plugins/<id>/client.js?rev=<hash>`, re-hashing only on an HMR rebuild notification. Without
+`pnpm run dev:web` watching, a refresh re-requests the same pinned `rev` and silently runs the
+OLD bundle: instrumentation added to a rebuilt file reports nothing, which reads exactly like
+the code never executing. `performance.getEntriesByType('resource')` in the console shows the
+`rev` the page actually loaded. DSH
 Desktop's profile-repair install additionally empties this package's `node_modules`,
 taking `zod` with it, after which the harness refuses to boot with
 `Cannot find package 'zod'`. Fix: `pnpm install` at the monorepo root, then the script.
@@ -195,9 +340,9 @@ broken junction that a running server would swallow. Leave `DSH_HOME` alone: a s
 server on the Desktop's home corrupts the sessions the Desktop has open.
 
 Then open the UI and confirm the overlay renders: `dshmc-*` nodes present, the stats strip
-populated, sessions listed. Verify against the **server**, not the filesystem — dsh reads the
-plugin from disk per request, so a refreshed client bundle needs only a browser refresh;
-a new `./typert` export still needs a full profile restart.
+populated, sessions listed. Verify against the **server**, not the filesystem: the bundle's
+`rev` is hashed at activation, so a rebuilt client bundle needs a full restart before the
+browser can see it, and a new `./typert` export needs one too.
 
 ## Gotchas
 

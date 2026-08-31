@@ -47,11 +47,38 @@ const asSessionId = (id: string): BrandedSessionId => id as BrandedSessionId
  * Optional by design: a host without the package degrades tiles to plain text
  * instead of failing plugin load.
  */
-const MarkdownText: React.ComponentType<{ text: string; streaming?: boolean }> | undefined = (() => {
+/**
+ * Copy shown inside rendered markdown (code-block buttons, footnote headings,
+ * truncation notices).
+ *
+ * `MarkdownText` gained a REQUIRED `labels` prop in harness 0.1.2 with **no
+ * default**, and its code-block renderer reads `labels.code.copyLabel`
+ * unguarded — so passing only `text`/`streaming`, as this plugin did, throws
+ * `Cannot read properties of undefined (reading 'code')` and takes the whole
+ * `shell.overlay` slot down with it: the panel disappears entirely rather than
+ * degrading. Every key the markdown path touches is supplied here; the object
+ * is module-level and frozen so its identity is stable, which matters because
+ * `MarkdownText` rebuilds its streaming renderer whenever `labels` changes.
+ */
+const MARKDOWN_LABELS = Object.freeze({
+  code: Object.freeze({ copyLabel: 'Copy', copiedLabel: 'Copied' }),
+  markdown: 'Markdown',
+  footnotes: 'Footnotes',
+  contentTruncated: 'Content truncated',
+  sourcesTruncated: 'Sources truncated',
+})
+
+type MarkdownTextProps = {
+  text: string
+  streaming?: boolean
+  labels?: unknown
+}
+
+const MarkdownText: React.ComponentType<MarkdownTextProps> | undefined = (() => {
   try {
     if (typeof require !== 'function') return undefined
     const p = (require as (id: string) => {
-      MarkdownText?: React.ComponentType<{ text: string; streaming?: boolean }>
+      MarkdownText?: React.ComponentType<MarkdownTextProps>
     })('@deepseek-ai/dsh-client-ui-primitives')
     return p?.MarkdownText
   } catch {
@@ -2478,11 +2505,46 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   scrollbar-color: var(--mc-scrollbar) transparent;
 }
 .dshmc-stage-tile-input {
-  display: flex; gap: 6px; align-items: flex-end;
+  /* Column: the thumbnail strip stacks ABOVE the controls, so staged images
+     never squeeze the textarea's width. */
+  display: flex; flex-direction: column; gap: 6px;
   padding: 8px 10px;
   border-top: 1px solid var(--mc-border-subtle);
   flex: none;
 }
+.dshmc-stage-tile-inputrow { display: flex; gap: 6px; align-items: flex-end; }
+.dshmc-stage-tile-thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
+.dshmc-stage-tile-thumb { position: relative; display: inline-flex; }
+.dshmc-stage-tile-thumb img {
+  width: 44px; height: 44px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--mc-border);
+  display: block;
+}
+.dshmc-stage-tile-thumb-x {
+  position: absolute; top: -5px; right: -5px;
+  width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%;
+  background: var(--mc-bg); color: var(--mc-text);
+  box-shadow: 0 0 0 1px var(--mc-border);
+  /* Its own step, never a calc() off the control font. */
+  font-size: var(--mc-close-glyph);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.dshmc-stage-tile-thumb-x:hover { color: var(--dsw-alias-state-error-primary, var(--mc-text)); }
+.dshmc-stage-tile-attach {
+  border: 1px solid var(--mc-border); border-radius: 7px;
+  background: transparent; color: var(--mc-text-3);
+  /* Square, matching the send button's height so the row keeps one baseline. */
+  height: var(--mc-ctl-h); width: var(--mc-ctl-h);
+  font-family: inherit; font-size: var(--mc-msg-size); line-height: 1;
+  cursor: pointer; flex: none;
+}
+.dshmc-stage-tile-attach:hover { color: var(--mc-text); border-color: var(--mc-accent); }
 .dshmc-stage-tile-input textarea {
   flex: 1;
   resize: none;
@@ -2612,13 +2674,21 @@ function injectStyles() {
   document.head.appendChild(tag)
 }
 
-/** Resolve the live PendingWait carriers for a session through its scoped face. */
+/**
+ * Resolve the live PendingWait carriers for a session, across both harness
+ * eras. 0.1.1 carries them on the session snapshot; 0.1.2 dropped `pending`
+ * from `buildSnapshot()` and publishes them on `uiSession` instead — so this
+ * feeds the permission inbox AND the wait notifications, both of which went
+ * silently empty on Desktop without the second read.
+ */
 function pendingWaitsFor(ctx: ClientContext, sessionId: string): readonly PendingCarrierLike[] {
   try {
     const scoped = ctx.sessions.scope(asSessionId(sessionId))
     const face = scoped ? ctx.sessions.sessionOf(scoped) : undefined
     const snap = face?.getSnapshot?.()
-    return (snap?.pending ?? []) as readonly PendingCarrierLike[]
+    const fromSnap = (snap?.pending ?? []) as readonly PendingCarrierLike[]
+    if (fromSnap.length > 0) return fromSnap
+    return uiPendingFor(ctx, sessionId)
   } catch {
     return []
   }
@@ -3578,10 +3648,15 @@ type ConversationSnapshotLike = {
 /** Unified business-result shape used by the session verbs. */
 type RpcLike<T> = { ok: true; value: T } | { ok: false; error: { message?: string } }
 
+/** One prompt content part: text, or a canonical base64 image. */
+type PromptPartLike =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mediaType: string; data: string; name?: string }
+
 /** The per-session behavior verbs Mission Control drives (subset of ISession). */
 type SessionFaceLike = {
   prompt(
-    content: { type: 'text'; text: string }[],
+    content: PromptPartLike[],
     mode: 'queue' | 'steer',
     signal?: AbortSignal,
   ): Promise<RpcLike<{ accepted: true }>>
@@ -3943,6 +4018,29 @@ export function shouldOpenHistory(openState: string | undefined): boolean {
   return openState === undefined || openState === 'cold'
 }
 
+/** How many times one tile re-arms a window whose open() failed. */
+export const HISTORY_RETRY_LIMIT = 3
+
+/**
+ * Whether a tile should re-arm a history window that FAILED to open.
+ *
+ * `shouldOpenHistory` deliberately refuses to retry 'error' on every snapshot
+ * flush — that would hammer a genuinely broken session once per render. But
+ * the host only retries a failed open when the session is next *staged*
+ * (`followCurrent`), and a stage tile is by definition never staged. So a
+ * transient failure — open() racing a reconnect's `resync`, or a blip while
+ * the socket is down — left the tile permanently on "status only", and the
+ * only way out was opening the conversation, which is exactly the workaround
+ * the fallback copy tells the user to perform.
+ *
+ * Retry is therefore budgeted per mount rather than per flush: a bounded
+ * number of attempts clears a transient failure, and a session that is truly
+ * unreadable still settles instead of retrying forever.
+ */
+export function shouldRetryHistory(openState: string | undefined, attempts: number): boolean {
+  return openState === 'error' && attempts < HISTORY_RETRY_LIMIT
+}
+
 /** The session face as this plugin reads it: uSES source plus history-open. */
 type SnapshotFaceLike = {
   getSnapshot(): ConversationSnapshotLike
@@ -3952,6 +4050,132 @@ type SnapshotFaceLike = {
    * already-open or in-flight window resolves without a second fetch.
    */
   open?: () => Promise<void> | void
+}
+
+/** Chat view target as `uiConversation` publishes it (harness >= 0.1.2). */
+type ChatViewSource = {
+  getSnapshot(): ChatSnapshotLike | undefined
+  subscribe(fn: () => void): () => void
+}
+
+/** The `{ order, nodes }` pair `extractTail` walks, from either harness era. */
+type ChatSnapshotLike = { order: readonly string[]; nodes: { get(key: string): unknown } }
+
+/**
+ * Resolve the chat view for one session across BOTH harness generations.
+ *
+ * Up to 0.1.1-rc.2 the Session snapshot carried the whole conversation, so
+ * `snap.chat` was the transcript. In 0.1.2-alpha.1 `buildSnapshot()` was
+ * reduced to status only — `chat`, `views`, `nodes`, `turnTimings`, `partial`
+ * and `runningCalls` all left the session face — and assembly moved to the
+ * `uiConversation` service, which hands out one `BoundConversation` per
+ * session whose `target('chat')` is an ObservableSnapshot of the same
+ * `{ order, nodes }` shape. Reading only `snap.chat` therefore yields an
+ * empty tile on 0.1.2: not an empty session, a relocated API.
+ *
+ * DSH Desktop bundles its own harness and upgraded ahead of the dsh CLI, so
+ * both eras are live on this machine at once and the tile must satisfy the
+ * repo's two-surface rule. `uiConversation` is optional and read defensively:
+ * `ctx.get` yields undefined rather than throwing on the older harness.
+ *
+ * @param ctx - the plugin's client context.
+ * @param id - session whose transcript the tile renders.
+ * @returns the 0.1.2 chat source, or undefined to fall back to `snap.chat`.
+ */
+export function chatViewSource(ctx: ClientContext, id: string | undefined): ChatViewSource | undefined {
+  if (!id) return undefined
+  try {
+    const ui = (ctx as unknown as { get(name: string): unknown }).get('uiConversation') as {
+      binding(source: string): { target(target: string): ChatViewSource } | undefined
+    } | undefined
+    // Absent on <= 0.1.1: the caller keeps reading snap.chat.
+    if (ui === undefined || typeof ui.binding !== 'function') return undefined
+    // Throws for a session the controller does not know; an unlisted tile
+    // simply has no transcript rather than taking down the overlay.
+    return ui.binding(id)?.target('chat')
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Whether NEITHER transcript source exists on this harness.
+ *
+ * `uiConversation` ships no published `.d.ts` (0.1.2-alpha.1 declares types in
+ * `files` but the built packages contain none), so it is an OBSERVED API read
+ * out of the shipped bundle rather than a promised contract, and a later alpha
+ * may rename or move it without that being a breaking change on their part.
+ * If that happens the tile would silently fall back to an empty chat — the
+ * exact indistinguishable-from-idle symptom this whole class of bug produces.
+ *
+ * So the absence of both sources is stated as its own condition: an open
+ * window that produced no chat container at all is a HARNESS mismatch, not an
+ * empty session, and the tile says so instead of implying the session is idle.
+ *
+ * @param openState - history-window lifecycle from the session face.
+ * @param hasChatSource - whether either era's chat container resolved.
+ * @returns whether to report the transcript as unsupported here.
+ */
+export function transcriptUnavailable(openState: string | undefined, hasChatSource: boolean): boolean {
+  return openState === 'open' && !hasChatSource
+}
+
+/** Image media types the harness accepts on a prompt (its own allowlist). */
+const IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+
+/** `accept` for the file picker, kept in step with the allowlist above. */
+const IMAGE_ACCEPT = IMAGE_MEDIA_TYPES.join(',')
+
+/**
+ * Whether the harness will accept this file as a prompt image.
+ *
+ * The host throws `UnsupportedImageMediaTypeError` on anything outside its
+ * allowlist, so a tile filters first rather than letting a stray HEIC or SVG
+ * reject the whole send.
+ *
+ * @param type - the file's MIME type.
+ * @returns whether it is an accepted prompt image.
+ */
+export function isPromptImage(type: string | undefined): boolean {
+  return type !== undefined && IMAGE_MEDIA_TYPES.includes(type)
+}
+
+/** One image staged in the tile composer, with its preview object URL. */
+export interface DraftImage {
+  id: string
+  file: File
+  previewUrl: string
+  name?: string
+}
+
+/**
+ * Encode one browser file as the canonical base64 image prompt part.
+ *
+ * Deliberately reimplemented rather than borrowed from `conversation`: that
+ * service ships no published types, and `sendSession` also drives the
+ * optimistic-echo path (`beginSubmission`) which does not exist on 0.1.1. The
+ * wire shape itself — `{ type: 'image', mediaType, data, name? }` — is what
+ * `session.prompt` takes on BOTH harness eras, and it is the same fallback the
+ * host's own composer uses for subagent sessions, so encoding here keeps image
+ * sending working on either harness with no unpublished dependency.
+ *
+ * @param file - a browser file already filtered by isPromptImage.
+ * @returns the base64 prompt part.
+ */
+export async function encodePromptImage(file: File): Promise<{ type: 'image'; mediaType: string; data: string; name?: string }> {
+  const buf = await file.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  // Chunked to keep a large paste off the argument-count limit of apply().
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return {
+    type: 'image',
+    mediaType: file.type,
+    data: btoa(binary),
+    ...(file.name === '' ? {} : { name: file.name }),
+  }
 }
 
 /**
@@ -3986,19 +4210,53 @@ function useSessionSnapshot(ctx: ClientContext, id: string | undefined): Convers
     if (!obs) return
     return obs.subscribe(() => setSnap(obs.getSnapshot()))
   }, [obs])
-  // Hydrate the history window for sessions the shell never staged. A failed
-  // open leaves openState 'error'; the host retries on the next touch, and the
-  // tile keeps rendering live streaming events either way.
+  // On 0.1.2 the transcript is a SEPARATE observable from the status snapshot,
+  // so it needs its own subscription; on 0.1.1 this resolves to undefined and
+  // the session snapshot's own `chat` is used unchanged.
+  const chatSrc = React.useMemo(() => chatViewSource(ctx, id), [ctx, id])
+  const [chat, setChat] = React.useState<ChatSnapshotLike | undefined>(() => {
+    try { return chatSrc?.getSnapshot() } catch { return undefined }
+  })
+  React.useEffect(() => {
+    if (!chatSrc) { setChat(undefined); return }
+    const read = () => {
+      try { setChat(chatSrc.getSnapshot()) } catch { setChat(undefined) }
+    }
+    read()
+    return chatSrc.subscribe(read)
+  }, [chatSrc])
+  // Hydrate the history window for sessions the shell never staged.
+  //
+  // A failed open leaves openState 'error', and the host only retries when the
+  // session is next STAGED — which never happens for a stage tile. So we also
+  // re-arm a bounded number of times ourselves, keyed on the observed state so
+  // the effect re-runs when a window transitions into 'error'. Without this a
+  // transient failure pinned the tile on "status only" for the life of the
+  // mount. Attempts are counted per face, so remounting the stage grants a
+  // fresh budget while a single mount cannot spin.
+  const retries = React.useRef(0)
+  React.useEffect(() => { retries.current = 0 }, [obs])
+  const openState = snap?.openState
   React.useEffect(() => {
     if (!obs || typeof obs.open !== 'function') return
     try {
-      if (!shouldOpenHistory(obs.getSnapshot()?.openState)) return
+      const state = obs.getSnapshot()?.openState
+      const retry = shouldRetryHistory(state, retries.current)
+      if (!shouldOpenHistory(state) && !retry) return
+      if (retry) retries.current += 1
       void Promise.resolve(obs.open()).catch(() => undefined)
     } catch {
       /* history open unavailable — the tile degrades to status only */
     }
-  }, [obs])
-  return snap
+  }, [obs, openState])
+  // Present one shape to every consumer regardless of harness era: the status
+  // fields always come from the session face, and `chat` from whichever source
+  // owns it. Identity is preserved when there is nothing to merge so the
+  // existing `useMemo([snap])` consumers keep their caching.
+  return React.useMemo(() => {
+    if (!snap || !chatSrc) return snap
+    return { ...snap, chat } as ConversationSnapshotLike
+  }, [snap, chatSrc, chat])
 }
 
 export interface ToolDetail {
@@ -4077,11 +4335,18 @@ export interface TailEntry {
  * under `data`. user/steering carry `content` (ContentBlock, `type`-tagged),
  * assistant steps carry `blocks` (AssistantBlock, `kind`-tagged), tool calls
  * carry `root` (ToolCallBlock — `name` is the tool), errors carry `message`.
+ *
+ * `maxChars` is OPT-IN (`undefined` = no truncation). Stage is a conversation
+ * view, not a preview card: a character cap there cuts a message mid-sentence
+ * and — because the text is rendered as markdown — can slice a `**` or a fence
+ * off its partner, so the leftover delimiter renders literally. Clipping is a
+ * caller's decision, and the tile scroller plus the `limit` entry cap are what
+ * actually bound the DOM.
  */
 export function extractTail(
   snap: ConversationSnapshotLike | undefined,
   limit: number,
-  maxChars = 260,
+  maxChars?: number,
 ): TailEntry[] {
   if (!snap?.chat) return []
   const out: TailEntry[] = []
@@ -4114,12 +4379,13 @@ export function extractTail(
       let text = ''
       let kind = 'assistant'
       let tool: ToolDetail | undefined
+      const clip = (s: string): string => (maxChars === undefined ? s : s.slice(0, maxChars))
       if (kn === 'user' || kn === 'steering') {
         kind = 'user'
-        text = contentText(data.content).slice(0, 220)
+        text = clip(contentText(data.content))
       } else if (kn === 'assistant-step' || kn === 'assistant') {
         kind = 'assistant'
-        text = assistantText(data.blocks).slice(0, maxChars)
+        text = clip(assistantText(data.blocks))
       } else if (kn === 'tool-call' || kn === 'tool-result') {
         kind = 'tool'
         tool = toolDetailOf(data.root ?? data)
@@ -4203,7 +4469,7 @@ function TileMessage({ kind, text, streaming = false }: {
   if (kind === 'assistant' && MarkdownText) {
     return (
       <div className="dshmc-tile-msg assistant dshmc-md">
-        <MarkdownText text={text} streaming={streaming} />
+        <MarkdownText text={text} streaming={streaming} labels={MARKDOWN_LABELS} />
         {streaming ? <span className="dshmc-caret-blink">▍</span> : null}
       </div>
     )
@@ -4495,6 +4761,227 @@ export function pendingOf(snap: { pending?: unknown } | undefined): readonly Pen
   )
 }
 
+/** A 0.1.2 pending interaction as `uiSession.pendingInteractions` carries it. */
+type UiPendingInteraction = {
+  sessionId?: string
+  kind?: string
+  key?: string
+  questions?: QuestionItemLike[]
+  toolName?: string
+  reason?: string
+  approvalId?: string
+  callId?: string
+  answer(result: unknown): Promise<unknown>
+}
+
+/**
+ * Adapt one 0.1.2 pending interaction to the carrier the tile already renders.
+ *
+ * `buildSnapshot()` dropped `pending` in 0.1.2 along with the conversation, so
+ * `pendingOf` finds nothing there and a session parked on a question shows no
+ * question — the same relocation that emptied the transcript, one field over.
+ * Waits now live on `uiSession.pendingInteractions` (an ObservableSnapshot of
+ * `Map<sessionId, interaction>`, one winner per session by domain precedence)
+ * and settle through `answer()` rather than `respond()`.
+ *
+ * The two verbs differ in more than name: `respond()` takes the Remote-Event
+ * envelope (`{ ok, value }`) and reports a receipt, while `answer()` takes the
+ * bare payload and resolves with nothing. Unwrapping here keeps `InboxQuestion`
+ * and `InboxApproval` — and their pure answer-building logic — identical on
+ * both harness eras.
+ *
+ * @param raw - one interaction off the 0.1.2 map.
+ * @returns the normalized carrier, or undefined when it is not answerable.
+ */
+export function adaptPendingInteraction(raw: unknown): PendingCarrierLike | undefined {
+  const w = raw as UiPendingInteraction | undefined
+  if (!w || typeof w.answer !== 'function') return undefined
+  const kind: 'approval' | 'question' = w.kind === 'approval' ? 'approval' : 'question'
+  return {
+    kind,
+    key: typeof w.key === 'string' ? w.key : `${kind}:${String(w.sessionId ?? '')}`,
+    sessionId: String(w.sessionId ?? ''),
+    payload: {
+      ...(w.toolName === undefined ? {} : { toolName: w.toolName }),
+      ...(w.reason === undefined ? {} : { reason: w.reason }),
+      ...(w.approvalId === undefined ? {} : { approvalId: w.approvalId }),
+      ...(w.callId === undefined ? {} : { callId: w.callId }),
+      ...(Array.isArray(w.questions) ? { questions: w.questions } : {}),
+    },
+    // The tile calls respond({ ok, value }); 0.1.2 wants the bare payload, and
+    // an approval wants just its outcome string.
+    respond: async (result: unknown) => {
+      const value = (result as { value?: unknown })?.value ?? result
+      const payload = kind === 'approval'
+        ? (value as { outcome?: unknown })?.outcome ?? value
+        : (value as { answer?: unknown })?.answer ?? value
+      await w.answer(payload)
+      return { accepted: true }
+    },
+  }
+}
+
+/**
+ * Read the waits parked on one session across BOTH harness eras.
+ *
+ * 0.1.1 carries them on the session snapshot; 0.1.2 publishes them on
+ * `uiSession`. Optional and defensive throughout: `uiSession` is read with
+ * `ctx.get` (never `inject`, which would park `apply()` on the older harness),
+ * and any throw yields no waits rather than taking down the overlay.
+ *
+ * @param ctx - the plugin's client context.
+ * @param id - the session whose waits the tile renders.
+ * @returns normalized carriers, newest era first.
+ */
+/**
+ * Subscribe to 0.1.2 pending interactions for one session.
+ *
+ * The map is published independently of the session snapshot, so it needs its
+ * own subscription — without one a question would only appear when some other
+ * state happened to re-render the tile. Resolves to an empty list on 0.1.1,
+ * where the waits ride `snap.pending` instead.
+ *
+ * @param ctx - the plugin's client context.
+ * @param id - the session whose waits the tile renders.
+ * @returns the current normalized carriers, re-read on every publication.
+ */
+function useUiPendingMap(ctx: ClientContext): ReadonlyMap<string, unknown> {
+  const store = React.useMemo(() => {
+    try {
+      const ui = (ctx as unknown as { get(name: string): unknown }).get('uiSession') as {
+        pendingInteractions?: { getSnapshot(): unknown; subscribe(fn: () => void): () => void }
+      } | undefined
+      const p = ui?.pendingInteractions
+      return p && typeof p.subscribe === 'function' ? p : undefined
+    } catch {
+      return undefined
+    }
+  }, [ctx])
+  const [map, setMap] = React.useState<ReadonlyMap<string, unknown>>(() => uiPendingMap(ctx))
+  React.useEffect(() => {
+    const read = () => setMap(uiPendingMap(ctx))
+    read()
+    if (!store) return
+    try {
+      return store.subscribe(read)
+    } catch {
+      return undefined
+    }
+  }, [store, ctx])
+  return map
+}
+
+function useUiPending(ctx: ClientContext, id: string | undefined): readonly PendingCarrierLike[] {
+  const map = useUiPendingMap(ctx)
+  return React.useMemo(() => {
+    if (!id) return []
+    const hit = map.get(id)
+    const carrier = hit === undefined ? undefined : adaptPendingInteraction(hit)
+    return carrier ? [carrier] : []
+  }, [map, id])
+}
+
+export function uiPendingFor(ctx: ClientContext, id: string | undefined): readonly PendingCarrierLike[] {
+  if (!id) return []
+  const hit = uiPendingMap(ctx).get(id)
+  const carrier = hit === undefined ? undefined : adaptPendingInteraction(hit)
+  return carrier ? [carrier] : []
+}
+
+/**
+ * Shared empty map so a 0.1.1 read keeps a stable identity across renders.
+ *
+ * Declared ABOVE its first use on purpose. As a `const` below `uiPendingMap`
+ * it sat in the temporal dead zone while the module body was still evaluating,
+ * and `MissionControl` renders inside that window — so the first read threw
+ * `Cannot access 'EMPTY_PENDING' before initialization` and took the whole
+ * overlay down. The `try/catch` could not save it either, because the catch
+ * branch returns the same binding. A `function` declaration would hoist; a
+ * `const` does not.
+ */
+const EMPTY_PENDING: ReadonlyMap<string, unknown> = new Map()
+
+/**
+ * The whole 0.1.2 pending-interaction map, or an empty map on 0.1.1.
+ *
+ * 0.1.2 removed `pendingInteraction` from the session SUMMARY as well as
+ * `pending` from the snapshot, so the fleet's amber dot, the sort precedence
+ * ("needs you" first) and the inbox's row gate all lose their input at once —
+ * not just the tile's question box. This map is the single replacement source
+ * for every one of them.
+ *
+ * @param ctx - the plugin's client context.
+ * @returns sessionId -> interaction; empty when the service is absent.
+ */
+export function uiPendingMap(ctx: ClientContext): ReadonlyMap<string, unknown> {
+  try {
+    const ui = (ctx as unknown as { get(name: string): unknown }).get('uiSession') as {
+      pendingInteractions?: { getSnapshot(): unknown }
+    } | undefined
+    const snap = ui?.pendingInteractions?.getSnapshot?.()
+    if (!snap || typeof (snap as Map<string, unknown>).get !== 'function') return EMPTY_PENDING
+    return snap as ReadonlyMap<string, unknown>
+  } catch {
+    return EMPTY_PENDING
+  }
+}
+
+
+
+/**
+ * The pending KIND for one session, across both eras — what the fleet row's
+ * amber dot and sort precedence key off.
+ *
+ * @param summaryKind - `pendingInteraction` off the 0.1.1 session summary.
+ * @param interaction - the 0.1.2 interaction for that session, when present.
+ * @returns the kind, or undefined when nothing is waiting.
+ */
+export function pendingKindOf(
+  summaryKind: string | undefined,
+  interaction: unknown,
+): string | undefined {
+  if (summaryKind !== undefined) return summaryKind
+  const k = (interaction as { kind?: string } | undefined)?.kind
+  return k === 'approval' || k === 'plan-review' || k === 'question' ? k : undefined
+}
+
+/**
+ * Re-apply pending kinds to an already-built row tree.
+ *
+ * Done as one post-pass rather than threaded through the four row builders
+ * (`buildGroups`, `buildFleet`, `catalogChildren`, the subagent row): those are
+ * pure list projections, and adding a service-derived argument to each would
+ * spread the harness-era split across all of them. Identity is preserved when
+ * nothing changes, so React's memoized consumers do not re-render on 0.1.1.
+ *
+ * @param rows - the built tree.
+ * @param pendingBySession - 0.1.2 interactions keyed by session.
+ * @returns the same tree, or a copy with pending kinds filled in.
+ */
+export function withPendingKinds(
+  rows: readonly FleetRow[],
+  pendingBySession: ReadonlyMap<string, unknown>,
+): FleetRow[] {
+  if (pendingBySession.size === 0) return rows as FleetRow[]
+  let changed = false
+  // Returns the SAME array when no descendant changed, so an unchanged subtree
+  // keeps its identity and the top-level check below stays meaningful.
+  const walk = (list: readonly FleetRow[]): readonly FleetRow[] => {
+    let dirty = false
+    const next = list.map((row) => {
+      const kind = pendingKindOf(row.pending, pendingBySession.get(row.id))
+      const children = walk(row.children)
+      if (kind === row.pending && children === row.children) return row
+      dirty = true
+      changed = true
+      return { ...row, pending: kind, children: children as FleetRow[] }
+    })
+    return dirty ? next : list
+  }
+  const next = walk(rows)
+  return changed ? (next as FleetRow[]) : (rows as FleetRow[])
+}
+
 /**
  * A wait rendered *inside* its Stage tile. The tile is where the operator is
  * already looking, so a session asking a question must show the question there
@@ -4597,7 +5084,15 @@ function StageTile({
   const { now: liveNow, rate } = useSessionRate(row.outTokens, running)
   const activity = llmActivityOf(snap, liveNow)
   const tools = useOpenTools()
-  const waits = pendingOf(snap)
+  // Waits come from the session snapshot on 0.1.1 and from `uiSession` on
+  // 0.1.2 (which dropped `pending` from buildSnapshot alongside the chat).
+  // Exactly one era answers on any given harness, so concatenating is safe.
+  const snapWaits = pendingOf(snap)
+  const uiWaits = useUiPending(ctx, row.id)
+  const waits = React.useMemo(
+    () => (snapWaits.length > 0 ? snapWaits : uiWaits),
+    [snapWaits, uiWaits],
+  )
   // Display state spans the whole tree (the tile stands in for it, like
   // stageRank) AND the live snapshot: a waiting subagent or a live
   // PendingWait paints the tile amber, and waiting wins over running — a
@@ -4605,10 +5100,15 @@ function StageTile({
   // (steer/queue, stop button) stays row-scoped.
   const dispRunning = treeRunning(row)
   const dispWaiting = treePending(row) ?? (waits.length > 0 ? 'question' : undefined)
-  const tail = React.useMemo(() => extractTail(snap, 30, 1200), [snap])
+  // No character cap: Stage renders the real conversation, and clipping cut
+  // messages mid-sentence (and broke markdown by orphaning a `**` or a fence).
+  const tail = React.useMemo(() => extractTail(snap, 30), [snap])
   // The running assistant-step node is part of the tail; the legacy top-level
   // partial is only a fallback when the tail has nothing at all.
   const partial = snap?.running && tail.length === 0 ? partialText(snap.partial) : ''
+  // Window lifecycle, kept separate from "the tail is empty": an unresolved
+  // face (no snapshot yet) reads as still-loading, never as an empty session.
+  const openState = snap?.openState
 
   // Auto-scroll pinned to the bottom; scrolling up unpins until the user
   // returns to the bottom edge.
@@ -4623,9 +5123,44 @@ function StageTile({
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
+  // Images staged for the next send. Object URLs are revoked on release and on
+  // unmount, so a tile that never sends does not leak them.
+  const [images, setImages] = React.useState<DraftImage[]>([])
+  const fileRef = React.useRef<HTMLInputElement>(null)
+  const imagesRef = React.useRef<DraftImage[]>([])
+  imagesRef.current = images
+  React.useEffect(() => () => {
+    for (const img of imagesRef.current) URL.revokeObjectURL(img.previewUrl)
+  }, [])
+
+  /** Stage accepted image files; silently ignores non-images in a mixed drop. */
+  const addFiles = (files: readonly File[]) => {
+    const accepted = files.filter((f) => isPromptImage(f.type))
+    if (accepted.length === 0) return
+    setImages((prev) => [
+      ...prev,
+      ...accepted.map((file) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+        ...(file.name === '' ? {} : { name: file.name }),
+      })),
+    ])
+  }
+
+  const removeImage = (id: string) => {
+    setImages((prev) => {
+      const hit = prev.find((i) => i.id === id)
+      if (hit) URL.revokeObjectURL(hit.previewUrl)
+      return prev.filter((i) => i.id !== id)
+    })
+  }
+
   const send = () => {
     const body = draft.trim()
-    if (!body || busy) return
+    const staged = images
+    // An image-only message is legitimate — do not require text.
+    if ((!body && staged.length === 0) || busy) return
     const face = sessionFaceOf(ctx, row.id)
     if (!face) {
       setError('session face unavailable')
@@ -4633,11 +5168,18 @@ function StageTile({
     }
     setBusy(true)
     setError(null)
-    face
-      .prompt([{ type: 'text', text: body }], running ? 'steer' : 'queue')
+    // Images lead the content array, matching the host composer's own order.
+    Promise.all(staged.map((i) => encodePromptImage(i.file)))
+      .then((parts) => face.prompt(
+        [...parts, ...(body === '' ? [] : [{ type: 'text' as const, text: body }])],
+        running ? 'steer' : 'queue',
+      ))
       .then((res) => {
-        if (!res.ok) setError(errText(res.error))
-        else setDraft('')
+        if (!res.ok) { setError(errText(res.error)); return }
+        setDraft('')
+        // Release previews only after the host accepted the prompt.
+        for (const img of staged) URL.revokeObjectURL(img.previewUrl)
+        setImages((prev) => prev.filter((i) => !staged.some((s) => s.id === i.id)))
       })
       .catch((e: unknown) => setError(errText(e)))
       .finally(() => setBusy(false))
@@ -4708,7 +5250,26 @@ function StageTile({
         ))}
         {partial !== '' ? <TileMessage kind="assistant" text={partial} streaming /> : null}
         {tail.length === 0 && partial === '' ? (
-          <div className="dshmc-tile-msg tool" role="note">status only — click the title to open the conversation</div>
+          // Three distinct states, never conflated: the window is still being
+          // pulled (loading is its own flag, not an inference from an empty
+          // tail), it failed to load, or the session genuinely has nothing to
+          // show. Reporting "status only" during a load was a false claim
+          // about the session and sent the user clicking through to a
+          // conversation that was about to render here anyway.
+          openState === 'cold' || openState === 'loading' || openState === undefined ? (
+            <div className="dshmc-tile-msg tool" role="status">loading conversation…</div>
+          ) : openState === 'error' ? (
+            <div className="dshmc-tile-msg tool" role="status">conversation unavailable — click the title to open it</div>
+          ) : transcriptUnavailable(openState, snap?.chat != null) ? (
+            // An OPEN window that produced no chat container at all means this
+            // harness keeps the transcript somewhere this build does not know
+            // about — say so, rather than implying the session is idle.
+            <div className="dshmc-tile-msg tool" role="status">
+              transcript unavailable on this harness — click the title to open it
+            </div>
+          ) : (
+            <div className="dshmc-tile-msg tool" role="note">no messages yet</div>
+          )
         ) : null}
         {lastErr ? <div className="dshmc-tile-msg err">{String(lastErr).slice(0, 160)}</div> : null}
       </div>
@@ -4717,23 +5278,78 @@ function StageTile({
       {waits.length > 0 ? (
         waits.map((w) => <StageTileWait key={w.key} wait={w} onJump={onJump} />)
       ) : (
-      <div className="dshmc-stage-tile-input">
-        <textarea
-          rows={1}
-          value={draft}
-          placeholder={running ? 'Steer this session…' : 'Message this session…'}
-          aria-label={`Message ${row.title}`}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+      <div
+        className="dshmc-stage-tile-input"
+        onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }}
+        onDrop={(e) => {
+          if (!e.dataTransfer.files.length) return
+          e.preventDefault()
+          addFiles([...e.dataTransfer.files])
+        }}
+      >
+        {images.length > 0 ? (
+          <div className="dshmc-stage-tile-thumbs">
+            {images.map((img) => (
+              <span key={img.id} className="dshmc-stage-tile-thumb">
+                <img src={img.previewUrl} alt={img.name ?? 'pasted image'} />
+                <button
+                  className="dshmc-stage-tile-thumb-x"
+                  aria-label={`Remove ${img.name ?? 'image'}`}
+                  title="Remove"
+                  onClick={() => removeImage(img.id)}
+                >×</button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="dshmc-stage-tile-inputrow">
+          <button
+            className="dshmc-stage-tile-attach"
+            aria-label={`Attach image to ${row.title}`}
+            title="Attach image"
+            onClick={() => fileRef.current?.click()}
+          >+</button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept={IMAGE_ACCEPT}
+            multiple
+            hidden
+            onChange={(e) => {
+              addFiles([...(e.target.files ?? [])])
+              // Reset so re-picking the same file fires change again.
+              e.target.value = ''
+            }}
+          />
+          <textarea
+            rows={1}
+            value={draft}
+            placeholder={running ? 'Steer this session…' : 'Message this session…'}
+            aria-label={`Message ${row.title}`}
+            onChange={(e) => setDraft(e.target.value)}
+            onPaste={(e) => {
+              const files = [...e.clipboardData.files]
+              if (files.length === 0) return
+              // Only swallow the paste when it actually carries an image.
+              if (!files.some((f) => isPromptImage(f.type))) return
               e.preventDefault()
-              send()
-            }
-          }}
-        />
-        <button className="dshmc-stage-tile-send" disabled={busy || !draft.trim()} onClick={send}>
-          {busy ? '…' : running ? 'Steer' : 'Send'}
-        </button>
+              addFiles(files)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                send()
+              }
+            }}
+          />
+          <button
+            className="dshmc-stage-tile-send"
+            disabled={busy || (!draft.trim() && images.length === 0)}
+            onClick={send}
+          >
+            {busy ? '…' : running ? 'Steer' : 'Send'}
+          </button>
+        </div>
       </div>
       )}
       <div className="dshmc-stage-tile-foot">
@@ -5424,9 +6040,16 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
 
   React.useEffect(() => injectStyles(), [])
 
+  // 0.1.2 publishes waits on `uiSession` and removed `pendingInteraction` from
+  // the session summary, so the amber dot, the "needs you first" sort and the
+  // inbox all read this map instead. Empty on 0.1.1, where the summary answers.
+  const pendingMap = useUiPendingMap(ctx)
   const groups = React.useMemo(
-    () => buildGroups(list, workspaces, normalizeFleetSort(settings.fleetSort)),
-    [list, workspaces, settings.fleetSort],
+    () => buildGroups(list, workspaces, normalizeFleetSort(settings.fleetSort)).map((g) => ({
+      ...g,
+      rows: withPendingKinds(g.rows, pendingMap),
+    })),
+    [list, workspaces, settings.fleetSort, pendingMap],
   )
   const limitedGroups = React.useMemo(
     () => limitGroups(groups, settings.sessionsPerWorkspace, expandedGroups),
@@ -5559,8 +6182,10 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
     () =>
       list.ids
         .map((id) => list.byId[id])
-        .filter((s) => s !== undefined && s.pendingInteraction !== undefined),
-    [list],
+        // Either era may answer: 0.1.1 sets pendingInteraction on the summary,
+        // 0.1.2 only publishes the interaction on uiSession.
+        .filter((s) => s !== undefined && pendingKindOf(s.pendingInteraction, pendingMap.get(s.id)) !== undefined),
+    [list, pendingMap],
   )
 
   const toggleGroup = (key: string) =>

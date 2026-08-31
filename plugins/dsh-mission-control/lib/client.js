@@ -44,6 +44,7 @@ __export(client_exports, {
   DEFAULT_SESSIONS_PER_WORKSPACE: () => DEFAULT_SESSIONS_PER_WORKSPACE,
   DEFAULT_WORK_MINUTES: () => DEFAULT_WORK_MINUTES,
   FLEET_SORT_CHOICES: () => FLEET_SORT_CHOICES,
+  HISTORY_RETRY_LIMIT: () => HISTORY_RETRY_LIMIT,
   MODEL_PRICES: () => MODEL_PRICES,
   MissionControl: () => MissionControl,
   POMODORO_KEY: () => POMODORO_KEY,
@@ -52,12 +53,14 @@ __export(client_exports, {
   POMODORO_MIN_MINUTES: () => POMODORO_MIN_MINUTES,
   SESSIONS_PER_WORKSPACE_ALL: () => SESSIONS_PER_WORKSPACE_ALL,
   SESSIONS_PER_WORKSPACE_CHOICES: () => SESSIONS_PER_WORKSPACE_CHOICES,
+  adaptPendingInteraction: () => adaptPendingInteraction,
   advancePomodoro: () => advancePomodoro,
   answerComplete: () => answerComplete,
   apply: () => apply,
   buildAnswer: () => buildAnswer,
   buildFleet: () => buildFleet,
   buildGroups: () => buildGroups,
+  chatViewSource: () => chatViewSource,
   compareFleetGroups: () => compareFleetGroups,
   compareFleetRows: () => compareFleetRows,
   computeRate: () => computeRate,
@@ -65,6 +68,7 @@ __export(client_exports, {
   countFleet: () => countFleet,
   displayNow: () => displayNow,
   elapsedSince: () => elapsedSince,
+  encodePromptImage: () => encodePromptImage,
   estimateCost: () => estimateCost,
   extractTail: () => extractTail,
   fmtClock: () => fmtClock,
@@ -74,6 +78,7 @@ __export(client_exports, {
   idleSyncKey: () => idleSyncKey,
   initialPomodoro: () => initialPomodoro,
   inject: () => inject,
+  isPromptImage: () => isPromptImage,
   lastErrorOf: () => lastErrorOf,
   limitGroups: () => limitGroups,
   llmActivityOf: () => llmActivityOf,
@@ -89,6 +94,7 @@ __export(client_exports, {
   parsePomodoroState: () => parsePomodoroState,
   parseSettings: () => parseSettings,
   pausePomodoro: () => pausePomodoro,
+  pendingKindOf: () => pendingKindOf,
   pendingOf: () => pendingOf,
   phaseDurationMs: () => phaseDurationMs,
   phaseLabel: () => phaseLabel,
@@ -100,6 +106,7 @@ __export(client_exports, {
   serializePomodoroState: () => serializePomodoroState,
   shouldOpenHistory: () => shouldOpenHistory,
   shouldPullCatalog: () => shouldPullCatalog,
+  shouldRetryHistory: () => shouldRetryHistory,
   skipPomodoro: () => skipPomodoro,
   stageRank: () => stageRank,
   stageRows: () => stageRows,
@@ -108,10 +115,14 @@ __export(client_exports, {
   toggleSelection: () => toggleSelection,
   toolDetailOf: () => toolDetailOf,
   totalBurn: () => totalBurn,
+  transcriptUnavailable: () => transcriptUnavailable,
   treePending: () => treePending,
   treeRunning: () => treeRunning,
+  uiPendingFor: () => uiPendingFor,
+  uiPendingMap: () => uiPendingMap,
   useObservable: () => useObservable,
-  waitHeadline: () => waitHeadline
+  waitHeadline: () => waitHeadline,
+  withPendingKinds: () => withPendingKinds
 });
 module.exports = __toCommonJS(client_exports);
 var import_react = __toESM(require("react"), 1);
@@ -14682,6 +14693,13 @@ var MC_REMOTE = {
 var import_jsx_runtime = require("react/jsx-runtime");
 var inject = ["slots", "remote", "sessions", "workspaces", "modelDirectories"];
 var asSessionId = (id) => id;
+var MARKDOWN_LABELS = Object.freeze({
+  code: Object.freeze({ copyLabel: "Copy", copiedLabel: "Copied" }),
+  markdown: "Markdown",
+  footnotes: "Footnotes",
+  contentTruncated: "Content truncated",
+  sourcesTruncated: "Sources truncated"
+});
 var MarkdownText = (() => {
   try {
     if (typeof require !== "function") return void 0;
@@ -16541,11 +16559,46 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   scrollbar-color: var(--mc-scrollbar) transparent;
 }
 .dshmc-stage-tile-input {
-  display: flex; gap: 6px; align-items: flex-end;
+  /* Column: the thumbnail strip stacks ABOVE the controls, so staged images
+     never squeeze the textarea's width. */
+  display: flex; flex-direction: column; gap: 6px;
   padding: 8px 10px;
   border-top: 1px solid var(--mc-border-subtle);
   flex: none;
 }
+.dshmc-stage-tile-inputrow { display: flex; gap: 6px; align-items: flex-end; }
+.dshmc-stage-tile-thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
+.dshmc-stage-tile-thumb { position: relative; display: inline-flex; }
+.dshmc-stage-tile-thumb img {
+  width: 44px; height: 44px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--mc-border);
+  display: block;
+}
+.dshmc-stage-tile-thumb-x {
+  position: absolute; top: -5px; right: -5px;
+  width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%;
+  background: var(--mc-bg); color: var(--mc-text);
+  box-shadow: 0 0 0 1px var(--mc-border);
+  /* Its own step, never a calc() off the control font. */
+  font-size: var(--mc-close-glyph);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.dshmc-stage-tile-thumb-x:hover { color: var(--dsw-alias-state-error-primary, var(--mc-text)); }
+.dshmc-stage-tile-attach {
+  border: 1px solid var(--mc-border); border-radius: 7px;
+  background: transparent; color: var(--mc-text-3);
+  /* Square, matching the send button's height so the row keeps one baseline. */
+  height: var(--mc-ctl-h); width: var(--mc-ctl-h);
+  font-family: inherit; font-size: var(--mc-msg-size); line-height: 1;
+  cursor: pointer; flex: none;
+}
+.dshmc-stage-tile-attach:hover { color: var(--mc-text); border-color: var(--mc-accent); }
 .dshmc-stage-tile-input textarea {
   flex: 1;
   resize: none;
@@ -16678,7 +16731,9 @@ function pendingWaitsFor(ctx, sessionId) {
     const scoped = ctx.sessions.scope(asSessionId(sessionId));
     const face = scoped ? ctx.sessions.sessionOf(scoped) : void 0;
     const snap = face?.getSnapshot?.();
-    return snap?.pending ?? [];
+    const fromSnap = snap?.pending ?? [];
+    if (fromSnap.length > 0) return fromSnap;
+    return uiPendingFor(ctx, sessionId);
   } catch {
     return [];
   }
@@ -17498,6 +17553,42 @@ function SearchBox({
 function shouldOpenHistory(openState) {
   return openState === void 0 || openState === "cold";
 }
+var HISTORY_RETRY_LIMIT = 3;
+function shouldRetryHistory(openState, attempts) {
+  return openState === "error" && attempts < HISTORY_RETRY_LIMIT;
+}
+function chatViewSource(ctx, id) {
+  if (!id) return void 0;
+  try {
+    const ui = ctx.get("uiConversation");
+    if (ui === void 0 || typeof ui.binding !== "function") return void 0;
+    return ui.binding(id)?.target("chat");
+  } catch {
+    return void 0;
+  }
+}
+function transcriptUnavailable(openState, hasChatSource) {
+  return openState === "open" && !hasChatSource;
+}
+var IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+var IMAGE_ACCEPT = IMAGE_MEDIA_TYPES.join(",");
+function isPromptImage(type) {
+  return type !== void 0 && IMAGE_MEDIA_TYPES.includes(type);
+}
+async function encodePromptImage(file2) {
+  const buf = await file2.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+  }
+  return {
+    type: "image",
+    mediaType: file2.type,
+    data: btoa(binary),
+    ...file2.name === "" ? {} : { name: file2.name }
+  };
+}
 function useSessionSnapshot(ctx, id) {
   const obs = import_react.default.useMemo(() => {
     if (!id) return void 0;
@@ -17516,15 +17607,49 @@ function useSessionSnapshot(ctx, id) {
     if (!obs) return;
     return obs.subscribe(() => setSnap(obs.getSnapshot()));
   }, [obs]);
+  const chatSrc = import_react.default.useMemo(() => chatViewSource(ctx, id), [ctx, id]);
+  const [chat, setChat] = import_react.default.useState(() => {
+    try {
+      return chatSrc?.getSnapshot();
+    } catch {
+      return void 0;
+    }
+  });
+  import_react.default.useEffect(() => {
+    if (!chatSrc) {
+      setChat(void 0);
+      return;
+    }
+    const read = () => {
+      try {
+        setChat(chatSrc.getSnapshot());
+      } catch {
+        setChat(void 0);
+      }
+    };
+    read();
+    return chatSrc.subscribe(read);
+  }, [chatSrc]);
+  const retries = import_react.default.useRef(0);
+  import_react.default.useEffect(() => {
+    retries.current = 0;
+  }, [obs]);
+  const openState = snap?.openState;
   import_react.default.useEffect(() => {
     if (!obs || typeof obs.open !== "function") return;
     try {
-      if (!shouldOpenHistory(obs.getSnapshot()?.openState)) return;
+      const state = obs.getSnapshot()?.openState;
+      const retry = shouldRetryHistory(state, retries.current);
+      if (!shouldOpenHistory(state) && !retry) return;
+      if (retry) retries.current += 1;
       void Promise.resolve(obs.open()).catch(() => void 0);
     } catch {
     }
-  }, [obs]);
-  return snap;
+  }, [obs, openState]);
+  return import_react.default.useMemo(() => {
+    if (!snap || !chatSrc) return snap;
+    return { ...snap, chat };
+  }, [snap, chatSrc, chat]);
 }
 function toolDetailOf(root) {
   const r = root;
@@ -17551,7 +17676,7 @@ function toolDetailOf(root) {
     subCalls: subs
   };
 }
-function extractTail(snap, limit, maxChars = 260) {
+function extractTail(snap, limit, maxChars) {
   if (!snap?.chat) return [];
   const out = [];
   const contentText = (blocks) => {
@@ -17575,12 +17700,13 @@ function extractTail(snap, limit, maxChars = 260) {
       let text = "";
       let kind = "assistant";
       let tool;
+      const clip = (s) => maxChars === void 0 ? s : s.slice(0, maxChars);
       if (kn === "user" || kn === "steering") {
         kind = "user";
-        text = contentText(data.content).slice(0, 220);
+        text = clip(contentText(data.content));
       } else if (kn === "assistant-step" || kn === "assistant") {
         kind = "assistant";
-        text = assistantText(data.blocks).slice(0, maxChars);
+        text = clip(assistantText(data.blocks));
       } else if (kn === "tool-call" || kn === "tool-result") {
         kind = "tool";
         tool = toolDetailOf(data.root ?? data);
@@ -17634,7 +17760,7 @@ function llmActivityOf(snap, now) {
 function TileMessage({ kind, text, streaming = false }) {
   if (kind === "assistant" && MarkdownText) {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-tile-msg assistant dshmc-md", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(MarkdownText, { text, streaming }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(MarkdownText, { text, streaming, labels: MARKDOWN_LABELS }),
       streaming ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshmc-caret-blink", children: "\u258D" }) : null
     ] });
   }
@@ -17854,6 +17980,103 @@ function pendingOf(snap) {
     (w) => !!w && typeof w.key === "string" && typeof w.respond === "function"
   );
 }
+function adaptPendingInteraction(raw) {
+  const w = raw;
+  if (!w || typeof w.answer !== "function") return void 0;
+  const kind = w.kind === "approval" ? "approval" : "question";
+  return {
+    kind,
+    key: typeof w.key === "string" ? w.key : `${kind}:${String(w.sessionId ?? "")}`,
+    sessionId: String(w.sessionId ?? ""),
+    payload: {
+      ...w.toolName === void 0 ? {} : { toolName: w.toolName },
+      ...w.reason === void 0 ? {} : { reason: w.reason },
+      ...w.approvalId === void 0 ? {} : { approvalId: w.approvalId },
+      ...w.callId === void 0 ? {} : { callId: w.callId },
+      ...Array.isArray(w.questions) ? { questions: w.questions } : {}
+    },
+    // The tile calls respond({ ok, value }); 0.1.2 wants the bare payload, and
+    // an approval wants just its outcome string.
+    respond: async (result) => {
+      const value = result?.value ?? result;
+      const payload = kind === "approval" ? value?.outcome ?? value : value?.answer ?? value;
+      await w.answer(payload);
+      return { accepted: true };
+    }
+  };
+}
+function useUiPendingMap(ctx) {
+  const store = import_react.default.useMemo(() => {
+    try {
+      const ui = ctx.get("uiSession");
+      const p = ui?.pendingInteractions;
+      return p && typeof p.subscribe === "function" ? p : void 0;
+    } catch {
+      return void 0;
+    }
+  }, [ctx]);
+  const [map2, setMap] = import_react.default.useState(() => uiPendingMap(ctx));
+  import_react.default.useEffect(() => {
+    const read = () => setMap(uiPendingMap(ctx));
+    read();
+    if (!store) return;
+    try {
+      return store.subscribe(read);
+    } catch {
+      return void 0;
+    }
+  }, [store, ctx]);
+  return map2;
+}
+function useUiPending(ctx, id) {
+  const map2 = useUiPendingMap(ctx);
+  return import_react.default.useMemo(() => {
+    if (!id) return [];
+    const hit = map2.get(id);
+    const carrier = hit === void 0 ? void 0 : adaptPendingInteraction(hit);
+    return carrier ? [carrier] : [];
+  }, [map2, id]);
+}
+function uiPendingFor(ctx, id) {
+  if (!id) return [];
+  const hit = uiPendingMap(ctx).get(id);
+  const carrier = hit === void 0 ? void 0 : adaptPendingInteraction(hit);
+  return carrier ? [carrier] : [];
+}
+var EMPTY_PENDING = /* @__PURE__ */ new Map();
+function uiPendingMap(ctx) {
+  try {
+    const ui = ctx.get("uiSession");
+    const snap = ui?.pendingInteractions?.getSnapshot?.();
+    if (!snap || typeof snap.get !== "function") return EMPTY_PENDING;
+    return snap;
+  } catch {
+    return EMPTY_PENDING;
+  }
+}
+function pendingKindOf(summaryKind, interaction) {
+  if (summaryKind !== void 0) return summaryKind;
+  const k = interaction?.kind;
+  return k === "approval" || k === "plan-review" || k === "question" ? k : void 0;
+}
+function withPendingKinds(rows, pendingBySession) {
+  if (pendingBySession.size === 0) return rows;
+  let changed = false;
+  const walk = (list) => {
+    let dirty = false;
+    const next2 = list.map((row) => {
+      const kind = pendingKindOf(row.pending, pendingBySession.get(row.id));
+      const children = walk(row.children);
+      if (kind === row.pending && children === row.children) return row;
+      dirty = true;
+      changed = true;
+      return { ...row, pending: kind, children };
+    });
+    return dirty ? next2 : list;
+  };
+  const next = walk(rows);
+  return changed ? next : rows;
+}
 function StageTileWait({ wait, onJump }) {
   const questions = questionsOf(wait);
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-stage-tile-wait", role: "group", "aria-label": "Waiting on you", children: questions.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(InboxQuestion, { sessionTitle: "Waiting on you", wait, questions, onJump }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(InboxApproval, { sessionTitle: "Waiting on you", wait, onJump }) });
@@ -17903,11 +18126,17 @@ function StageTile({
   const { now: liveNow, rate } = useSessionRate(row.outTokens, running);
   const activity = llmActivityOf(snap, liveNow);
   const tools = useOpenTools();
-  const waits = pendingOf(snap);
+  const snapWaits = pendingOf(snap);
+  const uiWaits = useUiPending(ctx, row.id);
+  const waits = import_react.default.useMemo(
+    () => snapWaits.length > 0 ? snapWaits : uiWaits,
+    [snapWaits, uiWaits]
+  );
   const dispRunning = treeRunning(row);
   const dispWaiting = treePending(row) ?? (waits.length > 0 ? "question" : void 0);
-  const tail = import_react.default.useMemo(() => extractTail(snap, 30, 1200), [snap]);
+  const tail = import_react.default.useMemo(() => extractTail(snap, 30), [snap]);
   const partial2 = snap?.running && tail.length === 0 ? partialText(snap.partial) : "";
+  const openState = snap?.openState;
   const bodyRef = import_react.default.useRef(null);
   const pinnedRef = import_react.default.useRef(true);
   import_react.default.useEffect(() => {
@@ -17917,9 +18146,37 @@ function StageTile({
   const [draft, setDraft] = import_react.default.useState("");
   const [busy, setBusy] = import_react.default.useState(false);
   const [error51, setError] = import_react.default.useState(null);
+  const [images, setImages] = import_react.default.useState([]);
+  const fileRef = import_react.default.useRef(null);
+  const imagesRef = import_react.default.useRef([]);
+  imagesRef.current = images;
+  import_react.default.useEffect(() => () => {
+    for (const img of imagesRef.current) URL.revokeObjectURL(img.previewUrl);
+  }, []);
+  const addFiles = (files) => {
+    const accepted = files.filter((f) => isPromptImage(f.type));
+    if (accepted.length === 0) return;
+    setImages((prev) => [
+      ...prev,
+      ...accepted.map((file2) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        file: file2,
+        previewUrl: URL.createObjectURL(file2),
+        ...file2.name === "" ? {} : { name: file2.name }
+      }))
+    ]);
+  };
+  const removeImage = (id) => {
+    setImages((prev) => {
+      const hit = prev.find((i) => i.id === id);
+      if (hit) URL.revokeObjectURL(hit.previewUrl);
+      return prev.filter((i) => i.id !== id);
+    });
+  };
   const send = () => {
     const body = draft.trim();
-    if (!body || busy) return;
+    const staged = images;
+    if (!body && staged.length === 0 || busy) return;
     const face = sessionFaceOf(ctx, row.id);
     if (!face) {
       setError("session face unavailable");
@@ -17927,9 +18184,17 @@ function StageTile({
     }
     setBusy(true);
     setError(null);
-    face.prompt([{ type: "text", text: body }], running ? "steer" : "queue").then((res) => {
-      if (!res.ok) setError(errText(res.error));
-      else setDraft("");
+    Promise.all(staged.map((i) => encodePromptImage(i.file))).then((parts) => face.prompt(
+      [...parts, ...body === "" ? [] : [{ type: "text", text: body }]],
+      running ? "steer" : "queue"
+    )).then((res) => {
+      if (!res.ok) {
+        setError(errText(res.error));
+        return;
+      }
+      setDraft("");
+      for (const img of staged) URL.revokeObjectURL(img.previewUrl);
+      setImages((prev) => prev.filter((i) => !staged.some((s) => s.id === i.id)));
     }).catch((e) => setError(errText(e))).finally(() => setBusy(false));
   };
   const cls = dispWaiting ? "is-waiting" : dispRunning ? "is-running" : "";
@@ -17996,32 +18261,113 @@ function StageTile({
             m.key
           )),
           partial2 !== "" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TileMessage, { kind: "assistant", text: partial2, streaming: true }) : null,
-          tail.length === 0 && partial2 === "" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-tile-msg tool", role: "note", children: "status only \u2014 click the title to open the conversation" }) : null,
+          tail.length === 0 && partial2 === "" ? (
+            // Three distinct states, never conflated: the window is still being
+            // pulled (loading is its own flag, not an inference from an empty
+            // tail), it failed to load, or the session genuinely has nothing to
+            // show. Reporting "status only" during a load was a false claim
+            // about the session and sent the user clicking through to a
+            // conversation that was about to render here anyway.
+            openState === "cold" || openState === "loading" || openState === void 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-tile-msg tool", role: "status", children: "loading conversation\u2026" }) : openState === "error" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-tile-msg tool", role: "status", children: "conversation unavailable \u2014 click the title to open it" }) : transcriptUnavailable(openState, snap?.chat != null) ? (
+              // An OPEN window that produced no chat container at all means this
+              // harness keeps the transcript somewhere this build does not know
+              // about — say so, rather than implying the session is idle.
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-tile-msg tool", role: "status", children: "transcript unavailable on this harness \u2014 click the title to open it" })
+            ) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-tile-msg tool", role: "note", children: "no messages yet" })
+          ) : null,
           lastErr ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-tile-msg err", children: String(lastErr).slice(0, 160) }) : null
         ]
       }
     ),
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LlmStatus, { activity, rate }),
     row.todos && row.todos.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TileTodos, { todos: row.todos }) : null,
-    waits.length > 0 ? waits.map((w) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StageTileWait, { wait: w, onJump }, w.key)) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-stage-tile-input", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "textarea",
-        {
-          rows: 1,
-          value: draft,
-          placeholder: running ? "Steer this session\u2026" : "Message this session\u2026",
-          "aria-label": `Message ${row.title}`,
-          onChange: (e) => setDraft(e.target.value),
-          onKeyDown: (e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "dshmc-stage-tile-send", disabled: busy || !draft.trim(), onClick: send, children: busy ? "\u2026" : running ? "Steer" : "Send" })
-    ] }),
+    waits.length > 0 ? waits.map((w) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StageTileWait, { wait: w, onJump }, w.key)) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+      "div",
+      {
+        className: "dshmc-stage-tile-input",
+        onDragOver: (e) => {
+          if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+        },
+        onDrop: (e) => {
+          if (!e.dataTransfer.files.length) return;
+          e.preventDefault();
+          addFiles([...e.dataTransfer.files]);
+        },
+        children: [
+          images.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "dshmc-stage-tile-thumbs", children: images.map((img) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "dshmc-stage-tile-thumb", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("img", { src: img.previewUrl, alt: img.name ?? "pasted image" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+              "button",
+              {
+                className: "dshmc-stage-tile-thumb-x",
+                "aria-label": `Remove ${img.name ?? "image"}`,
+                title: "Remove",
+                onClick: () => removeImage(img.id),
+                children: "\xD7"
+              }
+            )
+          ] }, img.id)) }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-stage-tile-inputrow", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+              "button",
+              {
+                className: "dshmc-stage-tile-attach",
+                "aria-label": `Attach image to ${row.title}`,
+                title: "Attach image",
+                onClick: () => fileRef.current?.click(),
+                children: "+"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+              "input",
+              {
+                ref: fileRef,
+                type: "file",
+                accept: IMAGE_ACCEPT,
+                multiple: true,
+                hidden: true,
+                onChange: (e) => {
+                  addFiles([...e.target.files ?? []]);
+                  e.target.value = "";
+                }
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+              "textarea",
+              {
+                rows: 1,
+                value: draft,
+                placeholder: running ? "Steer this session\u2026" : "Message this session\u2026",
+                "aria-label": `Message ${row.title}`,
+                onChange: (e) => setDraft(e.target.value),
+                onPaste: (e) => {
+                  const files = [...e.clipboardData.files];
+                  if (files.length === 0) return;
+                  if (!files.some((f) => isPromptImage(f.type))) return;
+                  e.preventDefault();
+                  addFiles(files);
+                },
+                onKeyDown: (e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    send();
+                  }
+                }
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+              "button",
+              {
+                className: "dshmc-stage-tile-send",
+                disabled: busy || !draft.trim() && images.length === 0,
+                onClick: send,
+                children: busy ? "\u2026" : running ? "Steer" : "Send"
+              }
+            )
+          ] })
+        ]
+      }
+    ),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dshmc-stage-tile-foot", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: statusLabel }),
       error51 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshmc-stage-tile-error", title: error51, children: "send failed" }) : null,
@@ -18501,9 +18847,13 @@ function MissionControl({ ctx }) {
     });
   };
   import_react.default.useEffect(() => injectStyles(), []);
+  const pendingMap = useUiPendingMap(ctx);
   const groups = import_react.default.useMemo(
-    () => buildGroups(list, workspaces, normalizeFleetSort(settings.fleetSort)),
-    [list, workspaces, settings.fleetSort]
+    () => buildGroups(list, workspaces, normalizeFleetSort(settings.fleetSort)).map((g) => ({
+      ...g,
+      rows: withPendingKinds(g.rows, pendingMap)
+    })),
+    [list, workspaces, settings.fleetSort, pendingMap]
   );
   const limitedGroups = import_react.default.useMemo(
     () => limitGroups(groups, settings.sessionsPerWorkspace, expandedGroups),
@@ -18570,8 +18920,8 @@ function MissionControl({ ctx }) {
     };
   }, [watchedRootIds]);
   const pendingRows = import_react.default.useMemo(
-    () => list.ids.map((id) => list.byId[id]).filter((s) => s !== void 0 && s.pendingInteraction !== void 0),
-    [list]
+    () => list.ids.map((id) => list.byId[id]).filter((s) => s !== void 0 && pendingKindOf(s.pendingInteraction, pendingMap.get(s.id)) !== void 0),
+    [list, pendingMap]
   );
   const toggleGroup = (key) => setCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
   const toggleGroupExpanded = (key) => setExpandedGroups((prev) => {
