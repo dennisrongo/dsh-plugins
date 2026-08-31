@@ -267,3 +267,35 @@ export const MAX_LABEL = 60
 
 /** Hard cap on stored items per workspace, so a runaway client cannot bloat the file. */
 export const MAX_ITEMS = 1000
+
+/**
+ * Where a scan session leaves its result, relative to the workspace root.
+ *
+ * A FILE rather than a return value because `session.prompt()` resolves when
+ * the prompt is ACCEPTED, not when the work is done — there is no public
+ * completion promise to await. A file is inspectable when a scan misbehaves
+ * and survives the modal being closed mid-scan.
+ */
+export const SUGGESTIONS_FILE = '.dsh/suggestions.json'
+
+/**
+ * The most suggestions worth showing at once.
+ *
+ * A cap rather than a scroll: this is a list someone triages in one sitting,
+ * and a model asked for "ideas" will happily produce fifty.
+ */
+export const MAX_SUGGESTIONS = 12
+
+/** One proposed task, before anyone decides to keep it. */
+export interface Suggestion {
+  title: string
+  /** One line on why this is worth doing — shown under the title. */
+  rationale: string
+  priority: TodoPriority
+  /**
+   * A `file:line` pointer backing the claim, when one exists. Absent is legal
+   * — a missing feature has no line number — but this is what makes a
+   * suggestion checkable rather than merely plausible.
+   */
+  evidence?: string
+}
