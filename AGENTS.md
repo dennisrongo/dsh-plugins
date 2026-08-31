@@ -244,9 +244,25 @@ object** — letting symbols through, since cordis probes its own tracker symbol
 plain-object stub answers `undefined` and cannot fail. And a check must NOT provide an
 optional service whose absence it exists to test: `check-context.mjs` supplied
 `remote.agentPresets` unconditionally and so could never see the throw.
+**And a service that RESOLVES is not one you can CALL** — a third, distinct failure.
+`modelDirectories.directoryFor()` runs `this.ctx.remote.session` inside
+`dsh-client-ui-model-selection`, under a proxy bound to the CALLING fiber, so a plugin
+that never declared `remote.session` gets a service that probes present from every guard
+(`ctx.get`, the namespaced read, a stored handle) and throws on the first method call —
+naming a service its own source never mentions. Guarding the READ cannot catch it: the
+throw happens inside the callee. `dsh-todo` shipped it as outage number three. Wrap a
+borrowed handle ONCE at the boundary so it degrades to `undefined`
+(`safeModelDirectories`), rather than guarding each call site — the raw handle travelled
+to two of them, and `dsh-mission-control` survived only because it had already wrapped
+both of its own `directoryFor` calls in `try`/`catch`.
+
 `node scripts/check-context.mjs` mounts every built client bundle on a REAL `Context`
 with only its declared services and calls each registered slot's `inject` callback — the
-deferred path where the failure actually lands. It runs LAST in `pnpm test` because it
+deferred path where the failure actually lands. It then CALLS the borrowed handles that
+callback returns, since returning one proves only that it exists, and it provides the
+optional root services (`sessions`, `modelDirectories`, `uiWorkspace`) a plugin reads
+without declaring — a matrix where those are all absent structurally cannot reach a
+present-but-uncallable method. It runs LAST in `pnpm test` because it
 reads built `lib/`, and it fails a plugin that registers zero slots, because a check that
 exercised nothing must not report a pass.
 

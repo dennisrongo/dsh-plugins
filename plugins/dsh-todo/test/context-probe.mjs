@@ -189,7 +189,30 @@ async function mount(have) {
   }
   if (have.includes('modelDirectories')) {
     ctx.provide('modelDirectories')
-    ctx.modelDirectories = { directoryFor: () => ({}) }
+    // FAITHFUL to the shipped service: directoryFor() re-enters
+    // `this.ctx.remote.session`, so it throws unless the CALLING fiber
+    // declared that service. A stub that always returns an object cannot
+    // express the failure that kept the model picker on "Default" — the
+    // handle resolved, every existence guard passed, and only the call threw.
+    ctx.modelDirectories = {
+      directoryFor: () => {
+        if (!have.includes('remote.session')) {
+          throw new Error('cannot get property "remote.session" without inject')
+        }
+        return {
+          load: async () => {},
+          select: async () => {},
+          store: {
+            getSnapshot: () => ({ current: null, groups: [], status: 'ready', error: null }),
+            subscribe: () => () => {},
+          },
+        }
+      },
+    }
+  }
+  if (have.includes('remote.session')) {
+    ctx.provide('remote.session')
+    ctx['remote.session'] = { modelCatalog: async () => ({ ok: true, value: {} }) }
   }
   if (have.includes('uiWorkspace')) {
     ctx.provide('uiWorkspace')
@@ -280,6 +303,14 @@ const MATRIX = [
   // namespaced form is — but with sessions present the button shows either way,
   // because the pickers are optional.
   { label: 'key-on-remote agentPresets (not the harness shape)', have: ['sessions', 'modelDirectories', 'agentPresetsKey'], launch: 'present' },
+  // The REAL deployment: modelDirectories is present AND `remote.session` is
+  // composed, so directoryFor() is callable from a fiber that declares it.
+  {
+    label: 'modelDirectories + remote.session (the real shell)',
+    have: ['sessions', 'modelDirectories', 'agentPresets', 'remote.session'],
+    launch: 'present',
+    callableDirectory: true,
+  },
 ]
 
 for (const row of MATRIX) {
@@ -300,6 +331,48 @@ for (const row of MATRIX) {
       `a complete deployment must get a launch context (composing [${row.have.join(', ')}])`)
     assert.equal(props.launch.workspaceId, 'w1', 'the launch context must carry its workspace')
   }
+
+  // THE model-picker regression. A handle that merely EXISTS is not enough:
+  // directoryFor() re-enters `remote.session`, so it must be taken from a
+  // fiber that declares it. Read off the root ctx instead and every call
+  // throws forever, which is what left the picker greyed out on "Default"
+  // while the console stayed silent.
+  if (row.callableDirectory === true) {
+    const directory = props.launch.modelDirectories?.directoryFor('s1')
+    assert.ok(
+      directory,
+      'directoryFor() must be CALLABLE when remote.session is composed — ' +
+        'the handle has to come from a fiber that declares it, not from the root ctx',
+    )
+    assert.equal(typeof directory.load, 'function', 'a usable directory exposes load()')
+  }
+}
+
+// --- the model fiber may resolve AFTER the slot's inject callback ----------
+// The slot's inject runs on the conversation view's first render and its
+// result is CACHED for the dialog's lifetime. The model fiber — a separate
+// cordis inject declaring `remote.session` — can resolve a moment later. Read
+// eagerly and `modelDirectories` is pinned to undefined for good: the picker
+// shows "Default", greyed out, with NOTHING in the console, because nothing
+// threw. That is the state this whole investigation kept returning to.
+//
+// So the launch context must resolve the model context LAZILY, at
+// directoryFor() time.
+{
+  // Mount with modelDirectories present but WITHOUT remote.session, so the
+  // model fiber cannot resolve at first. The tab must still work.
+  const registered = await mount(['sessions', 'modelDirectories', 'agentPresets'])
+  const props = registered.desc.inject('s1')
+  assert.ok(props.launch, 'the launch button must still appear while the model fiber is unresolved')
+  assert.ok(
+    props.launch.modelDirectories !== undefined,
+    'the launch context must always expose a modelDirectories facade, even before the model ' +
+      'fiber resolves — an eager read pins the picker to undefined for the dialog\'s whole life',
+  )
+  assert.doesNotThrow(
+    () => props.launch.modelDirectories.directoryFor('s1'),
+    'directoryFor must yield undefined rather than throwing when the model fiber is unresolved',
+  )
 }
 
 // A workspace the session does not belong to still yields no store — the

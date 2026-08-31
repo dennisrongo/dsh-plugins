@@ -22,11 +22,22 @@
  * what that plugin declares, then calls every registered slot's `inject`
  * callback — which is the deferred path where the failure actually lands.
  *
- * Two rules worth knowing before "fixing" a failure here:
+ * It also CALLS the borrowed handles a slot hands back, because a third failure
+ * mode is invisible to every existence check: a service that RESOLVES but
+ * cannot be CALLED. `modelDirectories.directoryFor()` runs
+ * `this.ctx.remote.session` inside dsh-client-ui-model-selection under a proxy
+ * bound to the CALLING fiber, so a plugin that never declared `remote.session`
+ * gets a handle that passes every guard and throws on first use — naming a
+ * service its own source never mentions. That was dsh-todo outage number three.
+ *
+ * Three rules worth knowing before "fixing" a failure here:
  *   - `ctx.get(name)` is the SAFE probe and yields undefined; the bare property
  *     read is the trap. Guard optional reads with try/catch.
  *   - A missing KEY on an already-injected service object (`ctx.remote?.foo`)
  *     is safe. The NAMESPACED service form (`ctx['remote.foo']`) throws.
+ *   - A resolved service is not a callable one. Wrap a borrowed handle ONCE at
+ *     the boundary so it degrades to undefined, rather than guarding each call
+ *     site — the raw handle outlives the guards you remember to write.
  *
  * With no harness installed the check SKIPS rather than fails, matching
  * check-tokens.mjs — a clean CI checkout must not be blocked by a missing
@@ -92,15 +103,36 @@ function stubs(ctx) {
       binding: () => undefined, open: () => {}, create: async () => 's1',
       scope: () => undefined, subagentAddress: () => undefined,
     },
+    // A BORROWED service: present and probeable, but its methods re-enter a
+    // service the CALLING fiber never declared. The real
+    // `modelDirectories.directoryFor` runs `this.ctx.remote.session`
+    // (dsh-client-ui-model-selection/lib/client.js:301), so calling it from a
+    // fiber that declares only remote.dshTodo/workspaces/slots throws
+    // `cannot get property "remote.session" without inject` — from INSIDE the
+    // callee, on a service name the caller's source never mentions.
+    //
+    // This is a DIFFERENT bug class from an unguarded property read, and the
+    // earlier plain stub could not express it: existence guards
+    // (probeNamespaced, launchContext) all pass, then the first method call
+    // detonates. It crashed conversation.view a THIRD time. Guarding the
+    // CALL SITE is the fix; a present service is not a callable one.
     modelDirectories: {
-      directoryFor: () => ({
-        load: async () => {},
-        select: async () => {},
-        store: { getSnapshot: () => ({ groups: [], current: null }), subscribe: () => () => {} },
-      }),
+      directoryFor: () => {
+        throw new Error('cannot get property "remote.session" without inject')
+      },
     },
     theme: { overrideTokens: () => () => {} },
-    locale: { register: () => () => {}, bind: () => (k) => k },
+    // `bind` is borrowed like directoryFor, so it can throw from inside the
+    // callee rather than returning. It also commonly ECHOES an unknown key
+    // back, so a consumer that trusts the result renders the raw key
+    // ("presetCordisName") as a label. Both are modelled here.
+    locale: {
+      register: () => () => {},
+      bind: (ns) => {
+        if (ns === 'check-context.throws') throw new Error('cannot get property "locale" without inject')
+        return (k) => k
+      },
+    },
     settingsScope: { bind: () => ({}), describe: () => ({}) },
     uiWorkspace: { archiveSession: async () => {}, startSession: async () => {} },
     // The real `remote` is a PROXY that THROWS on an unknown sub-name. A plain
@@ -177,10 +209,60 @@ const REMOTE_NAMESPACES = [
   'remote.dshTodo', 'remote.dshGit', 'remote.dshPlans',
   'remote.dshMemory', 'remote.dshMissionControl',
 ]
+/**
+ * Optional services a plugin reads off the ROOT ctx without declaring them.
+ *
+ * The shell registers these; a plugin that reads one opportunistically must
+ * cope with it being absent AND with it being present-but-unusable. Providing
+ * them here is what lets the check reach a borrowed method call — the failure
+ * mode an absent-service matrix structurally cannot see.
+ */
+const OPTIONAL_ROOT_SERVICES = ['sessions', 'modelDirectories', 'uiWorkspace', 'locale']
+
 // NOTE: 'remote.agentPresets' is deliberately NOT provided. It is an OPTIONAL
 // service no plugin declares, and providing it here would mean the check never
 // exercises the absent case — which is the case that threw and emptied the Todo
 // tab. A stub that supplies everything cannot catch an unguarded optional read.
+
+/**
+ * Call the borrowed-service methods a slot handed back, and fail if one throws.
+ *
+ * A guard that proves a service EXISTS proves nothing about whether its methods
+ * can run from this fiber. `modelDirectories.directoryFor()` resolves, then
+ * throws `cannot get property "remote.session" without inject` from inside
+ * dsh-client-ui-model-selection, because the proxy carrying the call is bound to
+ * the CALLER's fiber. Existence guards all pass; the first call detonates.
+ *
+ * Only zero-argument-safe read methods are probed, and only ones whose contract
+ * is a plain lookup — never a method that would mutate or start work.
+ */
+function exerciseHandles(plugin, desc, injected, out) {
+  if (injected === null || typeof injected !== 'object') return
+  const probes = [
+    ['modelDirectories', 'directoryFor', ['s1']],
+    ['uiWorkspace', 'archiveSession', null],
+    ['sessions', 'binding', ['s1']],
+  ]
+  // The launch context is nested one level under the slot's return value, so
+  // look at both the object itself and its direct object-valued properties.
+  const scopes = [injected, ...Object.values(injected).filter((v) => v && typeof v === 'object')]
+  for (const scope of scopes) {
+    for (const [service, method, args] of probes) {
+      if (args === null) continue
+      const handle = scope[service]
+      if (!handle || typeof handle[method] !== 'function') continue
+      try {
+        handle[method](...args)
+      } catch (error) {
+        out.push(
+          `${plugin}: slot "${desc.id}" handed back ${service}, but ` +
+            `${service}.${method}() threw — ${error.message.split('\n')[0]}\n` +
+            `      A present service is not a callable one: guard the CALL SITE, not just the read.`,
+        )
+      }
+    }
+  }
+}
 
 const failures = []
 const checked = []
@@ -221,6 +303,18 @@ for (const name of readdirSync(pluginRoot)) {
     if (!(base in table)) continue
     try { ctx.provide(base); ctx[base] = table[base] } catch { /* already provided */ }
   }
+  // ALSO provide the optional launch services a plugin reads off the ROOT ctx
+  // without declaring them. Providing only `declared` models a SLIM harness —
+  // a real case, and the one the original outage hit — but it can never reach
+  // the opposite failure: a service that RESOLVES and then throws when called.
+  // With these absent, dsh-todo's launchContext() bails at `!sessions` and
+  // hands back no handle at all, so the borrowed-method probe measures nothing.
+  // The real browser resolves all three, which is exactly how it reached
+  // directoryFor() and crashed.
+  for (const optional of OPTIONAL_ROOT_SERVICES) {
+    if (declared.includes(optional)) continue
+    try { ctx.provide(optional); ctx[optional] = table[optional] } catch { /* already provided */ }
+  }
   // A plugin that mounts its OWN contract parks a child fiber on
   // `remote.<namespace>` — a service nothing else provides — so without these
   // its slot never registers and the check passes on ZERO slots. That false
@@ -257,11 +351,20 @@ for (const name of readdirSync(pluginRoot)) {
   // The deferred path: this is where the dsh-todo outage actually landed.
   for (const desc of registrations) {
     if (typeof desc.inject !== 'function') continue
+    let injected
     try {
-      desc.inject('s1')
+      injected = desc.inject('s1')
     } catch (error) {
       failures.push(`${name}: slot "${desc.id}" inject threw — ${error.message.split('\n')[0]}`)
+      continue
     }
+    // Returning a service HANDLE is not proof it is usable. A borrowed service
+    // resolves fine and then throws from INSIDE its own method, because the
+    // method re-enters a service THIS fiber never declared — the
+    // `remote.session` crash that emptied the Todo tab a third time. The slot's
+    // inject callback merely hands the handle onward, so stopping at the call
+    // above measures existence and nothing else.
+    exerciseHandles(name, desc, injected, failures)
   }
   checked.push(`${name.padEnd(24)} inject=[${declared.join(', ')}]  ${registrations.length} slot(s)`)
 }
