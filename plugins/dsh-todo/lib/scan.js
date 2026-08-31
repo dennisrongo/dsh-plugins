@@ -4,7 +4,11 @@ import { join, relative, sep } from "node:path";
 var DIGEST_BYTE_CAP = 24e3;
 var IGNORED_DIRS = /* @__PURE__ */ new Set([
   ".git",
+  ".hg",
+  ".svn",
   "node_modules",
+  "bower_components",
+  "jspm_packages",
   "lib",
   "dist",
   "build",
@@ -12,12 +16,29 @@ var IGNORED_DIRS = /* @__PURE__ */ new Set([
   "coverage",
   ".next",
   ".nuxt",
+  ".svelte-kit",
+  ".output",
+  ".parcel-cache",
+  ".turbo",
   ".cache",
   ".venv",
   "venv",
   "__pycache__",
+  ".tox",
+  ".mypy_cache",
+  ".pytest_cache",
   "target",
-  "vendor"
+  "vendor",
+  "vendored",
+  "third_party",
+  "thirdparty",
+  "external",
+  "generated",
+  "gen",
+  "__generated__",
+  "Pods",
+  "Carthage",
+  "DerivedData"
 ]);
 var SOURCE_EXT = /* @__PURE__ */ new Set([
   ".ts",
@@ -45,6 +66,7 @@ var MAX_UNTESTED = 40;
 var MAX_COMMENT_LINE = 160;
 var README_BYTES = 4e3;
 var MAX_DEPTH = 8;
+var MAX_READ_BYTES = 2 * 1024 * 1024;
 function posix(path) {
   return path.split(sep).join("/");
 }
@@ -86,6 +108,7 @@ function walk(root) {
 function readText(path, limit = Number.MAX_SAFE_INTEGER) {
   let raw;
   try {
+    if (statSync(path).size > MAX_READ_BYTES) return "";
     raw = readFileSync(path, "utf8");
   } catch {
     return "";
@@ -95,23 +118,24 @@ function readText(path, limit = Number.MAX_SAFE_INTEGER) {
 }
 var COMMENT_RE = /(?:^|\s)(?:\/\/|#|\/\*|\*)\s*(TODO|FIXME|HACK)\b[:\s]?(.*)$/;
 function collectComments(root, files) {
-  const out = [];
+  const kept = [];
+  let total = 0;
   for (const rel of files) {
-    if (out.length >= MAX_COMMENTS) break;
     const dot = rel.lastIndexOf(".");
     if (dot < 0 || !SOURCE_EXT.has(rel.slice(dot))) continue;
     const text = readText(join(root, rel));
     if (text === "") continue;
     const lines = text.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
-      if (out.length >= MAX_COMMENTS) break;
       const match = COMMENT_RE.exec(lines[i]);
       if (match === null) continue;
+      total += 1;
+      if (kept.length >= MAX_COMMENTS) continue;
       const body = match[2].trim().slice(0, MAX_COMMENT_LINE);
-      out.push(`${rel}:${i + 1}  ${match[1]} ${body}`.trimEnd());
+      kept.push(`${rel}:${i + 1}  ${match[1]} ${body}`.trimEnd());
     }
   }
-  return out;
+  return { kept, total };
 }
 function hasTest(base, testNames) {
   return testNames.has(`${base}.test`) || testNames.has(`${base}.spec`) || testNames.has(`test_${base}`) || testNames.has(`${base}_test`) || testNames.has(base);
@@ -126,20 +150,28 @@ function collectUntested(files) {
       testNames.add(stem.replace(/\.(test|spec)$/i, ""));
     }
   }
-  const out = [];
+  const kept = [];
+  let total = 0;
   for (const rel of files) {
-    if (out.length >= MAX_UNTESTED) break;
     const dot = rel.lastIndexOf(".");
     if (dot < 0 || !SOURCE_EXT.has(rel.slice(dot))) continue;
     if (/(^|[./_-])(test|spec)([./_-]|$)/i.test(rel)) continue;
     const stem = rel.slice(rel.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
     if (/^(index|main|types|constants)$/i.test(stem)) continue;
-    if (!hasTest(stem, testNames)) out.push(rel);
+    if (hasTest(stem, testNames)) continue;
+    total += 1;
+    if (kept.length < MAX_UNTESTED) kept.push(rel);
   }
-  return out;
+  return { kept, total };
+}
+function sectionHeader(title, total, kept) {
+  return kept < total ? `### ${title} (${total} found, showing ${kept})` : `### ${title} (${total})`;
 }
 function assemble(sections, walkTruncated) {
-  const joined = sections.join("\n\n");
+  const parts = walkTruncated ? sections.concat(
+    "[walk truncated \u2014 this workspace is deeper or larger than one scan walks; files below the depth or count limit were never examined]"
+  ) : sections;
+  const joined = parts.join("\n\n");
   if (joined.length <= DIGEST_BYTE_CAP) {
     return { digest: joined, truncated: walkTruncated };
   }
@@ -149,9 +181,11 @@ function assemble(sections, walkTruncated) {
 function buildDigest(root) {
   const { files, truncated } = walk(root);
   const sections = [];
+  let sectionTruncated = false;
   const tree = files.slice(0, MAX_TREE_ENTRIES);
   if (tree.length > 0) {
-    sections.push(`### Files (${files.length} found, showing ${tree.length})
+    if (tree.length < files.length) sectionTruncated = true;
+    sections.push(`${sectionHeader("Files", files.length, tree.length)}
 ${tree.join("\n")}`);
   }
   const readmeName = files.find((f) => /^readme(\.md|\.txt)?$/i.test(f));
@@ -167,17 +201,24 @@ ${text}`);
 ${text}`);
   }
   const comments = collectComments(root, files);
-  if (comments.length > 0) {
-    sections.push(`### Unresolved comments (TODO/FIXME/HACK)
-${comments.join("\n")}`);
-  }
-  const untested = collectUntested(files);
-  if (untested.length > 0) {
+  if (comments.kept.length > 0) {
+    if (comments.kept.length < comments.total) sectionTruncated = true;
     sections.push(
-      "### Untested modules (name-based hint, not a coverage run)\n" + untested.join("\n")
+      sectionHeader("Unresolved comments (TODO/FIXME/HACK)", comments.total, comments.kept.length) + "\n" + comments.kept.join("\n")
     );
   }
-  return assemble(sections, truncated);
+  const untested = collectUntested(files);
+  if (untested.kept.length > 0) {
+    if (untested.kept.length < untested.total) sectionTruncated = true;
+    sections.push(
+      sectionHeader(
+        "Untested modules (name-based hint, not a coverage run)",
+        untested.total,
+        untested.kept.length
+      ) + "\n" + untested.kept.join("\n")
+    );
+  }
+  return assemble(sections, truncated || sectionTruncated);
 }
 export {
   DIGEST_BYTE_CAP,
