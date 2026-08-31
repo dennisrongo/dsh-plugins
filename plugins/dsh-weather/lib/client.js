@@ -245,6 +245,13 @@ body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 2
 .dshwx-temp:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,0.08)); }
 .dshwx-temp:focus-visible { outline: 2px solid var(--dsw-alias-label-caption, #81858c); outline-offset: 1px; }
 .dshwx-label { color: var(--dsw-alias-label-secondary, #cfd3d6); }
+/* The bar is a ~200px pill in the shell's top band \u2014 a small surface, so the
+   loading state stays TEXT rather than becoming a skeleton, which would be
+   heavier than the string it replaced. It takes the dim caption tone the other
+   plugins use for the same rung; a MODIFIER rather than a change to
+   .dshwx-label, which is shared with the loaded condition text and must keep
+   its secondary weight. */
+.dshwx-label.loading { color: var(--dsw-alias-label-tertiary, #adb2b8); }
 .dshwx-where {
   color: var(--dsw-alias-label-tertiary, #adb2b8);
   max-width: 160px; overflow: hidden; text-overflow: ellipsis;
@@ -482,9 +489,9 @@ function WeatherBar() {
     fetchWeather().then(setState).catch((e) => setState({ status: "error", error: String(e?.message ?? e) })).finally(() => setBusy(false));
   };
   if (state.status === "loading") {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { ...shell, "aria-live": "polite", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-icon", children: "\u{1F321}\uFE0F" }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-label", children: "Loading weather\u2026" })
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { ...shell, role: "status", "aria-live": "polite", "aria-busy": "true", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-icon", "aria-hidden": "true", children: "\u{1F321}\uFE0F" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dshwx-label loading", children: "Loading weather\u2026" })
     ] });
   }
   if (state.status === "error" || !state.now) {

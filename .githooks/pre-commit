@@ -52,6 +52,13 @@ node scripts/check-type-scale.mjs
 # hardcoded second argument and stops following the theme forever.
 node scripts/check-tokens.mjs
 
+# --- One loading rule across every plugin, ported from dsh-git: a skeleton for
+# a large pane, a dim caption row for a small one. The sweep must animate
+# background-position alone -- a skeleton that animates a layout property nudges
+# the content it stands in for, which is the lurch it exists to prevent -- and
+# must flatten under prefers-reduced-motion.
+node scripts/check-progress.mjs
+
 pnpm -r --if-present run typecheck
 # Each plugin's `test` script builds first, so this also regenerates lib/.
 pnpm -r --if-present run test

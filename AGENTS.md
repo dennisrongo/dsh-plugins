@@ -40,7 +40,7 @@ plugins/dsh-memory       host + client — /remember + instruction inspector, se
                          dshMemory. Writes into the AGENTS.md hierarchy and
                          reports what dsh-agent-instructions' byte budget kept.
 scripts/                 verify.mjs, anchor.mjs, host-deps.mjs, check-type-scale.mjs,
-                         check-tokens.mjs, check-context.mjs,
+                         check-tokens.mjs, check-context.mjs, check-progress.mjs,
                          link-superpowers-skills.mjs (all portable)
                          dev-link.mjs (entry point; the root postinstall runs it)
                          -> dev-link.ps1 (Windows) / dev-link.sh (macOS/Linux):
@@ -284,3 +284,50 @@ first version of this rule only read the literal at the `font-size:` declaration
 four sizes parked in custom properties. Nothing stops a plugin drifting on its own, which is exactly what happened:
 `dsh-mission-control` had grown to 9–15px with half-pixel steps (10.5, 11.5, 12.5) and read
 as a different application beside dsh's chrome.
+
+**One loading rule across every plugin, and it is a RULE, not a style.** `dsh-git` does not
+have a single loading treatment — it picks one by surface size, and the others copy that
+decision rather than the pixels:
+
+| Surface | Treatment |
+|---|---|
+| Large content pane | a skeleton shaped like the real content |
+| List row, menu, small pane | a dim caption row — 12px on a 20px line, tertiary tone |
+| Inside a button | a spinner **beside** the retained label |
+
+Reaching for the wrong rung is the common mistake in both directions. A centred spinner
+blanks a large pane, which is why `dsh-git`'s diff pane grew `DiffSkeleton`; and a skeleton
+in `dsh-weather`'s ~200px pill would be heavier than the seven words it replaced, so that one
+stays text. A spinner never *replaces* a label — swapping `Send` for `…` loses the verb and
+resizes the button mid-flight.
+
+Three invariants make a skeleton correct rather than merely present, and
+`node scripts/check-progress.mjs` enforces all three from the root `test` script and the
+pre-commit hook:
+
+- **Geometry is copied from the real content**, never a round number — the row's own padding,
+  line box and gaps — so the swap to real content does not lurch.
+- **The sweep animates `background-position` over an oversized gradient**, never `transform`,
+  `width`, `height` or `opacity`. Those either reflow or move the bar relative to the text it
+  stands in for, which is the lurch the skeleton exists to prevent. Bar heights are box
+  dimensions stated directly, so they are exempt from the type scale — but never `calc()` one
+  off a font size, for the same between-the-rungs reason as above.
+- **`prefers-reduced-motion` flattens the bars to a flat tone.** The skeleton still says
+  "loading" by being there; the sweep is the optional part.
+
+Accessibility rides along and is checked too: the skeleton root is a `role="status"`
+live region announced once, and every decorative bar is `aria-hidden` — otherwise a screen
+reader narrates a dozen empty rows instead of one status line.
+
+**Loading must be its OWN flag, never inferred from an empty collection.** `dsh-plan-board`
+rendered "No plans yet" during every read, because `plans.length === 0` means both "this
+workspace has none" and "we have not looked". That is a false claim about the user's
+workspace, and it sent them looking for a plan the tab had simply not fetched yet. Arm the
+flag where the fetch happens, not at the top of the component: started `true`, it strands the
+tab on a skeleton forever in the deployments where the fetch early-returns — no host half, or
+no workspace open — which are exactly the cases the empty states exist to explain.
+
+The checker was verified by **sabotage before it was trusted** — drifting the shimmer timing,
+animating a transform, deleting the reduced-motion branch, dropping `role="status"`,
+un-hiding the decorative rows, and knocking the caption row off its rung each fail it. A
+check that has never failed is decoration.

@@ -302,6 +302,13 @@ body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 2
 .dshwx-temp:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(255,255,255,0.08)); }
 .dshwx-temp:focus-visible { outline: 2px solid var(--dsw-alias-label-caption, #81858c); outline-offset: 1px; }
 .dshwx-label { color: var(--dsw-alias-label-secondary, #cfd3d6); }
+/* The bar is a ~200px pill in the shell's top band — a small surface, so the
+   loading state stays TEXT rather than becoming a skeleton, which would be
+   heavier than the string it replaced. It takes the dim caption tone the other
+   plugins use for the same rung; a MODIFIER rather than a change to
+   .dshwx-label, which is shared with the loaded condition text and must keep
+   its secondary weight. */
+.dshwx-label.loading { color: var(--dsw-alias-label-tertiary, #adb2b8); }
 .dshwx-where {
   color: var(--dsw-alias-label-tertiary, #adb2b8);
   max-width: 160px; overflow: hidden; text-overflow: ellipsis;
@@ -672,9 +679,9 @@ function WeatherBar(): React.JSX.Element {
 
   if (state.status === 'loading') {
     return (
-      <div {...shell} aria-live="polite">
-        <span className="dshwx-icon">🌡️</span>
-        <span className="dshwx-label">Loading weather…</span>
+      <div {...shell} role="status" aria-live="polite" aria-busy="true">
+        <span className="dshwx-icon" aria-hidden="true">🌡️</span>
+        <span className="dshwx-label loading">Loading weather…</span>
       </div>
     )
   }

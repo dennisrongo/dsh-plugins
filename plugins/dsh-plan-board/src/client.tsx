@@ -1002,6 +1002,47 @@ function PlanOverlay({ ctx, remote }: { ctx: ClientContext; remote: PlansRemote 
   return <PlanWindow ctx={ctx} plan={plan} onClose={close} />
 }
 
+/* Varied widths so the placeholder reads as a list of different plan titles
+   rather than a stack of identical blocks. Six rows fills the 280px column
+   without implying a specific count. */
+const SKELETON_WIDTHS = [74, 52, 88, 61, 45, 69]
+
+/**
+ * Placeholder shown while the plan list is being read.
+ *
+ * A skeleton rather than a spinner: the tab is a large surface, and bars in the
+ * list's own shape read as "this content is arriving" instead of blanking the
+ * area. It also replaces a FALSE empty state — before this existed the tab
+ * rendered "No plans yet" during the read, which is a claim about the workspace
+ * rather than a description of the wait.
+ *
+ * The wrapper carries the live region so a screen reader is told the list is
+ * loading without narrating six decorative rows.
+ * @returns the loading placeholder.
+ */
+function PlanSkeleton(): React.ReactElement {
+  return (
+    <div className="dshpb-skel" role="status" aria-live="polite" aria-busy="true">
+      <span className="dshpb-sronly">Reading plans…</span>
+      {SKELETON_WIDTHS.map((width, i) => (
+        <div className="dshpb-skel-row" key={i} aria-hidden="true">
+          {/* The bar is an inner <i> so the outer span can hold the real row's
+              LINE height while the bar keeps its own 10px. */}
+          <span className="dshpb-skel-title" style={{ width: `${width}%` }}>
+            {/* Staggering the shimmer makes it sweep down the list instead of
+                every bar flashing in lockstep. */}
+            <i style={{ animationDelay: `${i * 70}ms` }} />
+          </span>
+          <span className="dshpb-skel-meta">
+            <span className="dshpb-skel-pill" style={{ animationDelay: `${i * 70}ms` }} />
+            <span className="dshpb-skel-when" style={{ animationDelay: `${i * 70}ms` }} />
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /**
  * The history tab.
  * @param props.ctx - client root context.
@@ -1020,12 +1061,24 @@ function PlansTab({
   const [selected, setSelected] = React.useState<PlanRecord | undefined>(undefined)
   const [selectedId, setSelectedId] = React.useState<string | undefined>(undefined)
   const [error, setError] = React.useState<string | undefined>(undefined)
+  /* Loading is its OWN flag, never inferred from `plans.length === 0`. An empty
+     list means "this workspace has no plans" and an unread one means "we have
+     not looked yet" — collapsing them rendered the "No plans yet" copy during
+     every read, telling the user something false and sending them looking for a
+     plan the tab had simply not fetched.
+
+     It starts FALSE and is armed by the effect that actually fetches. Starting
+     true would strand the tab on a skeleton forever in the deployments where
+     that effect early-returns — no host half, or no workspace open — which are
+     precisely the cases the empty states below exist to explain. */
+  const [loading, setLoading] = React.useState(false)
 
   React.useEffect(() => injectStyles(), [])
 
   React.useEffect(() => {
     if (remote === undefined || workspaceId === null) return
     let cancelled = false
+    setLoading(true)
     void remote
       .list({ workspaceId })
       .then((reply) => {
@@ -1039,6 +1092,12 @@ function PlansTab({
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+      })
+      /* Cleared on BOTH paths, and only when this read is still the current one:
+         a settle that lost its race must not lift the flag for the read that
+         replaced it. */
+      .finally(() => {
+        if (!cancelled) setLoading(false)
       })
     return () => {
       cancelled = true
@@ -1069,6 +1128,15 @@ function PlansTab({
   }
   if (error !== undefined) {
     return <div className="dshpb-empty">Could not read plans: {error}</div>
+  }
+  /* Ordered deliberately: the workspace and error branches above are real
+     ANSWERS and outrank a pending read, while the empty state below is a claim
+     about the workspace that must not be made until the list has been read.
+     Only a FIRST read shows the skeleton — a token-driven refresh keeps the
+     current list on screen rather than flashing bars over plans already
+     rendered. */
+  if (loading && plans.length === 0) {
+    return <PlanSkeleton />
   }
   if (plans.length === 0) {
     return (
@@ -1504,6 +1572,83 @@ body.dsh-desktop-windows-titlebar-layout .dshpb-dock {
   font-size: 11px;
   color: var(--dsw-alias-label-tertiary);
 }
+/* ---- loading skeleton ----
+   Shaped like the real plan list rather than a centred spinner, because the tab
+   is a large surface and a spinner blanks it. Geometry is copied from
+   .dshpb-row: the same 8px/10px padding on the 280px column, a title bar on the
+   13px line, and a meta line 4px below carrying a pill-shaped status bar and a
+   short date bar.
+
+   Bar heights are box dimensions stated directly, never calc() off a font size
+   — arithmetic on a scale step lands between rungs by construction. */
+.dshpb-skel { padding: 8px; }
+.dshpb-skel-row { padding: 8px 10px; border-radius: 6px; }
+.dshpb-skel-row + .dshpb-skel-row { margin-top: 2px; }
+/* The BAR is 10px, but the LINE it sits on must match the real row's, or the
+   skeleton is shorter than what replaces it and the list jumps on arrival.
+
+   Each bar is wrapped in a box of the height the real text occupies, and the
+   10px bar is centred inside it. The heights are the MEASURED line boxes of the
+   real row's children (.dshpb-row-title 18.2px, .dshpb-row-meta 19px), taken
+   from the browser rather than computed here — 13px x 1.4 is not a round
+   number, and a product stated in a comment drifts from what the browser does.
+   Re-measure with scripts/progress-probe.mjs after touching either.
+
+   A line-height alone does NOT work: these are flex children, and a flex
+   container blockifies its children, so an empty span carries no line box and
+   the row collapses to the bars' own height. That version measured 42px against
+   the real row's 57.2px. */
+.dshpb-skel-title {
+  display: flex; align-items: center;
+  height: 18.2px;
+}
+.dshpb-skel-title > i { display: block; height: 10px; width: 100%; border-radius: 3px; }
+.dshpb-skel-meta {
+  display: flex; align-items: center; gap: 8px; margin-top: 4px;
+  height: 19px;
+}
+/* Rounded to a pill so it reads as the StatusPill it stands in for. */
+.dshpb-skel-pill { height: 10px; width: 54px; border-radius: 999px; flex: none; }
+.dshpb-skel-when { height: 10px; width: 42px; border-radius: 3px; flex: none; }
+/* The shimmer animates BACKGROUND-POSITION over an oversized gradient, never a
+   transform or a box dimension, so it cannot nudge layout while it sweeps. */
+.dshpb-skel-title > i, .dshpb-skel-pill, .dshpb-skel-when {
+  background: linear-gradient(
+    90deg,
+    var(--dsw-alias-border-l1) 0%,
+    var(--dsw-alias-interactive-bg-hover) 40%,
+    var(--dsw-alias-border-l1) 80%
+  );
+  background-size: 300% 100%;
+  animation: dshpb-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes dshpb-shimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+/* Placed AFTER the shimmer, not in the docked-transition block near the top of
+   this sheet. Both selectors have equal specificity, so the LATER rule wins —
+   parked above, the animation-none declaration was silently overridden and the
+   bars kept sweeping under reduced motion. The browser probe caught it;
+   source-reading could not, because the rule is correct in isolation.
+
+   (No backtick in this comment: the stylesheet is a template literal, so one
+   closes it early and silently truncates every rule below.) */
+@media (prefers-reduced-motion: reduce) {
+  /* Hold the bars at a flat mid-tone: the skeleton still communicates "loading"
+     by being there, without the sweep. */
+  .dshpb-skel-title > i, .dshpb-skel-pill, .dshpb-skel-when {
+    animation: none;
+    background: var(--dsw-alias-border-l1);
+  }
+}
+/* Visually hidden, still announced. */
+.dshpb-sronly {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+
 .dshpb-detail { flex: 1 1 auto; overflow: auto; padding: 16px 20px; min-width: 0; }
 .dshpb-empty {
   padding: 24px;

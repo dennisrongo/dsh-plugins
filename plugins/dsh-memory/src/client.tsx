@@ -93,6 +93,43 @@ function size(bytes: number): string {
  * @param props.workspaceId - workspace to inspect, or null outside one.
  * @returns the tab body.
  */
+/* Varied widths so the placeholder reads as a list of different paths rather
+   than a stack of identical blocks. Five rows suits the handful of AGENTS.md
+   files a workspace hierarchy typically yields. */
+const SKELETON_WIDTHS = [58, 72, 44, 65, 51]
+
+/**
+ * Placeholder shown while the instruction report is being read.
+ *
+ * A skeleton rather than a spinner: the tab is a large surface, and bars in the
+ * file list's own shape read as "this content is arriving" instead of blanking
+ * the area. The wrapper carries the live region so a screen reader is told the
+ * report is loading without narrating five decorative rows.
+ * @returns the loading placeholder.
+ */
+function MemorySkeleton(): React.ReactElement {
+  return (
+    <div className="dshmem-skel" role="status" aria-live="polite" aria-busy="true">
+      <span className="dshmem-sronly">Reading instruction files…</span>
+      <span className="dshmem-skel-summary" aria-hidden="true" />
+      {SKELETON_WIDTHS.map((width, i) => (
+        <div className="dshmem-skel-row" key={i} aria-hidden="true">
+          {/* Each bar is an inner <i> so its wrapper can hold the line height
+              the real text occupies while the bar keeps its own 10px. */}
+          <span className="dshmem-skel-path" style={{ width: `${width}%` }}>
+            {/* Staggering the shimmer makes it sweep down the list instead of
+                every bar flashing in lockstep. */}
+            <i style={{ animationDelay: `${i * 70}ms` }} />
+          </span>
+          <span className="dshmem-skel-stats">
+            <i style={{ animationDelay: `${i * 70}ms` }} />
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function MemoryTab({
   remote,
   workspaceId,
@@ -234,7 +271,7 @@ function MemoryTab({
       {error !== undefined ? (
         <div className="dshmem-empty">Could not read the instruction files: {error}</div>
       ) : report === undefined ? (
-        <div className="dshmem-empty">Reading…</div>
+        <MemorySkeleton />
       ) : (
         <>
           <div className="dshmem-summary">
@@ -276,7 +313,16 @@ function MemoryTab({
             )}
           </div>
           {open !== undefined ? (
-            <pre className="dshmem-body">{body ?? 'Reading…'}</pre>
+            /* The caption row REPLACES the <pre> rather than sitting inside it:
+               as a child it inherited the code font and the pane's border, so a
+               one-word status rendered as if it were the file's contents. */
+            body === undefined ? (
+              <div className="dshmem-loadingrow" role="status" aria-live="polite" aria-busy="true">
+                Reading…
+              </div>
+            ) : (
+              <pre className="dshmem-body">{body}</pre>
+            )
           ) : null}
         </>
       )}
@@ -454,6 +500,92 @@ const CSS = `
   font-size: 13px;
   line-height: 1.6;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* ---- loading ----
+   Two treatments, picked by surface. The FILE LIST is a large uniform surface,
+   so it gets a skeleton shaped like its own rows (see .dshmem-skel). The file
+   BODY is prose in a <pre>, where bars standing in for paragraphs read as noise
+   rather than structure — that one keeps a caption row, matching the dim
+   12px/20px treatment used for small surfaces across the plugins. */
+.dshmem-loadingrow {
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Visually hidden, still announced. */
+.dshmem-sronly {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+/* Geometry copied from .dshmem-summary + .dshmem-file so the swap to real
+   content does not lurch: the same 7px/10px row padding, 2px gaps, and a
+   space-between split with the path on the left and the stats on the right.
+
+   Bar heights are box dimensions stated directly, never calc() off a font
+   size — arithmetic on a scale step lands between rungs. */
+.dshmem-skel { display: flex; flex-direction: column; gap: 2px; }
+.dshmem-skel-summary { height: 10px; width: 46%; border-radius: 3px; margin-bottom: 6px; }
+/* The BAR is 10px, but the row's LINE box must match the real row's, or the
+   skeleton is shorter than what replaces it and the list jumps on arrival.
+   .dshmem-file is 13px on a 1.4 line (18.2px) inside 7px/10px padding, so the
+   ROW's height comes from its tallest child, so each bar is wrapped in a box of
+   the height the real text occupies and the 10px bar is centred inside it.
+
+   The heights are the MEASURED line boxes of the real row's own children
+   (.dshmem-path at 12px/1.4 = 16.8px, .dshmem-stats at 11px/1.4 = 15.4px),
+   taken from the browser rather than computed here: 12 x 1.4 is not a round
+   number, and a product stated in a comment drifts from what the browser does.
+   Re-measure with scripts/progress-probe.mjs after touching either.
+
+   A line-height alone does NOT work: these are flex children, and a flex
+   container blockifies its children, so an empty span carries no line box and
+   the row collapses back to the bars' own height. That version measured 24px
+   against the real 30.8px. */
+.dshmem-skel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-radius: 6px;
+}
+.dshmem-skel-path, .dshmem-skel-stats {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.dshmem-skel-path { height: 16.8px; }
+.dshmem-skel-stats { height: 15.4px; width: 48px; flex: 0 0 auto; }
+.dshmem-skel-path > i, .dshmem-skel-stats > i {
+  display: block; width: 100%; height: 10px; border-radius: 3px;
+}
+/* The shimmer animates BACKGROUND-POSITION over an oversized gradient, never a
+   transform or a box dimension, so it cannot nudge layout while it sweeps. */
+.dshmem-skel-summary, .dshmem-skel-path > i, .dshmem-skel-stats > i {
+  background: linear-gradient(
+    90deg,
+    var(--dsw-alias-border-l1) 0%,
+    var(--dsw-alias-interactive-bg-hover) 40%,
+    var(--dsw-alias-border-l1) 80%
+  );
+  background-size: 300% 100%;
+  animation: dshmem-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes dshmem-shimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Hold the bars at a flat mid-tone: the skeleton still communicates "loading"
+     by being there, without the sweep. */
+  .dshmem-skel-summary, .dshmem-skel-path > i, .dshmem-skel-stats > i {
+    animation: none;
+    background: var(--dsw-alias-border-l1);
+  }
 }
 `
 

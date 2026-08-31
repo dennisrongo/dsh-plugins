@@ -1202,6 +1202,55 @@ body[data-ds-dark-theme] .dshtd-status option {
 .dshtd-tools { flex: none; display: flex; align-items: center; gap: 6px; padding: 0 20px 10px; }
 .dshtd-tools label { color: var(--td-caption); font-size: 12px; line-height: 18px; }
 
+/* ---- loading skeleton ----
+   Shaped like the real list rather than a centred spinner, because the tab is a
+   large surface and a spinner blanks it. Geometry is copied from .dshtd-row —
+   the same 9px/10px padding, 20px line box and 10px gap — so the swap to real
+   rows does not lurch. The lead square stands in for the checkbox (16px, the
+   icon column) and the bar for the title.
+
+   Bar heights are their own properties, not calc() off a font size: arithmetic
+   on a scale step lands between rungs, and these are box dimensions rather than
+   text anyway. */
+/* Visually hidden, still announced. */
+.dshtd-sronly {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.dshtd-skel { list-style: none; margin: 0; padding: 0; }
+.dshtd-skel-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 10px; border-radius: 8px;
+  border: 1px solid transparent;
+  line-height: 20px;
+}
+.dshtd-skel-row + .dshtd-skel-row { margin-top: 2px; }
+/* Centred on the 20px line box the same way .dshtd-check is, so the square sits
+   on the first text line and stays put regardless of bar width. */
+.dshtd-skel-lead {
+  flex: none; width: 16px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.dshtd-skel-lead > i { display: block; width: 16px; height: 16px; border-radius: 4px; }
+.dshtd-skel-bar { height: 10px; border-radius: 3px; align-self: center; }
+/* The shimmer animates BACKGROUND-POSITION over an oversized gradient, never a
+   transform or a box dimension, so it cannot nudge layout while it sweeps. */
+.dshtd-skel-lead > i, .dshtd-skel-bar {
+  background: linear-gradient(
+    90deg,
+    var(--td-border) 0%,
+    var(--td-hover) 40%,
+    var(--td-border) 80%
+  );
+  background-size: 300% 100%;
+  animation: dshtd-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes dshtd-shimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+
 /* ---- empty + footer ---- */
 .dshtd-empty {
   padding: 40px 20px; text-align: center; color: var(--td-caption);
@@ -1224,6 +1273,9 @@ body[data-ds-dark-theme] .dshtd-status option {
 
 @media (prefers-reduced-motion: reduce) {
   .dshtd-progress > i, .dshtd-rowbtns { transition: none; }
+  /* Hold the bars at a flat mid-tone: the skeleton still communicates "loading"
+     by being there, without the sweep. */
+  .dshtd-skel-lead > i, .dshtd-skel-bar { animation: none; background: var(--td-border); }
 }
 `
 
@@ -2010,6 +2062,41 @@ function StatusPill({ item, store }: { item: TodoItem; store: TodoStore }): Reac
   )
 }
 
+/* Varied widths so the placeholder reads as a list of different tasks rather
+   than a stack of identical blocks. Eight rows fills the pane without implying
+   a specific count. */
+const SKELETON_WIDTHS = [62, 45, 78, 53, 70, 38, 66, 49]
+
+/**
+ * Placeholder shown while the list is being read.
+ *
+ * A skeleton rather than a spinner: the tab is a large surface, and bars in the
+ * list's own shape read as "this content is arriving" instead of blanking the
+ * area. The wrapper carries the live region so a screen reader is told the list
+ * is loading without narrating eight decorative rows.
+ * @returns the loading placeholder.
+ */
+function TodoSkeleton(): React.JSX.Element {
+  return (
+    <ul className="dshtd-skel" role="status" aria-live="polite" aria-busy="true">
+      <span className="dshtd-sronly">Loading tasks…</span>
+      {SKELETON_WIDTHS.map((width, i) => (
+        <li className="dshtd-skel-row" key={i} aria-hidden="true">
+          <span className="dshtd-skel-lead">
+            <i />
+          </span>
+          <span
+            className="dshtd-skel-bar"
+            /* Staggering the shimmer makes it sweep down the list instead of
+               every bar flashing in lockstep. */
+            style={{ width: `${width}%`, animationDelay: `${i * 70}ms` }}
+          />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /**
  * One task row.
  *
@@ -2662,7 +2749,7 @@ export function TodoView({
 
       <div className="dshtd-scroll">
         {state.status === 'loading' ? (
-          <div className="dshtd-empty">Loading…</div>
+          <TodoSkeleton />
         ) : state.status === 'error' ? (
           <div className="dshtd-empty">
             <b>Couldn&apos;t load todos</b>
