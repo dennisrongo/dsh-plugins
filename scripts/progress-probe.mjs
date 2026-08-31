@@ -90,14 +90,22 @@ const pages = []
 
 for (const testCase of CASES) {
   const css = cssOf(testCase.plugin, testCase.anchor)
+  /*
+   * The `#root { zoom: … }` wrapper is how dsh-theme applies its UI scale, and
+   * it must be REAL here: without it the 90% pass renders identically to 100%
+   * and reports a pass having exercised nothing.
+   */
   const html =
     '<!doctype html><meta charset=utf-8><style>' +
     'html,body{margin:0;background:#111;color:#eee}' +
+    '#root{zoom:var(--dshth-ui-scale,1)}' +
     css +
     '</style>' +
+    '<div id="root">' +
     `<div class="${testCase.wrapper}">` +
     testCase.skeleton +
     testCase.real +
+    '</div>' +
     '</div>'
   const page = join(dir, `${testCase.plugin}.html`)
   writeFileSync(page, html)
@@ -181,41 +189,75 @@ const MEASURE = `(() => {
 const failures = []
 const results = []
 
+/*
+ * 100% is the scale that hides an entire class of bug in this repo: measuring
+ * in viewport px and writing in author px is exactly self-consistent there and
+ * wrong by the zoom factor everywhere else. So each skeleton is measured at 90%
+ * too, applied the way dsh-theme applies it -- an inline custom property on
+ * <body> feeding `#root { zoom: … }` -- rather than as a device pixel ratio,
+ * which is a different mechanism with different rounding.
+ */
+const SCALES = [1, 0.9]
+
 for (const testCase of pages) {
-  // --- normal motion -----------------------------------------------------
-  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] }, sid)
-  await send('Page.navigate', { url: 'file:///' + testCase.page.replace(/\\/g, '/') }, sid)
-  await new Promise((r) => setTimeout(r, 450))
-  const { result: normal } = await send('Runtime.evaluate', { expression: MEASURE, returnByValue: true }, sid)
-  const data = JSON.parse(normal.result.value)
+  const perScale = {}
+
+  for (const scale of SCALES) {
+    await send(
+      'Emulation.setEmulatedMedia',
+      { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] },
+      sid,
+    )
+    await send('Page.navigate', { url: 'file:///' + testCase.page.replace(/\\/g, '/') }, sid)
+    await new Promise((r) => setTimeout(r, 420))
+    await send(
+      'Runtime.evaluate',
+      {
+        expression: `document.body.style.setProperty('--dshth-ui-scale', '${scale}'); true`,
+        returnByValue: true,
+      },
+      sid,
+    )
+    await new Promise((r) => setTimeout(r, 140))
+    const { result: normal } = await send('Runtime.evaluate', { expression: MEASURE, returnByValue: true }, sid)
+    const data = JSON.parse(normal.result.value)
+    const label = `${Math.round(scale * 100)}%`
+    perScale[label] = data
+
+    if (data.skel === null || data.real === null) {
+      failures.push(`${testCase.plugin} @ ${label}: fixture did not render both rows`)
+      continue
+    }
+    // The skeleton row must occupy the same box as the row it replaces, or the
+    // list jumps when real content arrives. The tolerance follows the zoom,
+    // since both sides are reported in true viewport px.
+    if (Math.abs(data.skel.h - data.real.h) > 1 * scale + 0.2) {
+      failures.push(
+        `${testCase.plugin} @ ${label}: skeleton row is ${data.skel.h}px but the real row is ${data.real.h}px — the swap would lurch`,
+      )
+    }
+    if (data.skel.pad !== data.real.pad) {
+      failures.push(
+        `${testCase.plugin} @ ${label}: skeleton padding ${data.skel.pad} != real row padding ${data.real.pad}`,
+      )
+    }
+    if (data.animCount < 1) {
+      failures.push(`${testCase.plugin} @ ${label}: the shimmer is not running — a keyframes block nothing references`)
+    }
+  }
 
   // --- reduced motion ----------------------------------------------------
+  // Checked once: the media query does not interact with the zoom, and what
+  // matters is that it actually STOPS the sweep rather than merely being
+  // declared somewhere the cascade ignores.
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }, sid)
   await send('Page.reload', {}, sid)
   await new Promise((r) => setTimeout(r, 450))
   const { result: reduced } = await send('Runtime.evaluate', { expression: MEASURE, returnByValue: true }, sid)
   const reducedData = JSON.parse(reduced.result.value)
 
-  results.push({ plugin: testCase.plugin, normal: data, reduced: reducedData })
+  results.push({ plugin: testCase.plugin, scales: perScale, reduced: reducedData })
 
-  if (data.skel === null || data.real === null) {
-    failures.push(`${testCase.plugin}: fixture did not render both rows`)
-    continue
-  }
-  // The skeleton row must occupy the same box as the row it replaces, or the
-  // list jumps when real content arrives.
-  if (Math.abs(data.skel.h - data.real.h) > 1) {
-    failures.push(
-      `${testCase.plugin}: skeleton row is ${data.skel.h}px but the real row is ${data.real.h}px — the swap would lurch`,
-    )
-  }
-  if (data.skel.pad !== data.real.pad) {
-    failures.push(`${testCase.plugin}: skeleton padding ${data.skel.pad} != real row padding ${data.real.pad}`)
-  }
-  if (data.animCount < 1) {
-    failures.push(`${testCase.plugin}: the shimmer is not running — a keyframes block nothing references`)
-  }
-  // And reduced motion must actually stop it, not merely declare a media query.
   if (reducedData.animCount !== 0) {
     failures.push(
       `${testCase.plugin}: prefers-reduced-motion did NOT stop the shimmer (${reducedData.animCount} animation(s) still running)`,
@@ -223,7 +265,14 @@ for (const testCase of pages) {
   }
 }
 
-console.log(JSON.stringify(results, null, 2))
+for (const entry of results) {
+  console.log(`\n  ${entry.plugin}`)
+  for (const [label, data] of Object.entries(entry.scales)) {
+    const geom = data.skel !== null && data.real !== null ? `${data.skel.h}/${data.real.h}px` : 'n/a'
+    console.log(`    ${label.padEnd(6)} skeleton/real ${geom.padEnd(16)} ${data.animCount} animation(s)`)
+  }
+  console.log(`    reduced-motion  ${entry.reduced.animCount} animation(s) running`)
+}
 
 ws.close()
 chrome.kill()
@@ -243,5 +292,6 @@ if (failures.length > 0) {
 }
 console.log('')
 console.log('  ok  every skeleton row matches the box of the row it replaces')
+console.log('  ok  ...at 100% AND 90% UI scale')
 console.log('  ok  every shimmer is actually running')
 console.log('  ok  prefers-reduced-motion stops every shimmer')

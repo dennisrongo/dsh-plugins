@@ -564,13 +564,19 @@ const CSS = `
   display: block; width: 100%; height: 10px; border-radius: 3px;
 }
 /* The shimmer animates BACKGROUND-POSITION over an oversized gradient, never a
-   transform or a box dimension, so it cannot nudge layout while it sweeps. */
+   transform or a box dimension, so it cannot nudge layout while it sweeps.
+
+   border-l2, NOT border-l1. Both are alpha over the surface, and on the LIGHT
+   theme l1 is #0000000a — black at 4% — which renders the bars at 1.11:1 and
+   leaves the pane reading as blank. l2 (#0000001a) is the token dsh-git and
+   dsh-todo already use for their own skeleton tones. Caught by
+   progress-probe.mjs, which measures both themes for exactly this. */
 .dshmem-skel-summary, .dshmem-skel-path > i, .dshmem-skel-stats > i {
   background: linear-gradient(
     90deg,
-    var(--dsw-alias-border-l1) 0%,
+    var(--dsw-alias-border-l2) 0%,
     var(--dsw-alias-interactive-bg-hover) 40%,
-    var(--dsw-alias-border-l1) 80%
+    var(--dsw-alias-border-l2) 80%
   );
   background-size: 300% 100%;
   animation: dshmem-shimmer 1.4s ease-in-out infinite;
@@ -584,7 +590,7 @@ const CSS = `
      by being there, without the sweep. */
   .dshmem-skel-summary, .dshmem-skel-path > i, .dshmem-skel-stats > i {
     animation: none;
-    background: var(--dsw-alias-border-l1);
+    background: var(--dsw-alias-border-l2);
   }
 }
 `

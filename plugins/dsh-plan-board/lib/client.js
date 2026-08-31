@@ -401,13 +401,19 @@ body.dsh-desktop-windows-titlebar-layout .dshpb-dock {
 .dshpb-skel-pill { height: 10px; width: 54px; border-radius: 999px; flex: none; }
 .dshpb-skel-when { height: 10px; width: 42px; border-radius: 3px; flex: none; }
 /* The shimmer animates BACKGROUND-POSITION over an oversized gradient, never a
-   transform or a box dimension, so it cannot nudge layout while it sweeps. */
+   transform or a box dimension, so it cannot nudge layout while it sweeps.
+
+   border-l2, NOT border-l1. Both are alpha over the surface, and on the LIGHT
+   theme l1 is #0000000a \u2014 black at 4% \u2014 which renders the bars at 1.11:1 and
+   leaves the pane reading as blank. l2 (#0000001a) is the token dsh-git and
+   dsh-todo already use for their own skeleton tones. Caught by
+   progress-probe.mjs, which measures both themes for exactly this. */
 .dshpb-skel-title > i, .dshpb-skel-pill, .dshpb-skel-when {
   background: linear-gradient(
     90deg,
-    var(--dsw-alias-border-l1) 0%,
+    var(--dsw-alias-border-l2) 0%,
     var(--dsw-alias-interactive-bg-hover) 40%,
-    var(--dsw-alias-border-l1) 80%
+    var(--dsw-alias-border-l2) 80%
   );
   background-size: 300% 100%;
   animation: dshpb-shimmer 1.4s ease-in-out infinite;
@@ -429,7 +435,7 @@ body.dsh-desktop-windows-titlebar-layout .dshpb-dock {
      by being there, without the sweep. */
   .dshpb-skel-title > i, .dshpb-skel-pill, .dshpb-skel-when {
     animation: none;
-    background: var(--dsw-alias-border-l1);
+    background: var(--dsw-alias-border-l2);
   }
 }
 /* Visually hidden, still announced. */
