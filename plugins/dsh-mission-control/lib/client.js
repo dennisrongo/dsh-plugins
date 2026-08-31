@@ -16277,6 +16277,9 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
 .dshmc-tile-title:hover { color: var(--mc-accent); }
 .dshmc-tile-body {
   flex: 1;
+  /* Without this a flex item refuses to shrink below its CONTENT height, so the
+     scroller never engages and the tile grows instead. */
+  min-height: 0;
   overflow-y: auto;
   padding: 7px 9px;
   display: flex; flex-direction: column; gap: 6px;
@@ -16284,6 +16287,10 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   scrollbar-width: thin;
   scrollbar-color: var(--mc-scrollbar) transparent;
 }
+/* Same shrink guard as the Stage tile below: children of a scrolling flex
+   column must keep their natural height, or a long transcript squeezes the
+   short rows (tool calls first) into unreadable lines. */
+.dshmc-tile-body > * { flex: 0 0 auto; }
 .dshmc-tile-msg { white-space: pre-wrap; word-break: break-word; }
 /* User messages: right-aligned bubble, mirroring the chat's userRow/bubble */
 .dshmc-tile-msg.user {
@@ -16536,6 +16543,9 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   max-height: 30vh; overflow-y: auto;
   scrollbar-width: thin; scrollbar-color: var(--mc-scrollbar) transparent;
 }
+/* Same shrink guard: past 30vh a long plan would squash every item rather
+   than scroll, and a wrapped todo would lose its lower lines. */
+.dshmc-todos-list > * { flex: 0 0 auto; }
 .dshmc-todo-item {
   display: flex; align-items: baseline; gap: 6px;
   font-size: var(--mc-msg-sm); line-height: var(--mc-msg-line);
@@ -16558,6 +16568,14 @@ body[data-ds-dark-theme] .dshmc-rowmenu { box-shadow: 0 0 0 1px rgba(0,0,0,0.5),
   scrollbar-width: thin;
   scrollbar-color: var(--mc-scrollbar) transparent;
 }
+/* A SCROLLING flex column still shrinks its children: flex-shrink defaults to
+   1, so once the transcript outgrows the tile every row is squeezed instead of
+   the container scrolling. Tool rows lose first \u2014 they have the least intrinsic
+   height \u2014 collapsing to bare lines whose name and badge are clipped out of
+   existence, which reads as "the tool calls disappeared" and gets worse as the
+   conversation grows. Pin every direct child at its natural height and let
+   overflow-y do the work it is there to do. */
+.dshmc-stage-tile-body > * { flex: 0 0 auto; }
 .dshmc-stage-tile-input {
   /* Column: the thumbnail strip stacks ABOVE the controls, so staged images
      never squeeze the textarea's width. */

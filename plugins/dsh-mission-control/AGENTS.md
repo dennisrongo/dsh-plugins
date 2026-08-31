@@ -207,6 +207,18 @@ duration of the render rather than exporting the tile, so the test exercises the
 composition instead of a parallel one. Verified by sabotage: breaking the `uiConversation`
 lookup, the snapshot merge, the wait merge, or the `snap.chat` fallback each turns it red.
 
+**A scrolling flex column must pin its children: `> * { flex: 0 0 auto; }`.** `flex-shrink`
+defaults to `1`, so a flex column squeezes its children rather than letting `overflow-y`
+engage. The symptom is progressive and impersonates a data bug: as a transcript grows the
+SHORTEST rows compress first, so **tool calls collapse to bare lines** with their name and
+badge clipped away while the prose around them still reads fine — and it worsens with
+conversation length, so it surfaces long after the code that caused it. Do not go looking for
+a missing payload: `tool-call` is still the node kind on 0.1.2, the payload is still
+`node.data.root`, and the settled name is still `root.call.name`. The same guard applies to
+`.dshmc-tile-body`, `.dshmc-stage-tile-body` and `.dshmc-todos-list`, and a flex ITEM that
+scrolls also needs `min-height: 0` or it never shrinks below its content and the scroller
+never engages at all. `test/smoke.mjs` pins all of it, sabotage-verified.
+
 **And an empty tail is not an empty session** — it is three states the tile must not conflate:
 the window is still loading (`cold`/`loading`/no snapshot yet), it failed (`error`), or the
 session really has no messages (`open`). Branch on `openState`, never infer from

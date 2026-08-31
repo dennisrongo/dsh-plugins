@@ -100,6 +100,27 @@ assert.ok(
   !/panel\.getBoundingClientRect\(\)\.width/.test(clientSrc),
   'a viewport-px rail width must not be written back as an author-px reservation',
 )
+// REGRESSION: every SCROLLING flex column must pin its children's height.
+//
+// `flex-shrink` defaults to 1, so a flex column squeezes its children instead
+// of letting the scroller engage. The symptom is progressive and looks like a
+// data bug: as a transcript grows, the SHORTEST rows are compressed first, so
+// tool calls collapse to bare lines with their name and badge clipped away
+// while the prose around them still reads fine. It worsens with conversation
+// length, which is why it surfaced late and looked like "tool calls
+// disappeared" rather than a layout fault.
+for (const selector of ['.dshmc-tile-body', '.dshmc-stage-tile-body', '.dshmc-todos-list']) {
+  assert.ok(
+    clientSrc.includes(`${selector} > * { flex: 0 0 auto; }`),
+    `${selector} children must not shrink (a long transcript squashes short rows into lines)`,
+  )
+}
+// A flex ITEM that scrolls also needs min-height: 0, or it refuses to shrink
+// below its content height and the scroller never engages at all.
+for (const block of [/\.dshmc-tile-body \{[^}]*min-height: 0/, /\.dshmc-stage-tile-body \{[^}]*min-height: 0/]) {
+  assert.ok(block.test(clientSrc), 'a scrolling flex item declares min-height: 0')
+}
+
 // The activity feed (Feed tab, FeedView, diffFleetEvents) was removed: pin its
 // absence so the markers cannot rot back in the way dshmc-burn-row once did.
 assert.ok(!clientSrc.includes('dshmc-feed'), 'no leftover feed styles in the bundle')
