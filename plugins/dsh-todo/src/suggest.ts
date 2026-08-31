@@ -7,12 +7,13 @@
  * for the same reason.
  */
 import {
-  DEFAULT_PRIORITY,
+  MAX_DESC,
+  MAX_LABEL,
   MAX_SUGGESTIONS,
-  PRIORITIES,
+  MAX_TEXT,
   SUGGESTIONS_FILE,
   type Suggestion,
-  type TodoPriority,
+  toPriority,
 } from './types.ts'
 
 /**
@@ -60,22 +61,28 @@ export function composeScanPrompt(digest: string, excludeTitles: readonly string
   return parts.join('\n\n')
 }
 
-/** Narrow an arbitrary value to a known priority band, defaulting rather than failing. */
-function toPriority(value: unknown): TodoPriority {
-  return typeof value === 'string' && (PRIORITIES as readonly string[]).includes(value)
-    ? (value as TodoPriority)
-    : DEFAULT_PRIORITY
-}
-
 /**
  * Strip a markdown code fence, if the model wrapped its JSON in one.
  *
  * Told "write only JSON", models still fence it often enough that a retry
  * round-trip is the wrong price to pay for a five-line unwrap.
+ *
+ * Takes everything between the FIRST opening fence and the LAST closing one,
+ * rather than requiring the fence to span the whole string. An anchored match
+ * failed four shapes models actually emit — trailing prose after the close,
+ * a lead-in sentence before the open, no newline before the close, and an
+ * uppercase `JSON` tag — each of which cost a Refresh round-trip.
+ *
+ * Deliberately mechanical: when no fence is present the input is returned
+ * UNTOUCHED, so prose containing no JSON still fails at `JSON.parse` instead
+ * of being mined for something that looks parseable.
  */
 function unfence(raw: string): string {
-  const fenced = /^\s*```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/.exec(raw)
-  return fenced === null ? raw : fenced[1]
+  const open = /```[ \t]*[A-Za-z0-9_-]*[ \t]*\r?\n?/.exec(raw)
+  if (open === null) return raw
+  const body = raw.slice(open.index + open[0].length)
+  const close = body.lastIndexOf('```')
+  return close === -1 ? raw : body.slice(0, close)
 }
 
 /**
@@ -117,10 +124,14 @@ export function parseSuggestions(
     // A titleless suggestion has nothing to show in a row, and inventing a
     // title would put a blank task in the backlog. Drop it.
     if (title.length === 0) continue
-    const evidence = typeof row.evidence === 'string' ? row.evidence.trim() : ''
+    const evidence = typeof row.evidence === 'string' ? row.evidence.trim().slice(0, MAX_LABEL) : ''
     suggestions.push({
-      title,
-      rationale: typeof row.rationale === 'string' ? row.rationale.trim() : '',
+      // Clamped for the same reason every sibling boundary clamps (index.ts,
+      // client.tsx, cli.ts): a suggestion is accepted into the backlog, where
+      // the stored caps are MAX_TEXT/MAX_DESC. This is the only boundary whose
+      // input is MODEL-generated, so it is the one most likely to run long.
+      title: title.slice(0, MAX_TEXT),
+      rationale: typeof row.rationale === 'string' ? row.rationale.trim().slice(0, MAX_DESC) : '',
       priority: toPriority(row.priority),
       // Absent optional fields are ABSENT KEYS, never '', matching TodoItem.
       ...(evidence.length > 0 ? { evidence } : {}),

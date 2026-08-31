@@ -1,6 +1,12 @@
 // src/types.ts
 var PRIORITIES = ["p0", "p1", "p2", "p3"];
 var DEFAULT_PRIORITY = "p2";
+function toPriority(value) {
+  return typeof value === "string" && PRIORITIES.includes(value) ? value : DEFAULT_PRIORITY;
+}
+var MAX_TEXT = 500;
+var MAX_DESC = 5e3;
+var MAX_LABEL = 60;
 var SUGGESTIONS_FILE = ".dsh/suggestions.json";
 var MAX_SUGGESTIONS = 12;
 
@@ -29,12 +35,12 @@ function composeScanPrompt(digest, excludeTitles) {
   );
   return parts.join("\n\n");
 }
-function toPriority(value) {
-  return typeof value === "string" && PRIORITIES.includes(value) ? value : DEFAULT_PRIORITY;
-}
 function unfence(raw) {
-  const fenced = /^\s*```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/.exec(raw);
-  return fenced === null ? raw : fenced[1];
+  const open = /```[ \t]*[A-Za-z0-9_-]*[ \t]*\r?\n?/.exec(raw);
+  if (open === null) return raw;
+  const body = raw.slice(open.index + open[0].length);
+  const close = body.lastIndexOf("```");
+  return close === -1 ? raw : body.slice(0, close);
 }
 function parseSuggestions(raw) {
   let parsed;
@@ -53,10 +59,14 @@ function parseSuggestions(raw) {
     const row = entry;
     const title = typeof row.title === "string" ? row.title.trim() : "";
     if (title.length === 0) continue;
-    const evidence = typeof row.evidence === "string" ? row.evidence.trim() : "";
+    const evidence = typeof row.evidence === "string" ? row.evidence.trim().slice(0, MAX_LABEL) : "";
     suggestions.push({
-      title,
-      rationale: typeof row.rationale === "string" ? row.rationale.trim() : "",
+      // Clamped for the same reason every sibling boundary clamps (index.ts,
+      // client.tsx, cli.ts): a suggestion is accepted into the backlog, where
+      // the stored caps are MAX_TEXT/MAX_DESC. This is the only boundary whose
+      // input is MODEL-generated, so it is the one most likely to run long.
+      title: title.slice(0, MAX_TEXT),
+      rationale: typeof row.rationale === "string" ? row.rationale.trim().slice(0, MAX_DESC) : "",
       priority: toPriority(row.priority),
       // Absent optional fields are ABSENT KEYS, never '', matching TodoItem.
       ...evidence.length > 0 ? { evidence } : {}

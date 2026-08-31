@@ -8,6 +8,15 @@
 import { strict as assert } from 'node:assert'
 import { composeScanPrompt, parseSuggestions } from '../lib/suggest.js'
 
+// The caps are stated as LITERALS, not imported: types.ts is bundled into each
+// entry point and never emitted as lib/types.js, and a test that imported the
+// same constant the code clamps with could only prove the code agrees with
+// itself. These are the stored caps from types.ts (MAX_TEXT / MAX_DESC /
+// MAX_LABEL) — if one moves, this test should fail and be re-read.
+const MAX_TEXT = 500
+const MAX_DESC = 5000
+const MAX_LABEL = 60
+
 let failures = 0
 /** @param {string} name @param {() => void} fn */
 function test(name, fn) {
@@ -69,6 +78,56 @@ test('a fenced code block is unwrapped', () => {
   assert.equal(out.ok, true)
 })
 
+// --- fence shapes a model actually emits -----------------------------------
+// Each of these fell through to ok:false before the unfence rewrite. The
+// wrapper KEYS stay narrow deliberately ({suggestions:[...]} only) — this is
+// mechanical string handling, not key guessing.
+
+test('a fence followed by trailing prose is unwrapped', () => {
+  const raw = '```json\n[{"title":"T","rationale":"R","priority":"p2"}]\n```\n\nDone!'
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 1)
+})
+
+test('a fence preceded by prose is unwrapped', () => {
+  const raw = 'Here you go:\n```json\n[{"title":"T","rationale":"R","priority":"p2"}]\n```'
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 1)
+})
+
+test('a fence with no newline before the close is unwrapped', () => {
+  const raw = '```json\n[{"title":"T","rationale":"R","priority":"p2"}]```'
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 1)
+})
+
+test('an uppercase language tag is unwrapped', () => {
+  const raw = '```JSON\n[{"title":"T","rationale":"R","priority":"p2"}]\n```'
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 1)
+})
+
+test('CRLF line endings still unwrap', () => {
+  // Pinned because the rewrite touches exactly the newline handling that made
+  // CRLF work before it.
+  const raw = '```json\r\n[{"title":"T","rationale":"R","priority":"p2"}]\r\n```'
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 1)
+})
+
+test('prose with no fence and no JSON still fails', () => {
+  // The guard against the opposite error: extraction must not become so eager
+  // that it manufactures a parse out of ordinary sentences.
+  const out = parseSuggestions('I looked at the codebase but found nothing to suggest.')
+  assert.equal(out.ok, false)
+  assert.ok(out.error.length > 0)
+})
+
 test('malformed JSON reports an error rather than throwing', () => {
   const out = parseSuggestions('not json at all')
   assert.equal(out.ok, false)
@@ -92,6 +151,41 @@ test('an entry with no title is dropped, not defaulted', () => {
   const out = parseSuggestions(raw)
   assert.equal(out.suggestions.length, 1)
   assert.equal(out.suggestions[0].title, 'Keeps')
+})
+
+// --- length clamps ---------------------------------------------------------
+// This module is the boundary for MODEL-generated text, and was the only one
+// in the package that did not clamp. Sibling boundaries: index.ts:388/397/403,
+// client.tsx:544, cli.ts:418.
+
+test('an overlong title is clamped to MAX_TEXT', () => {
+  const raw = JSON.stringify([{ title: 'a'.repeat(5000), rationale: 'R', priority: 'p2' }])
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions[0].title.length, MAX_TEXT)
+})
+
+test('an overlong rationale is clamped to MAX_DESC', () => {
+  const raw = JSON.stringify([{ title: 'T', rationale: 'b'.repeat(90_000), priority: 'p2' }])
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions[0].rationale.length, MAX_DESC)
+})
+
+test('overlong evidence is clamped to MAX_LABEL', () => {
+  const raw = JSON.stringify([{ title: 'T', rationale: 'R', priority: 'p2', evidence: 'c'.repeat(400) }])
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions[0].evidence.length, MAX_LABEL)
+})
+
+test('a clamp never invents an empty evidence key', () => {
+  // The clamp runs before the emptiness check, so the absent-key invariant
+  // (absent optional fields are ABSENT KEYS, never '') must still hold.
+  const raw = JSON.stringify([{ title: 'T', rationale: 'R', priority: 'p2', evidence: '   ' }])
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.ok(!('evidence' in out.suggestions[0]))
 })
 
 test('the list is capped', () => {
