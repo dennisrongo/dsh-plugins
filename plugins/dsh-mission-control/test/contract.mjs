@@ -47,7 +47,7 @@ assert.ok(markers.length > 0, 'the @Remote marker table is readable (one shared 
 const markedMethods = markers.map((m) => m.method).sort()
 const publishedMethods = TYPERT.invocations.map((d) => d.method).sort()
 assert.deepEqual(publishedMethods, markedMethods, '@Remote methods == published descriptors')
-assert.deepEqual(markedMethods, ['load', 'save'], 'the service publishes exactly load + save')
+assert.deepEqual(markedMethods, ['load', 'openTerminal', 'save'], 'the service publishes exactly load + save + openTerminal')
 
 // --- 3) Every descriptor is backed by a real method, and is well formed.
 for (const d of TYPERT.invocations) {
@@ -108,6 +108,13 @@ assert.ok(!saveRequest.safeParse({ state: 42 }).success, 'save rejects a non-str
 assert.ok(!saveRequest.safeParse({}).success, 'save requires the state key')
 assert.ok(byMethod.save.result.schema.safeParse({ ok: true }).success, 'save result is { ok: true }')
 assert.ok(!byMethod.save.result.schema.safeParse({ ok: false }).success, 'save result pins ok to true')
+
+const openTerminalRequest = byMethod.openTerminal.parameters[0].codec.schema
+assert.ok(openTerminalRequest.safeParse({ path: '/work/project' }).success, 'openTerminal accepts a path')
+assert.ok(!openTerminalRequest.safeParse({}).success, 'openTerminal requires the path key')
+assert.ok(!openTerminalRequest.safeParse({ path: 42 }).success, 'openTerminal rejects a non-string path')
+assert.ok(byMethod.openTerminal.result.schema.safeParse({ ok: true }).success, 'openTerminal result is { ok: true }')
+assert.ok(!byMethod.openTerminal.result.schema.safeParse({ ok: false }).success, 'openTerminal result pins ok to true')
 
 // --- 6) The real host output must satisfy its own published schemas. This is
 // the seam where an implementation change (say, load returning undefined for an

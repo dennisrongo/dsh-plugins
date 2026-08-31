@@ -15,8 +15,9 @@
  *
  * @module @dennisrongo/dsh-mission-control
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { spawn } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { delimiter, dirname, join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 
@@ -33,6 +34,56 @@ declare module '@deepseek-ai/cordis' {
 /** Result of a load: the stored payload, or null when nothing was saved yet. */
 export interface McLoadResult {
   state: string | null
+}
+
+/** How one platform opens a terminal window at a directory. */
+export interface TerminalLaunch {
+  command: string
+  args: string[]
+  /** Working directory for the spawned launcher; also `start`'s /D target. */
+  cwd?: string
+}
+
+/**
+ * Pick the launcher for a platform. Pure so the smoke suite can pin every
+ * platform's choice without actually opening a window:
+ *  - macOS: `open -a Terminal <dir>` (the stock terminal; it cd's to the dir)
+ *  - Windows: Windows Terminal when on PATH, else `cmd /c start` — `start`
+ *    needs the empty title argument (`""`) or a quoted /D path is eaten as
+ *    the window title.
+ *  - anything else: the freedesktop `x-terminal-emulator` indirection.
+ * @param platform - process.platform value being answered for.
+ * @param dir - directory the new terminal starts in; already stat-verified.
+ * @param hasWindowsTerminal - whether `wt.exe` resolved on PATH.
+ */
+export function terminalLaunchFor(
+  platform: NodeJS.Platform,
+  dir: string,
+  hasWindowsTerminal: boolean,
+): TerminalLaunch {
+  if (platform === 'darwin') return { command: 'open', args: ['-a', 'Terminal', dir] }
+  if (platform === 'win32') {
+    return hasWindowsTerminal
+      ? { command: 'wt.exe', args: ['-d', dir] }
+      : { command: 'cmd.exe', args: ['/c', 'start', '""', '/D', dir, 'cmd.exe'], cwd: dir }
+  }
+  return { command: 'x-terminal-emulator', args: [], cwd: dir }
+}
+
+/**
+ * Whether `bin` resolves on PATH. `spawn` would answer the same question via
+ * its async error event, but probing first lets openTerminal fall back from
+ * Windows Terminal to cmd instead of failing the whole call.
+ * @param bin - bare binary name, without extension.
+ */
+function onPath(bin: string): boolean {
+  const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']
+  for (const entry of (process.env.PATH ?? '').split(delimiter)) {
+    for (const ext of exts) {
+      if (existsSync(join(entry, bin + ext))) return true
+    }
+  }
+  return false
 }
 
 /** The panel's persisted state, one JSON cell per harness home. */
@@ -85,6 +136,51 @@ export class MissionControlService extends TypertRemoteService {
     const tmp = file + '.tmp'
     writeFileSync(tmp, state, 'utf8')
     renameSync(tmp, file)
+    return { ok: true }
+  }
+
+  /**
+   * Open a terminal window at a workspace directory. The spawn is
+   * fire-and-forget — detached, unref'd, stdio ignored — so the harness never
+   * waits on the terminal's lifetime; the promise resolves once the launcher
+   * process has actually spawned (an ENOENT launcher still rejects, which is
+   * the failure the client surfaces).
+   * @param request - `{ path }`, an existing directory, typically a
+   *   workspace root the client resolved from the current session.
+   */
+  @Remote
+  async openTerminal(request: { path: string }): Promise<{ ok: true }> {
+    const dir = request?.path
+    if (typeof dir !== 'string' || dir.length === 0) {
+      throw new Error('dsh-mission-control: path must be a non-empty string')
+    }
+    try {
+      if (!statSync(dir).isDirectory()) {
+        throw new Error(`dsh-mission-control: not a directory: ${dir}`)
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('dsh-mission-control:')) throw error
+      throw new Error(`dsh-mission-control: directory does not exist: ${dir}`)
+    }
+    const launch = terminalLaunchFor(
+      process.platform,
+      dir,
+      process.platform === 'win32' ? onPath('wt') : false,
+    )
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(launch.command, launch.args, {
+        cwd: launch.cwd,
+        detached: true,
+        stdio: 'ignore',
+      })
+      child.once('error', (error) => {
+        reject(new Error(`dsh-mission-control: could not open a terminal: ${error.message}`))
+      })
+      child.once('spawn', () => {
+        child.unref()
+        resolve()
+      })
+    })
     return { ok: true }
   }
 }

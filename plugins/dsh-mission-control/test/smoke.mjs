@@ -34,7 +34,11 @@ assert.ok(hostSrc.includes('dsh-mission-control.json'), 'host persists to the st
 const typert = await importLocal("lib/typert.host.js")
 assert.equal(typert.TYPERT.package, '@dennisrongo/dsh-mission-control', 'typert manifest names the package')
 assert.equal(typert.TYPERT.face, 'host', 'typert manifest is the host face')
-assert.equal(typert.TYPERT.invocations.length, 2, 'load + save descriptors are published')
+assert.equal(typert.TYPERT.invocations.length, 3, 'load + save + openTerminal descriptors are published')
+assert.ok(
+  typert.TYPERT.invocations.some((d) => d.method === 'openTerminal'),
+  'openTerminal is published to the gateway',
+)
 
 // --- 2/3) pure logic from the built client bundle (CJS body under the loader convention)
 const registered = []
@@ -64,6 +68,15 @@ assert.equal(typeof exports.packPomodoroEnvelope, 'function', 'exports packPomod
 assert.equal(typeof exports.parsePomodoroEnvelope, 'function', 'exports parsePomodoroEnvelope')
 const clientSrc = readFileSync(join(root, 'lib/client.js'), 'utf8')
 assert.ok(clientSrc.includes('dshMissionControl'), 'client mounts the host state remote')
+// The header's terminal button: renders only once the host remote is up
+// (hostReady), resolves the current session's workspace path, and calls the
+// host's openTerminal — which is what actually spawns the OS window.
+assert.ok(clientSrc.includes('IconTerminal'), 'header has a terminal icon button')
+assert.ok(clientSrc.includes('Open current workspace in a terminal'), 'terminal button is labelled')
+assert.ok(clientSrc.includes('openTerminal'), 'client calls the host openTerminal endpoint')
+assert.ok(clientSrc.includes('currentWorkspacePath'), 'the button resolves the current workspace')
+assert.ok(hostSrc.includes('openTerminal'), 'host implements openTerminal')
+assert.ok(hostSrc.includes('terminalLaunchFor'), 'host picks the launcher per platform')
 // The docked rail reserves its width in the shell frame so conversation views
 // reflow instead of sliding under it — PLUS a gutter. The chat never notices
 // (its column is centered), but full-width plugin views (Todo, Source

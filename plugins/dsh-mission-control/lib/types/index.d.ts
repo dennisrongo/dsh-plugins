@@ -12,6 +12,26 @@ declare module '@deepseek-ai/cordis' {
 export interface McLoadResult {
     state: string | null;
 }
+/** How one platform opens a terminal window at a directory. */
+export interface TerminalLaunch {
+    command: string;
+    args: string[];
+    /** Working directory for the spawned launcher; also `start`'s /D target. */
+    cwd?: string;
+}
+/**
+ * Pick the launcher for a platform. Pure so the smoke suite can pin every
+ * platform's choice without actually opening a window:
+ *  - macOS: `open -a Terminal <dir>` (the stock terminal; it cd's to the dir)
+ *  - Windows: Windows Terminal when on PATH, else `cmd /c start` — `start`
+ *    needs the empty title argument (`""`) or a quoted /D path is eaten as
+ *    the window title.
+ *  - anything else: the freedesktop `x-terminal-emulator` indirection.
+ * @param platform - process.platform value being answered for.
+ * @param dir - directory the new terminal starts in; already stat-verified.
+ * @param hasWindowsTerminal - whether `wt.exe` resolved on PATH.
+ */
+export declare function terminalLaunchFor(platform: NodeJS.Platform, dir: string, hasWindowsTerminal: boolean): TerminalLaunch;
 /** The panel's persisted state, one JSON cell per harness home. */
 export declare class MissionControlService extends TypertRemoteService {
     constructor(ctx: Context);
@@ -32,6 +52,20 @@ export declare class MissionControlService extends TypertRemoteService {
      */
     save(request: {
         state: string;
+    }): Promise<{
+        ok: true;
+    }>;
+    /**
+     * Open a terminal window at a workspace directory. The spawn is
+     * fire-and-forget — detached, unref'd, stdio ignored — so the harness never
+     * waits on the terminal's lifetime; the promise resolves once the launcher
+     * process has actually spawned (an ENOENT launcher still rejects, which is
+     * the failure the client surfaces).
+     * @param request - `{ path }`, an existing directory, typically a
+     *   workspace root the client resolved from the current session.
+     */
+    openTerminal(request: {
+        path: string;
     }): Promise<{
         ok: true;
     }>;

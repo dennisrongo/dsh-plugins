@@ -1233,6 +1233,9 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
 }
 .dshmc-icon-btn:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
 .dshmc-icon-btn.on { background: var(--mc-surface-active); color: var(--mc-text); }
+/* Disabled (no current workspace): visibly inert, never clickable-looking. */
+.dshmc-icon-btn:disabled { opacity: 0.45; cursor: default; }
+.dshmc-icon-btn:disabled:hover { background: transparent; color: var(--mc-text-3); }
 
 /* Settings drawer */
 .dshmc-settings {
@@ -3305,6 +3308,7 @@ export function parsePomodoroEnvelope(raw: string | null, config: PomodoroConfig
 interface HostStateRemote {
   load(request: Record<string, never>): Promise<{ state: string | null }>
   save(request: { state: string }): Promise<{ ok: true }>
+  openTerminal(request: { path: string }): Promise<{ ok: true }>
 }
 
 let hostRemote: HostStateRemote | null = null
@@ -4877,6 +4881,17 @@ function IconSettings(): React.JSX.Element {
   )
 }
 
+/** Terminal window with a prompt chevron: open the workspace in a terminal. */
+function IconTerminal(): React.JSX.Element {
+  return (
+    <Glyph>
+      <rect x="2" y="3" width="12" height="10" rx="2" />
+      <path d="M5 6.4l2.2 1.7L5 9.8" />
+      <line x1="8.4" y1="9.8" x2="11" y2="9.8" />
+    </Glyph>
+  )
+}
+
 /* Pomodoro transport glyphs. Filled shapes for play/pause read better than
    strokes at this size, so they set `fill` and clear the inherited stroke. */
 
@@ -5373,6 +5388,40 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
     subscribe(fn: () => void): () => void
   })
 
+  // The terminal button rides the host half, which mounts asynchronously and,
+  // on an older install, never mounts at all. onHostState fires exactly once
+  // the first load settles, so it doubles as the "remote is up" signal. A host
+  // from BEFORE openTerminal existed (updated client, unrestarted profile —
+  // the client is served from disk per request while the host loads at boot)
+  // gets a disabled button saying so, not a click that silently no-ops.
+  const [hostReady, setHostReady] = React.useState(hostLoaded && hostRemote !== null)
+  React.useEffect(() => onHostState(() => setHostReady(hostRemote !== null)), [])
+  const hostHasTerminal = hostReady && typeof hostRemote?.openTerminal === 'function'
+
+  /** Directory of the workspace the CURRENT session belongs to, if any. */
+  const currentWorkspacePath = React.useMemo(() => {
+    const current = list.current
+    if (current === undefined) return undefined
+    for (const w of workspaces?.items ?? []) {
+      if (w.sessionIds.some((id) => String(id) === String(current))) return w.path
+    }
+    return undefined
+  }, [list, workspaces])
+
+  const openTerminal = () => {
+    if (currentWorkspacePath === undefined) return
+    const remote = hostRemote
+    // A stale pairing (new client bundle, older host half) lacks the method;
+    // degrade to a log line rather than throwing out of a click handler.
+    if (!remote || typeof remote.openTerminal !== 'function') {
+      console.error('dsh-mission-control: the host half has no openTerminal (restart the profile)')
+      return
+    }
+    void remote.openTerminal({ path: currentWorkspacePath }).catch((error: unknown) => {
+      console.error('dsh-mission-control: could not open a terminal', error)
+    })
+  }
+
   React.useEffect(() => injectStyles(), [])
 
   const groups = React.useMemo(
@@ -5674,6 +5723,24 @@ export function MissionControl({ ctx }: { ctx: ClientContext }): React.JSX.Eleme
             >
               <IconPanelRight />
             </button>
+            {hostReady ? (
+              <button
+                className="dshmc-icon-btn"
+                data-dsh-no-drag=""
+                disabled={!hostHasTerminal || currentWorkspacePath === undefined}
+                onClick={openTerminal}
+                aria-label="Open current workspace in a terminal"
+                title={
+                  !hostHasTerminal
+                    ? 'Open in Terminal (restart the app to enable)'
+                    : currentWorkspacePath === undefined
+                      ? 'Open in Terminal (no session selected)'
+                      : `Open in Terminal — ${currentWorkspacePath}`
+                }
+              >
+                <IconTerminal />
+              </button>
+            ) : null}
             <button
               className={`dshmc-icon-btn${settingsOpen ? ' on' : ''}`}
               data-dsh-no-drag=""

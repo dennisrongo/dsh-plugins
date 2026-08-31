@@ -24,6 +24,10 @@ const loadResultSchema = z.object({ state: z.union([z.string(), z.null()]) })
 const saveRequestSchema = z.object({ state: z.string() })
 const saveResultSchema = z.object({ ok: z.literal(true) })
 
+/** openTerminal carries a workspace directory the host spawns a terminal at. */
+const openTerminalRequestSchema = z.object({ path: z.string() })
+const openTerminalResultSchema = z.object({ ok: z.literal(true) })
+
 /**
  * Build one direct, single-`request`-parameter descriptor.
  * @param method - host method name, which is also the wire method.
@@ -67,6 +71,7 @@ export const MC_REMOTE = {
   descriptors: [
     descriptor('load', loadRequestSchema, loadResultSchema),
     descriptor('save', saveRequestSchema, saveResultSchema),
+    descriptor('openTerminal', openTerminalRequestSchema, openTerminalResultSchema),
   ],
 }
 

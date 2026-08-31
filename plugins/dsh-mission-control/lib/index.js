@@ -47,12 +47,31 @@ var __privateSet = (obj, member, value, setter) => (__accessCheck(obj, member, "
 var __privateMethod = (obj, member, method) => (__accessCheck(obj, member, "access private method"), method);
 
 // src/index.ts
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 var MAX_STATE_BYTES = 64 * 1024;
-var _save_dec, _load_dec, _a, _init;
-var _MissionControlService = class _MissionControlService extends (_a = TypertRemoteService, _load_dec = [Remote], _save_dec = [Remote], _a) {
+function terminalLaunchFor(platform, dir, hasWindowsTerminal) {
+  if (platform === "darwin") return { command: "open", args: ["-a", "Terminal", dir] };
+  if (platform === "win32") {
+    return hasWindowsTerminal ? { command: "wt.exe", args: ["-d", dir] } : { command: "cmd.exe", args: ["/c", "start", '""', "/D", dir, "cmd.exe"], cwd: dir };
+  }
+  return { command: "x-terminal-emulator", args: [], cwd: dir };
+}
+__name(terminalLaunchFor, "terminalLaunchFor");
+function onPath(bin) {
+  const exts = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
+  for (const entry of (process.env.PATH ?? "").split(delimiter)) {
+    for (const ext of exts) {
+      if (existsSync(join(entry, bin + ext))) return true;
+    }
+  }
+  return false;
+}
+__name(onPath, "onPath");
+var _openTerminal_dec, _save_dec, _load_dec, _a, _init;
+var _MissionControlService = class _MissionControlService extends (_a = TypertRemoteService, _load_dec = [Remote], _save_dec = [Remote], _openTerminal_dec = [Remote], _a) {
   constructor(ctx) {
     super(ctx, "dshMissionControl");
     __runInitializers(_init, 5, this);
@@ -87,10 +106,45 @@ var _MissionControlService = class _MissionControlService extends (_a = TypertRe
     renameSync(tmp, file);
     return { ok: true };
   }
+  async openTerminal(request) {
+    const dir = request?.path;
+    if (typeof dir !== "string" || dir.length === 0) {
+      throw new Error("dsh-mission-control: path must be a non-empty string");
+    }
+    try {
+      if (!statSync(dir).isDirectory()) {
+        throw new Error(`dsh-mission-control: not a directory: ${dir}`);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("dsh-mission-control:")) throw error;
+      throw new Error(`dsh-mission-control: directory does not exist: ${dir}`);
+    }
+    const launch = terminalLaunchFor(
+      process.platform,
+      dir,
+      process.platform === "win32" ? onPath("wt") : false
+    );
+    await new Promise((resolve, reject) => {
+      const child = spawn(launch.command, launch.args, {
+        cwd: launch.cwd,
+        detached: true,
+        stdio: "ignore"
+      });
+      child.once("error", (error) => {
+        reject(new Error(`dsh-mission-control: could not open a terminal: ${error.message}`));
+      });
+      child.once("spawn", () => {
+        child.unref();
+        resolve();
+      });
+    });
+    return { ok: true };
+  }
 };
 _init = __decoratorStart(_a);
 __decorateElement(_init, 1, "load", _load_dec, _MissionControlService);
 __decorateElement(_init, 1, "save", _save_dec, _MissionControlService);
+__decorateElement(_init, 1, "openTerminal", _openTerminal_dec, _MissionControlService);
 __decoratorMetadata(_init, _MissionControlService);
 __name(_MissionControlService, "MissionControlService");
 var MissionControlService = _MissionControlService;
@@ -98,5 +152,6 @@ var index_default = MissionControlService;
 export {
   MAX_STATE_BYTES,
   MissionControlService,
-  index_default as default
+  index_default as default,
+  terminalLaunchFor
 };

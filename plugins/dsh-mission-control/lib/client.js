@@ -14638,6 +14638,8 @@ var loadRequestSchema = external_exports.object({});
 var loadResultSchema = external_exports.object({ state: external_exports.union([external_exports.string(), external_exports.null()]) });
 var saveRequestSchema = external_exports.object({ state: external_exports.string() });
 var saveResultSchema = external_exports.object({ ok: external_exports.literal(true) });
+var openTerminalRequestSchema = external_exports.object({ path: external_exports.string() });
+var openTerminalResultSchema = external_exports.object({ ok: external_exports.literal(true) });
 function descriptor(method, request, result) {
   return {
     id: `${PACKAGE}#${SERVICE}/${method}`,
@@ -14671,7 +14673,8 @@ var MC_REMOTE = {
   package: PACKAGE,
   descriptors: [
     descriptor("load", loadRequestSchema, loadResultSchema),
-    descriptor("save", saveRequestSchema, saveResultSchema)
+    descriptor("save", saveRequestSchema, saveResultSchema),
+    descriptor("openTerminal", openTerminalRequestSchema, openTerminalResultSchema)
   ]
 };
 
@@ -15293,6 +15296,9 @@ body.dsh-desktop-windows-titlebar-layout .dshmc-stage {
 }
 .dshmc-icon-btn:hover { background: var(--mc-surface-hover); color: var(--mc-text); }
 .dshmc-icon-btn.on { background: var(--mc-surface-active); color: var(--mc-text); }
+/* Disabled (no current workspace): visibly inert, never clickable-looking. */
+.dshmc-icon-btn:disabled { opacity: 0.45; cursor: default; }
+.dshmc-icon-btn:disabled:hover { background: transparent; color: var(--mc-text-3); }
 
 /* Settings drawer */
 .dshmc-settings {
@@ -18117,6 +18123,13 @@ function IconSettings() {
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M12.9 9.8a1.1 1.1 0 0 0 .22 1.21l.04.04a1.33 1.33 0 1 1-1.89 1.89l-.04-.04a1.1 1.1 0 0 0-1.21-.22 1.1 1.1 0 0 0-.67 1v.11a1.33 1.33 0 1 1-2.67 0v-.06a1.1 1.1 0 0 0-.72-1 1.1 1.1 0 0 0-1.21.22l-.04.04a1.33 1.33 0 1 1-1.89-1.89l.04-.04a1.1 1.1 0 0 0 .22-1.21 1.1 1.1 0 0 0-1-.67h-.11a1.33 1.33 0 1 1 0-2.67h.06a1.1 1.1 0 0 0 1-.72 1.1 1.1 0 0 0-.22-1.21l-.04-.04a1.33 1.33 0 1 1 1.89-1.89l.04.04a1.1 1.1 0 0 0 1.21.22h.05a1.1 1.1 0 0 0 .67-1v-.11a1.33 1.33 0 1 1 2.67 0v.06a1.1 1.1 0 0 0 .67 1 1.1 1.1 0 0 0 1.21-.22l.04-.04a1.33 1.33 0 1 1 1.89 1.89l-.04.04a1.1 1.1 0 0 0-.22 1.21v.05a1.1 1.1 0 0 0 1 .67h.11a1.33 1.33 0 1 1 0 2.67h-.06a1.1 1.1 0 0 0-1 .67Z" })
   ] });
 }
+function IconTerminal() {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Glyph, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { x: "2", y: "3", width: "12", height: "10", rx: "2" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M5 6.4l2.2 1.7L5 9.8" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("line", { x1: "8.4", y1: "9.8", x2: "11", y2: "9.8" })
+  ] });
+}
 function IconPlay() {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Glyph, { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M5.5 3.4v9.2l7-4.6z", fill: "currentColor", stroke: "none" }) });
 }
@@ -18465,6 +18478,28 @@ function MissionControl({ ctx }) {
   }, []);
   const list = useObservable(ctx.sessions.list);
   const workspaces = useObservable(ctx.workspaces.list);
+  const [hostReady, setHostReady] = import_react.default.useState(hostLoaded && hostRemote !== null);
+  import_react.default.useEffect(() => onHostState(() => setHostReady(hostRemote !== null)), []);
+  const hostHasTerminal = hostReady && typeof hostRemote?.openTerminal === "function";
+  const currentWorkspacePath = import_react.default.useMemo(() => {
+    const current = list.current;
+    if (current === void 0) return void 0;
+    for (const w of workspaces?.items ?? []) {
+      if (w.sessionIds.some((id) => String(id) === String(current))) return w.path;
+    }
+    return void 0;
+  }, [list, workspaces]);
+  const openTerminal = () => {
+    if (currentWorkspacePath === void 0) return;
+    const remote = hostRemote;
+    if (!remote || typeof remote.openTerminal !== "function") {
+      console.error("dsh-mission-control: the host half has no openTerminal (restart the profile)");
+      return;
+    }
+    void remote.openTerminal({ path: currentWorkspacePath }).catch((error51) => {
+      console.error("dsh-mission-control: could not open a terminal", error51);
+    });
+  };
   import_react.default.useEffect(() => injectStyles(), []);
   const groups = import_react.default.useMemo(
     () => buildGroups(list, workspaces, normalizeFleetSort(settings.fleetSort)),
@@ -18640,6 +18675,18 @@ function MissionControl({ ctx }) {
             children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconPanelRight, {})
           }
         ),
+        hostReady ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          "button",
+          {
+            className: "dshmc-icon-btn",
+            "data-dsh-no-drag": "",
+            disabled: !hostHasTerminal || currentWorkspacePath === void 0,
+            onClick: openTerminal,
+            "aria-label": "Open current workspace in a terminal",
+            title: !hostHasTerminal ? "Open in Terminal (restart the app to enable)" : currentWorkspacePath === void 0 ? "Open in Terminal (no session selected)" : `Open in Terminal \u2014 ${currentWorkspacePath}`,
+            children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(IconTerminal, {})
+          }
+        ) : null,
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
           "button",
           {

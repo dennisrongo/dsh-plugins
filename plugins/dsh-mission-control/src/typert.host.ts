@@ -44,6 +44,13 @@ export const TYPERT = {
             signature: '@Remote save(request: { state: string }): Promise<{ ok: true }>',
             summary: 'Atomically replace the state cell.',
           },
+          {
+            kind: 'method' as const,
+            name: 'openTerminal',
+            signature: '@Remote openTerminal(request: { path: string }): Promise<{ ok: true }>',
+            summary:
+              'Open the OS default terminal at a workspace directory (Windows Terminal or cmd on win32, Terminal.app on macOS).',
+          },
         ],
         types: [
           {

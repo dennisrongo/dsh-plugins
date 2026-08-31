@@ -9,6 +9,8 @@ var loadRequestSchema = z.object({});
 var loadResultSchema = z.object({ state: z.union([z.string(), z.null()]) });
 var saveRequestSchema = z.object({ state: z.string() });
 var saveResultSchema = z.object({ ok: z.literal(true) });
+var openTerminalRequestSchema = z.object({ path: z.string() });
+var openTerminalResultSchema = z.object({ ok: z.literal(true) });
 function descriptor(method, request, result) {
   return {
     id: `${PACKAGE}#${SERVICE}/${method}`,
@@ -43,7 +45,8 @@ var MC_REMOTE = {
   package: PACKAGE,
   descriptors: [
     descriptor("load", loadRequestSchema, loadResultSchema),
-    descriptor("save", saveRequestSchema, saveResultSchema)
+    descriptor("save", saveRequestSchema, saveResultSchema),
+    descriptor("openTerminal", openTerminalRequestSchema, openTerminalResultSchema)
   ]
 };
 
@@ -74,6 +77,12 @@ var TYPERT = {
             name: "save",
             signature: "@Remote save(request: { state: string }): Promise<{ ok: true }>",
             summary: "Atomically replace the state cell."
+          },
+          {
+            kind: "method",
+            name: "openTerminal",
+            signature: "@Remote openTerminal(request: { path: string }): Promise<{ ok: true }>",
+            summary: "Open the OS default terminal at a workspace directory (Windows Terminal or cmd on win32, Terminal.app on macOS)."
           }
         ],
         types: [
