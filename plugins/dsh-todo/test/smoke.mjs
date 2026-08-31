@@ -1030,7 +1030,13 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
 
   // 2. THE ordering invariant: preset and model both precede the prompt.
   const iPreset = launchSource.indexOf('agentPresets.select(')
-  const iModel = launchSource.indexOf('directoryFor(sessionId).select(')
+  // `directoryFor` and `.select(` are no longer one expression: the borrowed
+  // service can be unreachable from this fiber, so the handle is null-checked
+  // between them (see the remote.session crash). Anchor on directoryFor itself
+  // — the ordering invariant is about WHEN the model is applied, not about the
+  // call being a single chain, and pinning the chained form made a correct
+  // safety fix look like a regression.
+  const iModel = launchSource.indexOf('directoryFor(sessionId)')
   const iPrompt = launchSource.search(/binding\.session\.prompt\(/)
   assert.ok(iPreset !== -1 && iModel !== -1 && iPrompt !== -1,
     'launchSession must select a preset, select a model, and send a prompt')
@@ -1038,6 +1044,12 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
     'the agent preset must be selected BEFORE the prompt — a non-blank session silently ignores it')
   assert.ok(iModel < iPrompt,
     'the model must be selected BEFORE the prompt')
+
+  // Relaxing the marker above must not let the select itself disappear: assert
+  // the directory is still selected on, and still before the prompt.
+  const iModelSelect = launchSource.indexOf('.select(model)')
+  assert.ok(iModelSelect !== -1 && iModelSelect > iModel && iModelSelect < iPrompt,
+    'the resolved model directory must be select()ed, after directoryFor and before the prompt')
 
   // 3. Exactly one prompt call site, mirroring the single-removal rule: a
   //    second path would bypass the ordering above.
@@ -1086,23 +1098,54 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   assert.ok(!launch.composePrompt(bare).includes('Due:'), 'an unset due date is omitted entirely')
 }
 
-// flattenModels — tolerant of the shell's internal catalog shape
+// flattenModels — against the catalog shape the harness ACTUALLY sends.
+//
+// The previous version of this test invented its own shape (`model.provider`,
+// `group.label`, `group.items`) and asserted the code matched the invention. It
+// stayed green while the picker rendered EMPTY on every real harness, because a
+// group IS a provider: dsh-client-ui-model-selection builds every selection as
+// `{ provider: group.id, model: model.id }` with `model.name` as the label, and
+// there is no `model.provider` anywhere in that catalog. Requiring one meant
+// the guard skipped every row.
+//
+// So this fixture is copied from the real projection, not imagined. A test that
+// makes up its input can only ever prove the code agrees with the test.
 {
   const flat = launch.flattenModels([
-    { label: 'DeepSeek', models: [{ provider: 'deepseek', model: 'deepseek-chat', label: 'Chat' }] },
-    { title: 'Other', items: [{ provider: 'x', id: 'y' }] },
+    {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      models: [
+        { id: 'deepseek-chat', name: 'Chat' },
+        { id: 'deepseek-reasoner', name: 'Reasoner' },
+      ],
+    },
+    { id: 'anthropic', name: 'Anthropic', models: [{ id: 'claude-opus-4' }] },
   ])
-  assert.equal(flat.length, 2, 'both group and model key spellings are accepted')
-  assert.deepEqual(flat[0], { provider: 'deepseek', model: 'deepseek-chat', label: 'Chat', group: 'DeepSeek' })
-  assert.equal(flat[1].label, 'y', 'a model with no label falls back to its id')
-  // A malformed entry is skipped, never crashed on: this shape is the shell's
-  // internal projection, not a contract published for plugins.
-  assert.equal(launch.flattenModels([{ models: [{ label: 'no ids' }] }]).length, 0,
-    'an entry without provider/model is skipped')
+  assert.equal(flat.length, 3, 'every model in every group is offered')
+  assert.deepEqual(flat[0], {
+    provider: 'deepseek',
+    model: 'deepseek-chat',
+    label: 'Chat',
+    group: 'DeepSeek',
+  }, 'the PROVIDER comes from the group id, never from a field on the model')
+  assert.equal(flat[2].provider, 'anthropic', 'each group supplies its own provider')
+  assert.equal(flat[2].label, 'claude-opus-4', 'a model with no name falls back to its id')
+
+  // The regression that emptied the picker: a row carrying `provider` on the
+  // MODEL and nothing on the group must not resurrect the old reading.
+  const legacy = launch.flattenModels([
+    { models: [{ provider: 'deepseek', model: 'deepseek-chat', label: 'Chat' }] },
+  ])
+  assert.equal(legacy.length, 0, 'a group with no id yields nothing — the provider is the group')
+
+  assert.equal(launch.flattenModels([{ id: 'p', models: [{ name: 'no id' }] }]).length, 0,
+    'a model with no id is skipped')
   assert.equal(launch.flattenModels([]).length, 0)
 }
 
-// presetOptions — broken presets are unusable and the default leads
+// presetOptions — broken presets are unusable, the default leads, and a SHIPPED
+// preset is named in the shell's language rather than from file metadata.
 {
   const { options, defaultId } = launch.presetOptions([
     { id: 'standard', label: 'Standard' },
@@ -1114,6 +1157,30 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   assert.equal(launch.presetOptions([{ id: 'only' }]).defaultId, 'only',
     'with no explicit default the first healthy preset wins')
   assert.equal(launch.presetOptions([]).defaultId, undefined, 'no presets is a valid deployment')
+
+  // A SHIPPED preset's `name` is an internal value — Chinese in this build —
+  // and the shell never renders it: presetDisplayText() swaps in t(key) when
+  // trust === 'system'. Reading the raw field put "创造模式" in the picker on an
+  // English UI, which is what the user saw.
+  const t = (key) => ({ presetCordisName: 'Creator mode', presetStandardName: 'Standard mode' })[key]
+  const localized = launch.presetOptions([
+    { id: 'cordis', name: '创造模式', trust: 'system' },
+    { id: 'standard', name: '标准模式', trust: 'system' },
+  ], t)
+  assert.deepEqual(localized.options.map((o) => o.label), ['Creator mode', 'Standard mode'],
+    'a shipped preset is named from the locale, never from its roster metadata')
+
+  // A USER preset's name is the author's own copy and must never be translated.
+  const authored = launch.presetOptions([{ id: 'cordis', name: 'My Cordis', trust: 'user' }], t)
+  assert.equal(authored.options[0].label, 'My Cordis',
+    'a user-authored preset keeps its own name even when its id matches a built-in')
+
+  // Degradation: no locale service, or a lookup that echoes the key back.
+  assert.equal(launch.presetOptions([{ id: 'cordis', name: '创造模式', trust: 'system' }]).options[0].label,
+    '创造模式', 'with no locale service the roster metadata is the only option')
+  assert.equal(
+    launch.presetOptions([{ id: 'cordis', name: 'fallback', trust: 'system' }], (k) => k).options[0].label,
+    'fallback', 'a lookup that echoes the key back must not surface the raw key')
 }
 
 // --- sessionId reaches every face -------------------------------------------
@@ -1258,7 +1325,7 @@ assert.equal(registered.name, 'conversation.view', 'wrong slot name')
 assert.equal(registered.id, 'todo', 'wrong slot entry id')
 assert.equal(registered.order, 20, 'tab must sort after chat (0) and trajectory (10)')
 assert.equal(typeof registered.label, 'function', 'label must be a thunk so it re-reads per projection')
-assert.equal(registered.label(), 'Todo', 'wrong tab label')
+assert.equal(registered.label(), 'Tasks', 'wrong tab label')
 
 // The slot injects a per-workspace store, and refuses to guess when a session
 // belongs to no workspace.
