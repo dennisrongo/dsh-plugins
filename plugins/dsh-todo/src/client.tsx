@@ -25,9 +25,12 @@ import {
   flattenModels,
   launchSession,
   presetOptions,
+  sessionTitleFor,
   type LaunchContext,
+  type ModelChoice,
   type ModelOption,
   type PresetOption,
+  type RawCatalogGroup,
 } from './launch.ts'
 import {
   DEFAULT_PRIORITY,
@@ -1447,31 +1450,108 @@ export function LaunchDialog({
   // Load both pickers once the session exists. Failures are reported but never
   // block the launch: a session with no explicit pick runs the deployment
   // default, which is the same thing the New Session screen would have done.
+  //
+  // DEPEND ON THE SESSION ID, NOT THE OBJECTS. `ctx` is rebuilt by
+  // `launchContext()` on every slot render and `session` is a fresh
+  // `{ id }` literal, so both change identity on EVERY render of TodoView —
+  // which re-renders on every todo-store change via useSyncExternalStore.
+  // Depending on them re-ran this effect continuously, and each cycle set
+  // `cancelled = true` before the async load() could call setModels, so the
+  // picker stayed empty and NOTHING was ever logged. That silence is what made
+  // it look like the effect was never running: it was running constantly and
+  // cancelling itself every time.
+  //
+  // The ref keeps the latest ctx reachable without making it a dependency: the
+  // services it carries are stable for the dialog's lifetime even though the
+  // wrapper object is not.
+  const ctxRef = React.useRef(ctx)
+  ctxRef.current = ctx
+  const sessionId = session?.id ?? null
+
   React.useEffect(() => {
-    if (session === null) return
+    if (sessionId === null) return
+    const ctx = ctxRef.current
     let cancelled = false
+    const cleanups: (() => void)[] = []
 
-    const directory = ctx.modelDirectories?.directoryFor(session.id)
-    if (directory !== undefined) void directory
-      .load()
-      .then(() => {
+    /**
+     * Load the model list for the picker.
+     *
+     * Read the CATALOG RPC directly rather than the per-session model
+     * directory. The directory is the shell's own path, but it cannot serve a
+     * BLANK session: its syncInputs() needs the session's `modelSelection`
+     * projection, and that store is seeded only when a history PAGE loads
+     * (`installWindow` -> `projections.seed`). A session created seconds ago
+     * has no history, so the projection stays undefined, `status` stays
+     * "loading" and `groups` stays empty — permanently, with nothing thrown
+     * and nothing rejected. This dialog always launches a brand-new session,
+     * so that path could never have worked here.
+     *
+     * `remote.session.modelCatalog()` takes no arguments, is session
+     * independent, and returns the same `{ groups, default }` shape the
+     * directory would eventually have exposed.
+     */
+    const loadCatalog = async (): Promise<void> => {
+      const catalog = ctx.modelCatalog
+      if (catalog === undefined) return
+      try {
+        const reply = await catalog()
         if (cancelled) return
-        const snapshot = directory.store.getSnapshot()
-        const options = flattenModels(snapshot.groups)
-        setModels(options)
-        const current = snapshot.current
-        if (current) setModelKey(`${current.provider}/${current.model}`)
+        const value = (reply as { ok?: boolean; value?: unknown } | undefined)?.ok === true
+          ? (reply as { value: unknown }).value
+          : reply
+        const shaped = value as { groups?: RawCatalogGroup[]; default?: ModelChoice } | undefined
+        const options = flattenModels(shaped?.groups ?? [])
+        if (options.length === 0) {
+          if (typeof console !== 'undefined') {
+            console.warn('dsh-todo: modelCatalog() returned no model groups.')
+          }
+          return
+        }
+        const fallback = shaped?.default ?? null
+        // Mark the option a launch would use anyway. For a freshly created
+        // session this IS the deployment default: the durable projection is
+        // `pending ?? lastUsed`, and a blank session has neither.
+        setModels(
+          fallback === null
+            ? options
+            : options.map((m) =>
+                m.provider === fallback.provider && m.model === fallback.model
+                  ? { ...m, label: `${m.label} (default)` }
+                  : m,
+              ),
+        )
+        if (fallback !== null) setModelKey(`${fallback.provider}/${fallback.model}`)
         else if (options[0]) setModelKey(`${options[0].provider}/${options[0].model}`)
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) setError(describe(cause))
-      })
+      } catch (cause) {
+        if (cancelled) return
+        setError(describe(cause))
+        if (typeof console !== 'undefined') {
+          console.warn('dsh-todo: modelCatalog() failed —', cause)
+        }
+      }
+    }
+    void loadCatalog()
 
-    void ctx.remote.agentPresets
-      ?.list()
-      .then((reply) => {
+    // `ctx` here is a LaunchContext, NOT a cordis context: launchContext()
+    // already probed the namespaced service and parked the result on a PLAIN
+    // object (`remote: { agentPresets }`). So this read touches no proxy and
+    // cannot throw. Reaching for a cordis ctx here instead would reintroduce
+    // the `ctx.remote.agentPresets` trap AGENTS.md forbids — the dotted service
+    // is not a key on `remote`, and `remote` is itself a Proxy.
+    //
+    // The CALL is still guarded: the handle came from another fiber, and a
+    // present service is not a callable one (see directoryFor above).
+    let listing
+    try {
+      listing = ctx.remote.agentPresets?.list()
+    } catch {
+      listing = undefined
+    }
+    void listing
+      ?.then((reply) => {
         if (cancelled || !reply.ok) return
-        const { options, defaultId } = presetOptions(reply.value.presets)
+        const { options, defaultId } = presetOptions(reply.value.presets, ctx.presetLabel)
         setPresets(options)
         if (defaultId !== undefined) setPresetId(defaultId)
       })
@@ -1481,8 +1561,10 @@ export function LaunchDialog({
 
     return () => {
       cancelled = true
+      // The catalog subscription outlives a fast dialog dismissal otherwise.
+      for (const dispose of cleanups) dispose()
     }
-  }, [session, ctx])
+  }, [sessionId])
 
   const launch = (): void => {
     if (session === null || busy) return
@@ -1499,6 +1581,11 @@ export function LaunchDialog({
       presetId: presetId === '' ? undefined : presetId,
       model: chosen === undefined ? undefined : { provider: chosen.provider, model: chosen.model },
       prompt: text,
+      // Name the session after the task. Without this the shell's
+      // first-prompt-LLM provider invents a paraphrase of the prompt, which is
+      // how a launched session ends up with a vague name for work that already
+      // had an exact one.
+      title: sessionTitleFor(item),
     }).then(
       (launchedSessionId) => {
         onLaunched(launchedSessionId)
@@ -2357,6 +2444,13 @@ export function TodoView({
     item: TodoItem
     session: { id: string } | null
   } | null>(null)
+  // A LIVE mirror of `launching`, because `closeLaunch` runs TWICE on a
+  // successful launch and must not act on a value captured before the first
+  // call cleared it. See closeLaunch for the outage this prevents; a ref rather
+  // than the setter's updater form because discarding is a side effect, and
+  // React may invoke an updater more than once per commit.
+  const launchingRef = React.useRef<{ item: TodoItem; session: { id: string } | null } | null>(null)
+  launchingRef.current = launching
 
   React.useEffect(() => {
     injectStyles()
@@ -2453,9 +2547,30 @@ export function TodoView({
     return () => launch.sessions.open(id)
   }
 
-  /** Close the launch dialog, discarding a session that never got its prompt. */
+  /**
+   * Close the launch dialog, discarding a session that never got its prompt.
+   *
+   * **Read the open dialog from the live ref, not the render closure.** A
+   * successful launch calls BOTH of the dialog's callbacks — `onLaunched(id)`
+   * then `onClose()` — so this runs twice, as `(true)` then `(false)`. Captured
+   * as `const open = launching`, the second call still saw the session the
+   * first had just cleared, took the `!launched` branch, and archived the
+   * session that had at that moment received its prompt: a session that
+   * started, opened, and then died, with the task left flipped to
+   * `in-progress` pointing at it. Nothing surfaced, because `discardSession()`
+   * swallows failures by design.
+   *
+   * The ref is what makes it correct, and it is cleared HERE rather than at the
+   * next render: both calls happen in one handler, before React commits
+   * anything, so a mirror that only refreshed on render would be just as stale
+   * as the closure was. Taking the value and blanking the ref in the same step
+   * makes the close idempotent — the second call sees `null` and discards
+   * nothing, while a real dismissal still discards its live session exactly
+   * once.
+   */
   const closeLaunch = (launched: boolean): void => {
-    const open = launching
+    const open = launchingRef.current
+    launchingRef.current = null
     setLaunching(null)
     if (!launched && launch && open?.session) void discardSession(launch, open.session.id)
   }
@@ -2463,7 +2578,7 @@ export function TodoView({
   return (
     <div className="dshtd">
       <div className="dshtd-head">
-        <span className="dshtd-title">Todo</span>
+        <span className="dshtd-title">Tasks</span>
         <span
           className="dshtd-progress"
           role="progressbar"
@@ -2770,6 +2885,7 @@ function probeNamespaced(ctx: unknown, name: string): unknown {
 function launchContext(
   ctx: unknown,
   workspaceId: string,
+  modelCtxOf: () => unknown = () => ctx,
 ): (LaunchContext & { workspaceId: string }) | undefined {
   const c = ctx as {
     get?: (name: string) => unknown
@@ -2784,10 +2900,32 @@ function launchContext(
   // optional, every read must be guarded, or a profile that composes none of
   // them takes the whole tab down with it. `ctx.get(name)` is the safe probe;
   // the bare property read is the trap. test/context-probe.mjs pins both.
-  const probe = (name: 'sessions' | 'modelDirectories' | 'uiWorkspace'): unknown =>
+  const probe = (name: 'sessions' | 'modelDirectories' | 'uiWorkspace' | 'locale'): unknown =>
     probeNamespaced(c, name)
   const sessions = probe('sessions')
-  const modelDirectories = probe('modelDirectories')
+  // Resolved LAZILY, and from the model fiber rather than the root context.
+  //
+  // Two separate traps meet here. `directoryFor()` re-enters `remote.session`,
+  // so the handle must come from a fiber that DECLARES it or every call throws
+  // forever. And the model fiber may not have resolved yet when this runs —
+  // the slot's inject callback fires on first render and its result is cached
+  // — so reading eagerly pins the picker to undefined for good.
+  const modelDirectories = {
+    directoryFor(sessionId: string): unknown {
+      const svc = probeNamespaced(modelCtxOf(), 'modelDirectories') as
+        | { directoryFor?: (id: string) => unknown }
+        | undefined
+      if (svc === undefined || typeof svc.directoryFor !== 'function') return undefined
+      try {
+        return svc.directoryFor(sessionId)
+      } catch (cause) {
+        if (typeof console !== 'undefined') {
+          console.warn('dsh-todo: directoryFor() threw —', cause)
+        }
+        return undefined
+      }
+    },
+  }
   // agentPresets is a NAMESPACED SERVICE, reachable only as
   // `ctx['remote.agentPresets']` — it is NOT a key on the `remote` object, and
   // `c.remote?.agentPresets` is permanently undefined however the deployment is
@@ -2845,10 +2983,73 @@ function launchContext(
   return {
     workspaceId,
     sessions,
+    // Hand back a handle that is SAFE TO CALL, not merely one that exists.
+    // `directoryFor` re-enters `remote.session` inside the model-selection
+    // plugin, under a proxy bound to THIS fiber — which never declared it — so
+    // the service resolves and the first call throws. Guarding here means no
+    // consumer can get it wrong; guarding at each call site is how the third
+    // conversation.view outage happened, because the raw handle travelled
+    // further than the guards did. scripts/check-context.mjs calls this handle
+    // directly for exactly that reason.
+    // Already lazy and already guarded — see the `modelDirectories` binding
+    // above. Wrapping again here would only re-swallow the reported error.
     modelDirectories,
     remote: { agentPresets },
     uiWorkspace: probe('uiWorkspace'),
+    presetLabel: presetLabelLookup(probe('locale')),
+    // Resolved LAZILY from the model fiber, for the same two reasons as
+    // modelDirectories: `remote.session` is only reachable from a fiber that
+    // DECLARES it, and that fiber may resolve after this context is built and
+    // cached by the slot.
+    modelCatalog: (): Promise<unknown> => {
+      const session = probeNamespaced(modelCtxOf(), 'remote.session') as
+        | { modelCatalog?: () => Promise<unknown> }
+        | undefined
+      if (session === undefined || typeof session.modelCatalog !== 'function') {
+        return Promise.reject(new Error('remote.session.modelCatalog is unavailable'))
+      }
+      return session.modelCatalog()
+    },
   } as LaunchContext & { workspaceId: string }
+}
+
+/**
+ * Build a locale lookup for the shipped presets' display names.
+ *
+ * A shipped preset's name is TRANSLATED COPY, not file metadata: the roster row
+ * carries an internal `name` that is Chinese in this build, and the shell's own
+ * picker never shows it — it resolves `t('presetCordisName')` instead. Reading
+ * the raw field is what put "创造模式" in the mode picker on an English UI.
+ *
+ * `locale` is optional and borrowed like every other launch service, so both
+ * the READ and the CALL are guarded: `bind()` runs under a proxy bound to this
+ * fiber and can throw from inside the callee. Yielding undefined simply falls
+ * the caller back to the roster's own metadata.
+ *
+ * @param inner - the locale service, or undefined when absent.
+ * @returns a key lookup, or undefined when unavailable.
+ */
+function presetLabelLookup(inner: unknown): ((key: string) => string | undefined) | undefined {
+  if (inner === undefined || inner === null) return undefined
+  const svc = inner as { bind?: (ns: string) => (key: string) => string }
+  if (typeof svc.bind !== 'function') return undefined
+  let bound: ((key: string) => string) | undefined
+  try {
+    // The namespace ui-agent-preset registers its own bundle under; binding it
+    // here reuses those keys rather than shipping a second copy that would
+    // drift from the shell's wording at the next upgrade.
+    bound = svc.bind('settings.agentPreset')
+  } catch {
+    return undefined
+  }
+  if (typeof bound !== 'function') return undefined
+  return (key: string): string | undefined => {
+    try {
+      return bound(key)
+    } catch {
+      return undefined
+    }
+  }
 }
 
 export function apply(ctx: ClientContext): void {
@@ -2898,6 +3099,33 @@ export function apply(ctx: ClientContext): void {
   // dsh's own Remote consumers do: those rely on a separate assembly having
   // already mounted their contract, whereas this plugin mounts its own, which
   // would deadlock apply() against an effect that never runs.
+  // A context that DECLARES what `modelDirectories.directoryFor()` re-enters.
+  //
+  // The borrowed method reads `this.ctx.remote.session`, and a cordis proxy
+  // resolves a service only for a fiber that declared it — so calling it from
+  // this plugin's fiber throws `cannot get property "remote.session" without
+  // inject` on every attempt, permanently. Declaring it in a SEPARATE child
+  // fiber is the fix: this one is allowed to sit unresolved forever on a
+  // profile without ui-model-selection, and the tab never waits on it.
+  //
+  // Deliberately NOT added to the tab's own inject list — that would park the
+  // whole Todo view until an optional service appeared, which is the mistake
+  // the comment in the slot's inject callback warns about.
+  let modelCtx: unknown
+  ctx.effect(() => {
+    const fiber = anyCtx.inject(
+      ['sessions', 'modelDirectories', 'remote', 'remote.session'],
+      (scoped) => {
+        modelCtx = scoped
+      },
+    )
+    return () => {
+      modelCtx = undefined
+      fiber.dispose()
+    }
+  }, 'dsh-todo: model-selection fiber')
+  const modelFiberCtx = (): unknown => modelCtx
+
   ctx.effect(() => {
     // The launch services are NOT listed here: a profile that composes none of
     // them must still get a todo tab. They are read opportunistically via
@@ -2913,7 +3141,7 @@ export function apply(ctx: ClientContext): void {
             name: 'conversation.view',
             id: 'todo',
             order: 20,
-            label: () => 'Todo',
+            label: () => 'Tasks',
             inject: (sessionId: string) => {
               const workspaces = readyCtx.workspaces.list.getSnapshot().items as readonly {
                 workspaceId: string
@@ -2934,7 +3162,24 @@ export function apply(ctx: ClientContext): void {
               // to that inject list is the wrong fix: it would park the whole
               // TAB until an optional service appears. The root ctx sees every
               // registered service, and launchContext() still guards each read.
-              return { store, launch: launchContext(ctx, workspaceId) }
+              //
+              // `modelCtx` is separate and load-bearing: `directoryFor()` runs
+              // `this.ctx.remote.session` under a proxy bound to the CALLING
+              // fiber, so a fiber that never declared `remote.session` gets
+              // `cannot get property "remote.session" without inject` on every
+              // call, forever. It is a DECLARATION problem, not a timing one —
+              // retrying cannot fix it. modelFiberCtx() declares exactly what
+              // the shell's own ui-model-selection declares, in a child fiber
+              // that is allowed to stay unresolved, so the tab never waits on
+              // it and the picker works when the services are present.
+              // Pass the ACCESSOR, not its current value. The slot's inject
+              // callback runs when the conversation view first renders, which
+              // can be BEFORE the model fiber's callback has assigned its
+              // scoped context — and the result is cached, so an early read
+              // pinned `modelDirectories` to undefined for the dialog's whole
+              // life. Reading it lazily lets a fiber that resolves a moment
+              // later still supply the picker.
+              return { store, launch: launchContext(ctx, workspaceId, modelFiberCtx) }
             },
           },
           TodoView,

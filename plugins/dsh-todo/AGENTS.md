@@ -111,13 +111,14 @@ no harness packages on the import path.
 **There is no single harness call that creates a session with a model and a mode.**
 `sessions.create()` accepts only `{ workspaceId, sessionId? }`; the shipped
 `dsh-client-ui-agent-preset` says a pick "cannot simply ride along on
-sessions.create". So a launch is a five-step sequence, and its order is load-bearing:
+sessions.create". So a launch is a six-step sequence, and its order is load-bearing:
 
 1. `ctx.sessions.create({ workspaceId })`
 2. `ctx.remote.agentPresets.select(sessionId, presetId)`
 3. `ctx.modelDirectories.directoryFor(sessionId).select({ provider, model })`
 4. `binding.session.prompt([{ type: 'text', text }], 'queue')`
-5. `ctx.sessions.open(sessionId)`
+5. `binding.session.rename(title)`
+6. `ctx.sessions.open(sessionId)`
 
 - **Steps 2–3 MUST precede step 4, and getting it wrong fails SILENTLY.** The preset
   applier drops a pick aimed at a session that is no longer `blank`, and prompting is
@@ -133,6 +134,61 @@ sessions.create". So a launch is a five-step sequence, and its order is load-bea
   cancelled — without it every dismissed dialog litters the sidebar.
 - **The task flips to `in-progress` only after the prompt is accepted**, inside
   `onLaunched`. A failed launch must not leave a task claiming work that never started.
+- **A successful launch calls BOTH dialog callbacks, so `closeLaunch` runs TWICE.**
+  `LaunchDialog.launch()`'s resolve handler fires `onLaunched(id)` and then
+  `onClose()`, which route to `closeLaunch(true)` and `closeLaunch(false)`. With
+  the open dialog read from the render closure (`const open = launching`), the
+  second call still saw the session the first had just cleared — `setLaunching(null)`
+  does not rebind a captured `const` — took the `!launched` branch, and ran
+  `discardSession()` on the session that had *just received its prompt*. The
+  session started, got its brief, navigated, and then died, leaving the task
+  flipped to `in-progress` pointing at an archived session. **Nothing surfaced
+  anywhere**: `discardSession()` swallows every failure by design, on the
+  reasoning that the user cancelled and has moved on. That deliberate silence is
+  what turned a create-then-archive race into an invisible one.
+  The fix reads a `launchingRef` mirror and **blanks it in the same step**, which
+  is what makes the close idempotent. Both calls happen inside one handler,
+  before React commits anything, so a ref refreshed only during render would be
+  exactly as stale as the closure it replaced — and the setter's updater form is
+  wrong here too, because discarding is a side effect and React may invoke an
+  updater more than once per commit. `test/launch-lifecycle.mjs` pins both
+  directions: confirming must archive NOTHING, and cancelling must STILL archive,
+  since deleting the discard call trades this bug for the sidebar litter that
+  create-on-open pays `discardSession` to prevent. It carries its own sanity row
+  asserting the stale-closure form reproduces the archive, so the test cannot
+  pass vacuously.
+- **A launched session is NAMED after its task, and the only reachable rename is
+  on the SESSION BINDING.** Without step 5 the title is *invented*: the
+  deployment composes `dsh-session-title-first-prompt-llm`, which asks a model to
+  summarise the first human message, so a session launched for an exact task gets
+  a vague paraphrase of `composePrompt()` output instead of the name the task
+  already had.
+  The obvious route is a dead end. `sessionTitle` is a **host** service, its
+  `rename()` carries **no `@Remote` decorator**, and `dsh-session-title`'s client
+  face is literally `export {}` — types only, no runtime API. The client half
+  therefore cannot reach it, and no amount of `inject` will change that. The path
+  that works is the one the shell's own sidebar uses
+  (`dsh-client-ui-workspace/lib/client.js:2720`):
+  `sessions.binding(sessionId).session.rename(title)` — **the same binding object
+  this module already holds to send the prompt**, so it costs no new service and
+  no new guarded read.
+  Three properties of that call, all read from the connection source
+  (`dsh-client-connection/lib/client.js:3712`) rather than assumed:
+  - It records `source: { kind: 'user' }`, which **PINS the title** — a user
+    rename permanently supersedes automatic generation. That is the intent here,
+    but it means the name is final, not a first guess the model may improve.
+  - It normalises (`trim`, collapse whitespace runs) and **refuses a blank title**
+    with `title-invalid`. `sessionTitleFor()` mirrors that normalisation so a task
+    whose title is whitespace-only yields `undefined` and skips the call entirely,
+    rather than spending a round-trip to be told no.
+  - It is **step 5, after the prompt, deliberately.** Unlike the preset there is no
+    blank-session window to beat — the connection just appends a `session/title`
+    event — so going earlier buys nothing, while going later means a launch that
+    failed above leaves no renamed session behind to explain.
+  A rename failure is **non-fatal**, unlike the mode: a launch the user already
+  confirmed must not fail over a cosmetic title, and the fallback is exactly the
+  status quo. Both the call and the await are guarded, because `rename` is a
+  borrowed face that may be absent on an older binding.
 - **The launch services are NOT in the plugin's `inject` array.** `sessions`,
   `modelDirectories` and `remote.agentPresets` are read opportunistically by
   `launchContext()`; a profile composing none of them still gets a working todo tab
@@ -165,6 +221,25 @@ sessions.create". So a launch is a five-step sequence, and its order is load-bea
     (`slot entry crashed in 'conversation.view'` in the browser console). There is
     no fallback now and there must not be one: the namespaced form is the only
     correct access, so the tail bought nothing and cost two outages.
+  - **A service that RESOLVES is not a service you can CALL.** A separate bug
+    class from every read above, and the cause of the THIRD `conversation.view`
+    outage: `cannot get property "remote.session" without inject` — naming a
+    service this package's source never mentions anywhere.
+    `modelDirectories.directoryFor()` runs `this.ctx.remote.session` inside
+    `dsh-client-ui-model-selection` (`lib/client.js:301` — the
+    `Proxy.directoryFor` frame in the stack trace), but the proxy carrying that
+    call is bound to **dsh-todo's** fiber, which declares only `remote.dshTodo`,
+    `workspaces`, `slots`. So every existence guard passes — `ctx.get()` returns
+    it, `probeNamespaced` returns it, `launchContext` stores it — and the FIRST
+    METHOD CALL throws. Guarding the READ cannot catch this; the throw happens
+    inside the callee.
+    Guard at the **boundary**, not per call site: `safeModelDirectories()` wraps
+    the handle once in `launchContext()` so `directoryFor` yields `undefined`
+    instead of throwing, collapsing "unreachable" into the already-supported
+    "absent" state (no picker, launch on the deployment default). Wrapping once
+    is the point — the raw handle reached two call sites, and a per-site guard is
+    one forgotten `try` away from outage four. `dsh-mission-control` had guarded
+    both its `directoryFor` calls all along, which is why it never broke.
   - **Stub service objects as throwing Proxies, never plain objects** — letting
     symbols through, since cordis probes its own tracker symbols. A plain-object
     stub answers `undefined` for any missing key and therefore cannot fail, which
@@ -180,6 +255,27 @@ sessions.create". So a launch is a five-step sequence, and its order is load-bea
     **Stub the service the way the harness registers it**, not the way the code
     happens to read it: the earlier matrix stubbed `remote.agentPresets` as a key
     and so stayed green against a UI where the button never appeared.
+- **A catalog GROUP is a PROVIDER, and a shipped preset's name is TRANSLATED
+  COPY.** Both pickers were broken for the same underlying reason — the shapes
+  were guessed rather than read — and both failed silently.
+  `dsh-client-ui-model-selection` builds every selection as
+  `{ provider: group.id, model: model.id }`, labels it `model.name`, and heads
+  the group with `group.name`; there is **no `model.provider` anywhere** in that
+  catalog. `flattenModels` required one, so its guard skipped every row and the
+  model picker rendered EMPTY with no error. The smoke test had invented its own
+  fixture (`model.provider`, `group.label`, `group.items`) and asserted the code
+  matched the invention, so it stayed green throughout — **a test that makes up
+  its input can only prove the code agrees with the test.** The fixture is now
+  copied from the real projection, and a negative row pins that a group without
+  an `id` yields nothing.
+  Likewise `presetDisplayText()` resolves a preset whose `trust === 'system'`
+  through `t('presetCordisName')` and never renders the roster's own `name` —
+  which in this build is Chinese. Reading the raw field put **创造模式** in the
+  mode picker on an English UI. `presetOptions` now takes an optional locale
+  lookup, translates ONLY the four shipped ids
+  (`standard`/`ptc`/`minimal`/`cordis`), leaves a user-authored preset's name
+  alone, and discards a lookup that echoes the key back. `locale` is optional
+  and borrowed like the rest, so both the read and `bind()` are guarded.
 - **Superpowers and the skills catalog need nothing here.** `dsh-superpowers` registers
   a system-prompt section on the context-GLOBAL layer, and `dsh-scope` merges every
   view starting from that layer before overlaying preset shadows — so a launched
@@ -190,7 +286,7 @@ sessions.create". So a launch is a five-step sequence, and its order is load-bea
   12/14/16/20 in this package, which is stricter than the repo-wide scale.
 
 **`sessionId` records where the work went** — the sixth field, and the first to cross all
-SIX faces (the five places above plus the CLI). `launchSession()` returns the id and
+SIX faces (the five places in "Adding a field" plus the CLI). `launchSession()` returns the id and
 `onLaunched` writes it in the SAME `store.update` as the `in-progress` flip, so the
 status and the session can never disagree about whether work started.
 
