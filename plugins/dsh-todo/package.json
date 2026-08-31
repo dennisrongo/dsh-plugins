@@ -34,7 +34,7 @@
   "scripts": {
     "build": "node build/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node build/build.mjs && node test/smoke.mjs && node test/context-probe.mjs && node test/launch-effect.mjs && node test/launch-lifecycle.mjs && node test/suggest.test.mjs && node test/cli.test.mjs && node test/cli-integration.mjs",
+    "test": "node build/build.mjs && node test/smoke.mjs && node test/context-probe.mjs && node test/launch-effect.mjs && node test/launch-lifecycle.mjs && node test/suggest.test.mjs && node test/scan.test.mjs && node test/cli.test.mjs && node test/cli-integration.mjs",
     "test:icons": "node test/icon-probe.mjs",
     "test:modal": "node test/modal-probe.mjs",
     "test:cli": "node test/cli.test.mjs",
