@@ -13,6 +13,17 @@
  */
 import React from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import {
+  type BarPos,
+  type ClampBox,
+  POS_KEY,
+  clampPx,
+  formatPos,
+  loadPosFromStores,
+  posCookieWrite,
+  posToPx,
+  pxToPos,
+} from './position'
 
 /** Required services (cordis fiber inject — service access is granted per-fiber). */
 export const inject = ['slots']
@@ -116,6 +127,32 @@ function saveUnit(unit: TempUnit): void {
     // private mode / storage disabled — the toggle still works for this session
   }
 }
+
+/** Read a parked position: cookie first, then localStorage. */
+function loadPos(): BarPos | null {
+  try {
+    return loadPosFromStores(document.cookie, (key) => window.localStorage.getItem(key))
+  } catch {
+    return null
+  }
+}
+
+/** Persist a parked position to both stores. */
+function savePos(pos: BarPos): void {
+  try {
+    document.cookie = posCookieWrite(pos)
+  } catch {
+    // cookies refused — localStorage below still gives per-origin persistence
+  }
+  try {
+    window.localStorage.setItem(POS_KEY, formatPos(pos))
+  } catch {
+    // storage disabled — the spot still applies for this session
+  }
+}
+
+/** Pixels a pointer must move before the gesture is a drag, not a click. */
+const DRAG_THRESHOLD_PX = 4
 
 // ---------------------------------------------------------------------------
 // Fetching
@@ -268,9 +305,10 @@ const BAR_STYLES = `
   font: 400 13px/1.4 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
   font-variant-numeric: tabular-nums;
   box-shadow: var(--dsw-shadow-lv3, 0 0 1px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.12));
-  cursor: default;
+  cursor: grab;
   user-select: none;
   white-space: nowrap;
+  touch-action: none;
   /* DSH Desktop on Windows overlays a 36px window-drag strip at the top of the
      viewport (#dsh-desktop-windows-drag-region: -webkit-app-region: drag,
      z-index 2147483644, pointer-events: none) that the compositor resolves
@@ -286,9 +324,12 @@ const BAR_STYLES = `
 body.dsh-desktop-windows-titlebar-layout .dshwx {
   /* Clear the desktop drag strip: 36px strip + the usual 8px gap. The body
      class is added by DSH Desktop's preload on Windows only, so the browser
-     and non-Windows builds keep top: 8px. */
+     and non-Windows builds keep top: 8px. A user-placed inline top overrides
+     this; clampPx's minTop keeps a drag from parking back inside the strip. */
   top: 44px;
 }
+.dshwx[data-placed] { transform: none; }
+.dshwx[data-dragging] { cursor: grabbing; }
 body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 24px rgba(0,0,0,0.5); }
 .dshwx[hidden] { display: none; }
 .dshwx-icon { font-size: 16px; }
@@ -438,6 +479,27 @@ function zoomOf(el: HTMLElement): number {
   if (typeof own === 'number' && own > 0) return own
   const width = el.getBoundingClientRect().width
   return el.offsetWidth > 0 && width > 0 ? width / el.offsetWidth : 1
+}
+
+/**
+ * Author-px floor for `top` so a drag cannot park the pill inside DSH
+ * Desktop's Windows window-drag strip (the same 44px the unplaced CSS uses).
+ */
+function desktopMinTop(): number {
+  return document.body.classList.contains('dsh-desktop-windows-titlebar-layout') ? 44 : 8
+}
+
+/** Clamp box for the pill, in author px (the space `style.left`/`top` use). */
+function clampBoxOf(el: HTMLElement, zoom: number): ClampBox {
+  const rect = el.getBoundingClientRect()
+  return {
+    width: rect.width / zoom,
+    height: rect.height / zoom,
+    viewW: window.innerWidth / zoom,
+    viewH: window.innerHeight / zoom,
+    minTop: desktopMinTop(),
+    pad: 8,
+  }
 }
 
 /**
@@ -607,34 +669,162 @@ function useBandFit(ref: React.RefObject<HTMLDivElement | null>): BandFit | null
 // Component
 // ---------------------------------------------------------------------------
 
+interface DragSession {
+  pointerId: number
+  startX: number
+  startY: number
+  origLeft: number
+  origTop: number
+  zoom: number
+  moved: boolean
+}
+
 function WeatherBar(): React.JSX.Element {
   const [state, setState] = React.useState<WeatherState>({ status: 'loading' })
   const [busy, setBusy] = React.useState(false)
   const [unit, setUnit] = React.useState<TempUnit>(loadUnit)
+  const [placed, setPlaced] = React.useState<BarPos | null>(loadPos)
+  const [livePx, setLivePx] = React.useState<{ left: number; top: number } | null>(null)
+  const [dragging, setDragging] = React.useState(false)
+  const drag = React.useRef<DragSession | null>(null)
 
   // Every branch below renders the same pill shell, so the ref, the measured
   // centre and the tier are assembled once and spread — a branch that forgot
   // them would silently go back to viewport-centred and slide under the panel.
   const ref = React.useRef<HTMLDivElement | null>(null)
   const fit = useBandFit(ref)
+  const parked = placed !== null || dragging
+  const measured = tierOf(fit?.width)
+  const fitTier = parked && measured === 'none' ? 'tiny' : measured
+
+  React.useLayoutEffect(() => {
+    if (placed === null || dragging) return
+    const el = ref.current
+    if (el === null) return
+    const apply = (): void => {
+      const zoom = zoomOf(el)
+      if (el.getBoundingClientRect().height === 0) return
+      const next = posToPx(placed, clampBoxOf(el, zoom))
+      setLivePx((prev) =>
+        prev !== null && Math.abs(prev.left - next.left) < 0.5 && Math.abs(prev.top - next.top) < 0.5
+          ? prev
+          : next,
+      )
+    }
+    apply()
+    const resize = new ResizeObserver(apply)
+    resize.observe(el)
+    const scaleWatch = new MutationObserver(apply)
+    scaleWatch.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] })
+    window.addEventListener('resize', apply)
+    return () => {
+      resize.disconnect()
+      scaleWatch.disconnect()
+      window.removeEventListener('resize', apply)
+    }
+  }, [placed, dragging])
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return
+    const node = event.target
+    if (node instanceof Element && node.closest('button')) return
+    const el = ref.current
+    if (el === null) return
+    const zoom = zoomOf(el)
+    const rect = el.getBoundingClientRect()
+    el.setPointerCapture(event.pointerId)
+    drag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      origLeft: rect.left / zoom,
+      origTop: rect.top / zoom,
+      zoom,
+      moved: false,
+    }
+  }
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const session = drag.current
+    if (session === null || event.pointerId !== session.pointerId) return
+    const el = ref.current
+    if (el === null) return
+    const dx = event.clientX - session.startX
+    const dy = event.clientY - session.startY
+    if (!session.moved) {
+      if (dx * dx + dy * dy < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return
+      session.moved = true
+      setDragging(true)
+    }
+    const next = clampPx(
+      session.origLeft + dx / session.zoom,
+      session.origTop + dy / session.zoom,
+      clampBoxOf(el, session.zoom),
+    )
+    setLivePx(next)
+  }
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const session = drag.current
+    if (session === null || event.pointerId !== session.pointerId) return
+    drag.current = null
+    const el = ref.current
+    if (!session.moved || el === null) {
+      setDragging(false)
+      return
+    }
+    const box = clampBoxOf(el, session.zoom)
+    const next = clampPx(
+      session.origLeft + (event.clientX - session.startX) / session.zoom,
+      session.origTop + (event.clientY - session.startY) / session.zoom,
+      box,
+    )
+    const pos = pxToPos(next.left, next.top, box)
+    setPlaced(pos)
+    setLivePx(next)
+    setDragging(false)
+    savePos(pos)
+  }
+
+  const bandStyle =
+    fit === null || fit.width <= 0
+      ? {}
+      : {
+          left: `${fit.centre / fit.zoom}px`,
+          maxWidth: `${fit.width / fit.zoom}px`,
+        }
+  const parkedStyle =
+    livePx === null
+      ? { transform: 'none' as const }
+      : {
+          left: `${livePx.left}px`,
+          top: `${livePx.top}px`,
+          transform: 'none' as const,
+        }
+
   const shell = {
     ref,
     className: 'dshwx',
-    'data-fit': tierOf(fit?.width),
+    // A parked bar must not vanish when a dock claims the top band — the user
+    // put it somewhere on purpose. Map the squeezed-out tier up to tiny so it
+    // still sheds rather than hiding.
+    'data-fit': fitTier,
     // A non-positive width is the squeezed-out case: the `none` tier hides the
     // bar, and writing a negative max-width would be an ignored declaration
     // that left it at full size behind the overlay.
     //
     // Both lengths are divided by the zoom: `fit` is measured in viewport px
     // and these are author px the zoom scales again (see zoomOf).
-    ...(fit === null || fit.width <= 0
-      ? {}
-      : {
-          style: {
-            left: `${fit.centre / fit.zoom}px`,
-            maxWidth: `${fit.width / fit.zoom}px`,
-          },
-        }),
+    ...(parked
+      ? { 'data-placed': '', style: parkedStyle }
+      : fit === null || fit.width <= 0
+        ? {}
+        : { style: bandStyle }),
+    ...(dragging ? { 'data-dragging': '' } : {}),
+    onPointerDown,
+    onPointerMove,
+    onPointerUp: endDrag,
+    onPointerCancel: endDrag,
   }
 
   const toggleUnit = () => {

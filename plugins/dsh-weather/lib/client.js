@@ -44,6 +44,81 @@ __export(client_exports, {
 });
 module.exports = __toCommonJS(client_exports);
 var import_react = __toESM(require("react"), 1);
+
+// src/position.ts
+var POS_COOKIE = "dsh-weather-pos";
+var POS_KEY = "dsh-weather:pos";
+var MAX_AGE = 31536e4;
+function formatPos(pos) {
+  return `${pos.x.toFixed(4)},${pos.y.toFixed(4)}`;
+}
+function parsePos(raw) {
+  if (raw == null || raw === "") return null;
+  const comma = raw.indexOf(",");
+  if (comma === -1) return null;
+  const x = Number(raw.slice(0, comma));
+  const y = Number(raw.slice(comma + 1));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x, y };
+}
+function rangeOf(box) {
+  const minLeft = box.pad;
+  const maxLeft = Math.max(minLeft, box.viewW - box.width - box.pad);
+  const minTop = Math.max(box.pad, box.minTop);
+  const maxTop = Math.max(minTop, box.viewH - box.height - box.pad);
+  return { minLeft, maxLeft, minTop, maxTop };
+}
+function clampPx(left, top, box) {
+  const { minLeft, maxLeft, minTop, maxTop } = rangeOf(box);
+  return {
+    left: Math.min(maxLeft, Math.max(minLeft, left)),
+    top: Math.min(maxTop, Math.max(minTop, top))
+  };
+}
+function posToPx(pos, box) {
+  const { minLeft, maxLeft, minTop, maxTop } = rangeOf(box);
+  return {
+    left: minLeft + pos.x * (maxLeft - minLeft),
+    top: minTop + pos.y * (maxTop - minTop)
+  };
+}
+function pxToPos(left, top, box) {
+  const { minLeft, maxLeft, minTop, maxTop } = rangeOf(box);
+  const spanX = maxLeft - minLeft;
+  const spanY = maxTop - minTop;
+  return {
+    x: spanX <= 0 ? 0 : (left - minLeft) / spanX,
+    y: spanY <= 0 ? 0 : (top - minTop) / spanY
+  };
+}
+function readCookie(jar, name) {
+  for (const part of jar.split(";")) {
+    const at = part.indexOf("=");
+    if (at === -1) continue;
+    if (part.slice(0, at).trim() !== name) continue;
+    return decodeURIComponent(part.slice(at + 1).trim());
+  }
+  return void 0;
+}
+function posCookieWrite(pos) {
+  return `${POS_COOKIE}=${encodeURIComponent(formatPos(pos))}; Path=/; Max-Age=${MAX_AGE}; SameSite=Lax`;
+}
+function loadPosFromStores(jar, storageGet) {
+  try {
+    const cookie = readCookie(jar, POS_COOKIE);
+    const fromCookie = parsePos(cookie);
+    if (fromCookie) return fromCookie;
+  } catch {
+  }
+  try {
+    return parsePos(storageGet(POS_KEY));
+  } catch {
+    return null;
+  }
+}
+
+// src/client.tsx
 var import_jsx_runtime = require("react/jsx-runtime");
 var inject = ["slots"];
 function describeCode(code, isDay = true) {
@@ -94,6 +169,24 @@ function saveUnit(unit) {
   } catch {
   }
 }
+function loadPos() {
+  try {
+    return loadPosFromStores(document.cookie, (key) => window.localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+function savePos(pos) {
+  try {
+    document.cookie = posCookieWrite(pos);
+  } catch {
+  }
+  try {
+    window.localStorage.setItem(POS_KEY, formatPos(pos));
+  } catch {
+  }
+}
+var DRAG_THRESHOLD_PX = 4;
 var DEFAULT_LOCATION = { latitude: 40.7128, longitude: -74.006, label: "New York" };
 var GEO_TIMEOUT_MS = 4e3;
 var GEO_PROVIDERS = [
@@ -211,9 +304,10 @@ var BAR_STYLES = `
   font: 400 13px/1.4 var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif);
   font-variant-numeric: tabular-nums;
   box-shadow: var(--dsw-shadow-lv3, 0 0 1px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.12));
-  cursor: default;
+  cursor: grab;
   user-select: none;
   white-space: nowrap;
+  touch-action: none;
   /* DSH Desktop on Windows overlays a 36px window-drag strip at the top of the
      viewport (#dsh-desktop-windows-drag-region: -webkit-app-region: drag,
      z-index 2147483644, pointer-events: none) that the compositor resolves
@@ -229,9 +323,12 @@ var BAR_STYLES = `
 body.dsh-desktop-windows-titlebar-layout .dshwx {
   /* Clear the desktop drag strip: 36px strip + the usual 8px gap. The body
      class is added by DSH Desktop's preload on Windows only, so the browser
-     and non-Windows builds keep top: 8px. */
+     and non-Windows builds keep top: 8px. A user-placed inline top overrides
+     this; clampPx's minTop keeps a drag from parking back inside the strip. */
   top: 44px;
 }
+.dshwx[data-placed] { transform: none; }
+.dshwx[data-dragging] { cursor: grabbing; }
 body[data-ds-dark-theme] .dshwx { box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 8px 24px rgba(0,0,0,0.5); }
 .dshwx[hidden] { display: none; }
 .dshwx-icon { font-size: 16px; }
@@ -356,6 +453,20 @@ function zoomOf(el) {
   const width = el.getBoundingClientRect().width;
   return el.offsetWidth > 0 && width > 0 ? width / el.offsetWidth : 1;
 }
+function desktopMinTop() {
+  return document.body.classList.contains("dsh-desktop-windows-titlebar-layout") ? 44 : 8;
+}
+function clampBoxOf(el, zoom) {
+  const rect = el.getBoundingClientRect();
+  return {
+    width: rect.width / zoom,
+    height: rect.height / zoom,
+    viewW: window.innerWidth / zoom,
+    viewH: window.innerHeight / zoom,
+    minTop: desktopMinTop(),
+    pad: 8
+  };
+}
 function tierOf(width) {
   if (width === void 0) return "full";
   if (width < 200) return "none";
@@ -437,24 +548,126 @@ function WeatherBar() {
   const [state, setState] = import_react.default.useState({ status: "loading" });
   const [busy, setBusy] = import_react.default.useState(false);
   const [unit, setUnit] = import_react.default.useState(loadUnit);
+  const [placed, setPlaced] = import_react.default.useState(loadPos);
+  const [livePx, setLivePx] = import_react.default.useState(null);
+  const [dragging, setDragging] = import_react.default.useState(false);
+  const drag = import_react.default.useRef(null);
   const ref = import_react.default.useRef(null);
   const fit = useBandFit(ref);
+  const parked = placed !== null || dragging;
+  const measured = tierOf(fit?.width);
+  const fitTier = parked && measured === "none" ? "tiny" : measured;
+  import_react.default.useLayoutEffect(() => {
+    if (placed === null || dragging) return;
+    const el = ref.current;
+    if (el === null) return;
+    const apply2 = () => {
+      const zoom = zoomOf(el);
+      if (el.getBoundingClientRect().height === 0) return;
+      const next = posToPx(placed, clampBoxOf(el, zoom));
+      setLivePx(
+        (prev) => prev !== null && Math.abs(prev.left - next.left) < 0.5 && Math.abs(prev.top - next.top) < 0.5 ? prev : next
+      );
+    };
+    apply2();
+    const resize = new ResizeObserver(apply2);
+    resize.observe(el);
+    const scaleWatch = new MutationObserver(apply2);
+    scaleWatch.observe(document.body, { attributes: true, attributeFilter: ["style", "class"] });
+    window.addEventListener("resize", apply2);
+    return () => {
+      resize.disconnect();
+      scaleWatch.disconnect();
+      window.removeEventListener("resize", apply2);
+    };
+  }, [placed, dragging]);
+  const onPointerDown = (event) => {
+    if (event.button !== 0) return;
+    const node = event.target;
+    if (node instanceof Element && node.closest("button")) return;
+    const el = ref.current;
+    if (el === null) return;
+    const zoom = zoomOf(el);
+    const rect = el.getBoundingClientRect();
+    el.setPointerCapture(event.pointerId);
+    drag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      origLeft: rect.left / zoom,
+      origTop: rect.top / zoom,
+      zoom,
+      moved: false
+    };
+  };
+  const onPointerMove = (event) => {
+    const session = drag.current;
+    if (session === null || event.pointerId !== session.pointerId) return;
+    const el = ref.current;
+    if (el === null) return;
+    const dx = event.clientX - session.startX;
+    const dy = event.clientY - session.startY;
+    if (!session.moved) {
+      if (dx * dx + dy * dy < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return;
+      session.moved = true;
+      setDragging(true);
+    }
+    const next = clampPx(
+      session.origLeft + dx / session.zoom,
+      session.origTop + dy / session.zoom,
+      clampBoxOf(el, session.zoom)
+    );
+    setLivePx(next);
+  };
+  const endDrag = (event) => {
+    const session = drag.current;
+    if (session === null || event.pointerId !== session.pointerId) return;
+    drag.current = null;
+    const el = ref.current;
+    if (!session.moved || el === null) {
+      setDragging(false);
+      return;
+    }
+    const box = clampBoxOf(el, session.zoom);
+    const next = clampPx(
+      session.origLeft + (event.clientX - session.startX) / session.zoom,
+      session.origTop + (event.clientY - session.startY) / session.zoom,
+      box
+    );
+    const pos = pxToPos(next.left, next.top, box);
+    setPlaced(pos);
+    setLivePx(next);
+    setDragging(false);
+    savePos(pos);
+  };
+  const bandStyle = fit === null || fit.width <= 0 ? {} : {
+    left: `${fit.centre / fit.zoom}px`,
+    maxWidth: `${fit.width / fit.zoom}px`
+  };
+  const parkedStyle = livePx === null ? { transform: "none" } : {
+    left: `${livePx.left}px`,
+    top: `${livePx.top}px`,
+    transform: "none"
+  };
   const shell = {
     ref,
     className: "dshwx",
-    "data-fit": tierOf(fit?.width),
+    // A parked bar must not vanish when a dock claims the top band — the user
+    // put it somewhere on purpose. Map the squeezed-out tier up to tiny so it
+    // still sheds rather than hiding.
+    "data-fit": fitTier,
     // A non-positive width is the squeezed-out case: the `none` tier hides the
     // bar, and writing a negative max-width would be an ignored declaration
     // that left it at full size behind the overlay.
     //
     // Both lengths are divided by the zoom: `fit` is measured in viewport px
     // and these are author px the zoom scales again (see zoomOf).
-    ...fit === null || fit.width <= 0 ? {} : {
-      style: {
-        left: `${fit.centre / fit.zoom}px`,
-        maxWidth: `${fit.width / fit.zoom}px`
-      }
-    }
+    ...parked ? { "data-placed": "", style: parkedStyle } : fit === null || fit.width <= 0 ? {} : { style: bandStyle },
+    ...dragging ? { "data-dragging": "" } : {},
+    onPointerDown,
+    onPointerMove,
+    onPointerUp: endDrag,
+    onPointerCancel: endDrag
   };
   const toggleUnit = () => {
     setUnit((prev) => {

@@ -40,6 +40,19 @@ assert.ok(client.includes('top: 44px'), 'desktop drag-strip offset missing')
 assert.ok(client.includes('data-dsh-no-drag'), 'buttons must carry the preload no-drag hook')
 assert.ok(!client.includes('bottom: 8px'), 'stale bottom anchor still in bundle')
 
+// Drag + persist. A parked position must survive a DSH Desktop relaunch, which
+// serves the UI from a new port each time — localStorage alone is empty on the
+// new origin, so the write has to be a cookie (same reason as dsh-theme).
+assert.ok(client.includes('dsh-weather-pos'), 'placed position must persist in a cookie')
+assert.ok(client.includes('dsh-weather:pos'), 'placed position must keep a localStorage fallback')
+assert.ok(client.includes('Path=/; Max-Age='), 'position cookie must be host-wide and long-lived')
+assert.ok(client.includes('SameSite=Lax'), 'position cookie missing SameSite')
+assert.ok(client.includes('onPointerDown'), 'bar must start a drag from pointer down')
+assert.ok(client.includes('setPointerCapture'), 'drag must capture the pointer so it cannot lose the pill')
+assert.ok(client.includes('closest("button")') || client.includes("closest('button')"), 'buttons must not start a drag')
+assert.ok(client.includes('cursor: grab'), 'bar must advertise that it is moveable')
+assert.ok(client.includes('data-placed'), 'placed layout must be distinguishable from the auto-centred default')
+
 // Responsive tiers. Each tier sheds a group of detail; the separator that
 // introduces a hidden group must be hidden with it, which is why the
 // separators carry explicit modifier classes instead of relying on :has()

@@ -29,7 +29,7 @@
     "postbuild": "node build/postbuild.mjs",
     "deploy": "node build/postbuild.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node build/build.mjs && node test/smoke.mjs"
+    "test": "node build/build.mjs && node test/smoke.mjs && node test/position.mjs"
   },
   "dsh": {
     "bundle": {
