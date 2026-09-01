@@ -1177,6 +1177,125 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   assert.ok(/askDelete/.test(source), 'the shared delete prompt builder must exist')
 }
 
+// --- the suggest dialog ------------------------------------------------------
+// The first point the suggest feature becomes visible, so these markers pin
+// that the CSS actually shipped, that the prompt still names the file the host
+// reads back, and that a suggestion can only enter the list one way.
+{
+  const bundle = readFileSync(join(root, 'lib/client.js'), 'utf8')
+  const source = readFileSync(join(root, 'src/client.tsx'), 'utf8')
+
+  // 1. The CSS shipped — the RULE, not merely the name. Asserting the bare
+  //    class name proves nothing: `className="dshtd-sug-row"` in the JSX puts
+  //    that literal in the bundle whether or not a stylesheet ever defined it,
+  //    so a renamed selector would leave the rows unstyled and still pass.
+  //    Verified by sabotage: renaming only the selector must go red.
+  const flat = bundle.replace(/\s+/g, ' ')
+  assert.ok(/\.dshtd-sug-row \{[^}]*padding: 10px 12px/.test(flat),
+    'the suggestion row styles must ship as a real rule, not just a class name')
+  assert.ok(/\.dshtd-sug-skel \{[^}]*display: flex/.test(flat),
+    'the suggestion skeleton styles must ship as a real rule')
+  // The skeleton copies the row's geometry, so the swap to real content cannot
+  // lurch. Pinned as one assertion because the two must change TOGETHER.
+  const rowPad = /\.dshtd-sug-row \{[^}]*padding: ([^;]+);/.exec(flat)
+  const skelPad = /\.dshtd-sug-skel \{[^}]*padding: ([^;]+);/.exec(flat)
+  assert.ok(rowPad && skelPad && rowPad[1] === skelPad[1],
+    'the skeleton must copy the real row padding — otherwise the swap lurches')
+
+  // 2. The prompt names the output path the host reads back. These are the two
+  //    ends of one contract in different files: if composeScanPrompt stopped
+  //    naming SUGGESTIONS_FILE, every scan would poll forever on a file the
+  //    model was never asked to write, and nothing would throw.
+  assert.ok(bundle.includes('suggestions.json'),
+    'the scan prompt must name the file the host reads back')
+
+  // 3. THE SINGLE WRITE PATH, mirroring the single-deletion-path rule above.
+  //    Deletion is guarded because a second call site would bypass the confirm
+  //    dialog; a suggestion is guarded because a second call site would bypass
+  //    the ONE batched store.update — the store treats every call as a reason
+  //    to write, so a per-row loop puts a host round-trip on the wire per
+  //    checkbox. Asserted on the SOURCE: minification renames the callback
+  //    parameters a bundle-level regex would look for, so it would match
+  //    nothing and pass vacuously.
+  //    Counted STRUCTURALLY — every store.update inside SuggestDialog — not by
+  //    one spelling of the makeItem call. An earlier version matched the exact
+  //    argument text, so a second call site written even slightly differently
+  //    slipped straight past it; the sabotage that proved this added
+  //    `makeItem(normalizeText(suggestions[0].title), ...)` and the assertion
+  //    stayed green.
+  const dialog = /export function SuggestDialog\(\{[\s\S]*?\n\}\n\n\/\*\*\n \* The full task detail dialog/.exec(source)
+  assert.ok(dialog, 'SuggestDialog must exist and be delimited for this check')
+  // Comments are STRIPPED before counting. The prose above the call site names
+  // `makeItem(title, now, rand, fields)` to explain the arity trap, and counting
+  // that as a second construction made this assertion fail against correct code
+  // — a check that cannot distinguish code from a comment about the code is
+  // worse than none, because the noise trains you to relax it.
+  const code = dialog[0].replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+  const writes = code.match(/store\.update\(/g) ?? []
+  assert.equal(writes.length, 1,
+    'a suggestion must become a task in exactly one place — one batched store.update')
+  const constructions = code.match(/makeItem\(/g) ?? []
+  assert.equal(constructions.length, 1,
+    'suggestions must be constructed in exactly one place')
+  // ...and that one place must be the batched update, not a loop of them.
+  assert.ok(
+    /store\.update\(\(current\) => \[\s*\.\.\.current,\s*\.\.\.picked\.map\(/.test(source),
+    'the promotion must be ONE batched store.update over the picked rows',
+  )
+  assert.ok(!/picked\.forEach\([\s\S]{0,120}store\.update/.test(source),
+    'suggestions must not be added one store.update per row')
+
+  // 4. `fields` is the FOURTH parameter of makeItem. Called as
+  //    makeItem(title, fields) the object silently becomes `now`, yielding a
+  //    garbage id and createdAt with no error anywhere — so pin the arity.
+  assert.ok(
+    /makeItem\(normalizeText\(s\.title\), Date\.now\(\), Math\.random, \{/.test(source),
+    'makeItem must receive fields as its FOURTH argument, after now and rand',
+  )
+
+  // 5. Loading is its OWN flag, never inferred from an empty collection.
+  //    `suggestions.length === 0` means both "the scan found nothing" and "we
+  //    have not looked", and rendering the former during the latter is the
+  //    false claim that sent dsh-plan-board users hunting for absent plans.
+  assert.ok(/setPhase\('scanning'\)/.test(source), 'the scan must arm an explicit phase flag')
+  assert.ok(/phase === 'ready' && suggestions\.length === 0/.test(source),
+    'the empty state must require the ready phase, never an empty list alone')
+
+  // 6. The skeleton's accessibility contract. check-progress.mjs gates its own
+  //    role/aria-hidden checks on a `<prefix>-skel` class name, which
+  //    `dshtd-sug-skel` does not match, so this skeleton would otherwise ship
+  //    entirely unchecked — pin it here instead of trusting a checker that
+  //    cannot see it.
+  const skel = /function SuggestSkeleton\(\)[\s\S]*?\n\}/.exec(source)
+  assert.ok(skel, 'SuggestSkeleton must exist')
+  assert.ok(skel[0].includes('role="status"'), 'the suggestion skeleton root must be a live region')
+  assert.ok(skel[0].includes('aria-busy'), 'the suggestion skeleton root must carry aria-busy')
+  assert.ok(skel[0].includes('aria-hidden="true"'),
+    'the decorative skeleton rows must be hidden from assistive tech')
+
+  // 7. The skeleton is rendered BEFORE the blocking call is issued. scanDigest
+  //    runs a fully synchronous digest on the single-threaded host, so with the
+  //    placeholder armed after the await the tab freezes rather than showing
+  //    that it is busy.
+  const armed = source.indexOf("setPhase('scanning')")
+  const issued = source.indexOf('remote.scanDigest(')
+  assert.ok(armed !== -1 && issued !== -1 && armed < issued,
+    'the loading phase must be armed BEFORE scanDigest is issued — it blocks the host')
+
+  // 8. Refresh must stay recoverable. readSuggestions reports a transient
+  //    errno (EMFILE/EBUSY) as a terminal error, so a Refresh that latched off
+  //    after one failure would dead-end the modal on a condition that clears
+  //    by itself.
+  assert.ok(/disabled=\{phase === 'scanning'\}/.test(source),
+    'Refresh may be disabled only WHILE scanning — an error must stay retryable')
+
+  // 9. The scan session is held in a REF blanked on read, which is what makes
+  //    cleanup idempotent. A state variable read from a render closure is
+  //    exactly what archived a just-prompted session in the launch flow.
+  assert.ok(/const id = sessionRef\.current\s*\n\s*sessionRef\.current = null/.test(source),
+    'cleanup must take the session id and blank the ref in the SAME step')
+}
+
 // --- the launch button must be VISIBLE without hovering ----------------------
 // It shipped inside .dshtd-rowbtns, which is `opacity: 0` until the row is
 // hovered. Every other check passed — the button rendered, the handler was
