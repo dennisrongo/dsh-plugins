@@ -824,6 +824,222 @@ const dialogSrc = dialog[0]
   )
 }
 
+// --- 9c. HIDE parks the scan; the X and Escape still discard it -------------
+//
+// The **Open scan session** button navigates to the run so the user can watch
+// it — and then the modal reopens on top of the very conversation they were
+// sent to look at. Every close path routed through `dismiss()` → `endScan()`,
+// so the only way to see the session behind the dialog was to destroy the scan
+// standing in front of it. There was no third option.
+//
+// **Hide** is that third option, and it is defined entirely by what it does NOT
+// do: it calls `onClose()` and skips `endScan()`. The registry entry, the
+// session, the adoption flag and the poll loop all survive, and the existing
+// resume route brings the modal back — `suggesting` is seeded from
+// `scanFor(workspaceId)`, the same path a return from navigation already takes.
+// No second resume mechanism.
+//
+// The X and Escape are DELIBERATELY unchanged: Hide parks, the X discards. So
+// this section pins BOTH sides — a Hide that preserves is worthless if the X
+// stopped archiving, and an X that archives proves nothing if Hide archives too.
+//
+// Asserted as a BEHAVIOUR and as a WIRING, separately and on purpose. This file
+// already records three sabotages that passed because they asserted a NAME
+// rather than a behaviour, and a fourth that passed because the mutation never
+// applied. So the handler bodies are EXTRACTED FROM THE SOURCE AND EXECUTED
+// over a live registry, and the JSX that reaches them is pinned on its own.
+{
+  // -- behavioural: run the real handler bodies over a real registry --------
+  //
+  // `dismiss` and `hide` are lifted out of the source and evaluated against a
+  // simulated registry, so a mutation that makes Hide call `endScan()` — or
+  // makes the X stop calling it — changes the ANSWER here rather than merely
+  // changing a string some regex still matches.
+  const bodyOf = (name) => {
+    const m = new RegExp(`const ${name} = \\(\\): void => \\{([\\s\\S]*?)\\n  \\}`).exec(dialogSrc)
+    assert.ok(m, `SuggestDialog must define ${name} as a plain \`(): void => {}\` handler`)
+    const stripped = m[1].replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ').trim()
+    assert.ok(
+      stripped.length > 0,
+      `the extracted body of ${name} must not be empty — an empty capture passes vacuously`,
+    )
+    return stripped
+  }
+
+  const dismissBody = bodyOf('dismiss')
+  const hideBody = bodyOf('hide')
+
+  /**
+   * Execute one extracted handler body against a live registry + archive log.
+   *
+   * `endScan` is re-enacted faithfully (clear the entry, cancel the loop,
+   * archive an unadopted session) so a handler that calls it destroys the scan
+   * here exactly as it would in the browser, and one that does not, does not.
+   *
+   * @param body - the handler source lifted out of `src/client.tsx`.
+   * @param adopted - whether the user had opened the scan session.
+   */
+  const run = (body, adopted = false) => {
+    const scans = new Map()
+    scans.set('w1', { runId: 'r1', sessionId: 's1', startedAt: 0, adopted, seen: ['a'] })
+    const archived = []
+    const closed = []
+    const cancelledRef = { current: false }
+
+    const endScan = () => {
+      const found = scans.get('w1')
+      scans.delete('w1')
+      cancelledRef.current = true
+      if (found !== undefined && found.sessionId !== null && !found.adopted) {
+        archived.push(found.sessionId)
+      }
+    }
+    const onClose = () => closed.push('closed')
+
+    // eslint-disable-next-line no-new-func
+    Function('endScan', 'onClose', body)(endScan, onClose)
+
+    return {
+      kept: scans.has('w1'),
+      entry: scans.get('w1'),
+      archived,
+      closed,
+      cancelled: cancelledRef.current,
+    }
+  }
+
+  // Sanity row FIRST: the extracted `dismiss` must still be the destructive
+  // door. If it is not, every Hide row below is measuring nothing.
+  const viaDismiss = run(dismissBody)
+  assert.equal(
+    viaDismiss.kept,
+    false,
+    'sanity: the extracted dismiss must still CLEAR the registry entry — the X discards the scan',
+  )
+  assert.deepEqual(
+    viaDismiss.archived,
+    ['s1'],
+    'the X / Escape must STILL archive the scan session — the existing behaviour must not regress',
+  )
+  assert.deepEqual(viaDismiss.closed, ['closed'], 'dismiss must still close the dialog')
+
+  // Hide: the dialog goes, the scan stays. All four survivors checked, because
+  // preserving the Map entry while blanking one of its fields would look like a
+  // pass and still lose the run.
+  const viaHide = run(hideBody)
+  assert.deepEqual(
+    viaHide.closed,
+    ['closed'],
+    'Hide must CLOSE the dialog — that is the whole point: reveal the conversation behind it',
+  )
+  assert.equal(
+    viaHide.kept,
+    true,
+    'Hide must PRESERVE the registry entry — a Hide that ends the scan is just the X renamed',
+  )
+  assert.deepEqual(
+    viaHide.archived,
+    [],
+    'Hide must NOT archive the session — the scan the user parked has to still be there',
+  )
+  assert.equal(
+    viaHide.cancelled,
+    false,
+    'Hide must not cancel the poll loop through endScan — only the unmount teardown may do that',
+  )
+  assert.deepEqual(
+    viaHide.entry,
+    { runId: 'r1', sessionId: 's1', startedAt: 0, adopted: false, seen: ['a'] },
+    'Hide must leave the entry INTACT — runId, sessionId, startedAt, adopted and seen all survive',
+  )
+
+  // An ADOPTED scan hidden must keep its adoption, or returning to it comes
+  // back resumable-but-archivable — the bug adoption exists to prevent.
+  assert.equal(
+    run(hideBody, true).entry?.adopted,
+    true,
+    'Hide must preserve the adoption flag, or the parked scan becomes archivable on return',
+  )
+
+  // The precise defect, pinned by absence on the executed body: Hide calling
+  // endScan is the mutation that silently reverts this whole change.
+  assert.ok(
+    !/endScan\(/.test(hideBody),
+    'hide must NOT call endScan — that is exactly what makes it different from dismiss',
+  )
+  assert.ok(
+    /onClose\(\)/.test(hideBody),
+    'hide must call onClose() directly — the discard lives in dismiss, not in the prop',
+  )
+  // ...and it must not reach around endScan to do the same damage by hand.
+  assert.ok(
+    !/clearScan\(|discardSession\(|cleanup\(\)|cancelledRef/.test(hideBody),
+    'hide must not clear, archive or cancel by any other route — parking means leaving it running',
+  )
+
+  // -- wiring: the control must exist, be offered, and reach `hide` ---------
+  //
+  // The behavioural rows run on a synthetic scope and stay green if no button
+  // ever calls `hide`. So the JSX is pinned separately, the way this file pins
+  // the open-button gate: extract the render condition and EXECUTE it.
+  const hideBtn = /\{phase === 'scanning' \? \(\s*<button([\s\S]*?)>\s*Hide\s*<\/button>/.exec(
+    dialogSrc,
+  )
+  assert.ok(
+    hideBtn,
+    'a Hide button must be rendered, gated inline on the phase so this check can extract the gate',
+  )
+  assert.ok(
+    /onClick=\{hide\}/.test(hideBtn[1]),
+    'the Hide button must call `hide`, not `dismiss` and not `onClose` — otherwise it discards the scan',
+  )
+
+  // Offered while a scan is in flight, ABSENT once it has settled: there is
+  // nothing left to preserve then, and the X already closes cleanly.
+  const hideGate = /\{(phase === 'scanning') \? \(\s*<button[\s\S]*?Hide/.exec(dialogSrc)
+  assert.ok(hideGate, 'the Hide button must carry an extractable phase gate')
+  // eslint-disable-next-line no-new-func
+  const hideShows = (phase) => Function('phase', `return Boolean(${hideGate[1]})`)(phase)
+  assert.equal(hideShows('scanning'), true, 'Hide must be OFFERED while the scan is in flight')
+  assert.equal(
+    hideShows('ready'),
+    false,
+    'Hide must be ABSENT once the scan is ready — nothing is left to preserve',
+  )
+  assert.equal(
+    hideShows('error'),
+    false,
+    'Hide must be ABSENT once the scan has errored — the X already closes cleanly',
+  )
+
+  // The X and Escape must still be wired to `dismiss`, not quietly repurposed.
+  // Section 9 asserts `dismiss()` appears; this pins the two call sites that
+  // the user reported as deliberately unchanged.
+  assert.ok(
+    /onClick=\{dismiss\} aria-label="Close"/.test(dialogSrc),
+    'the X must STILL call dismiss — the user explicitly chose not to repurpose it',
+  )
+  const escape = /if \(e\.key === 'Escape'\) \{[\s\S]*?\n    \}/.exec(dialogSrc)
+  assert.ok(escape, 'the Escape branch must be delimitable')
+  assert.ok(
+    /dismiss\(\)/.test(escape[0]) && !/hide\(\)/.test(escape[0]),
+    'Escape must STILL discard through dismiss — Hide is a new control, not a new meaning for Escape',
+  )
+  // The backdrop guard is untouched: still inert while scanning.
+  assert.ok(
+    /onClick=\{onBackdrop\}/.test(dialogSrc),
+    'the backdrop must still route through onBackdrop — this change must not touch it',
+  )
+
+  // Reopening reuses the EXISTING resume route. A second mechanism would be a
+  // second place for the two to drift, and the seed below is the one that
+  // already brings the modal back from navigation.
+  assert.ok(
+    !/(?:hidden|parked)(?:Scans?|Ref|Set)\b/.test(source),
+    'Hide must reuse the existing scanFor() resume route, never add a second registry',
+  )
+}
+
 // --- 9b. the modal itself must COME BACK ------------------------------------
 //
 // Persisting the scan is only half a fix. `suggesting` — the boolean that

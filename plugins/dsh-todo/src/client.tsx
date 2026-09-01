@@ -2537,6 +2537,37 @@ export function SuggestDialog({
   }
 
   /**
+   * PARK the scan: close the dialog and leave the run entirely alone.
+   *
+   * The one thing this does is what it does NOT do — it never calls
+   * `endScan()`. That is the whole distinction, and it is why this is a
+   * separate handler rather than a flag on `dismiss`: the registry entry, the
+   * scan session, the adoption flag and the poll loop all survive, and the
+   * teardown that follows the unmount only sets `cancelledRef`, exactly as it
+   * does when the user navigates away.
+   *
+   * It exists because **Open scan session** creates a state the modal could not
+   * leave. The button sends the user to the scan so they can watch it work, and
+   * the modal then reopens directly in front of that very conversation. Every
+   * close path led through `dismiss()` → `endScan()`, so the choice was: keep
+   * the dialog and never see the session, or close it and destroy a scan that
+   * may be minutes in. Hide is the third option that was missing.
+   *
+   * Reopening is NOT a new mechanism. `TodoView` seeds `suggesting` from
+   * `scanFor(workspaceId)`, which is already how the modal comes back after
+   * navigating to the scan session — a parked scan is indistinguishable from a
+   * navigated-away one, by construction, and a second resume route would just
+   * be a second thing to drift.
+   *
+   * `onClose()` is called DIRECTLY, and that is safe precisely because the prop
+   * carries no discard: it is `setSuggesting(false)` and nothing else. The
+   * discard lives in `dismiss`.
+   */
+  const hide = (): void => {
+    onClose()
+  }
+
+  /**
    * Backdrop click — INERT while a scan is running.
    *
    * Every other close (the X, Escape, a successful "Add selected") is a
@@ -2750,6 +2781,28 @@ export function SuggestDialog({
                  workspace, and that one may since have been closed or archived
                  — so a button guessing where to send them is worse than none. */
               <span className="dshtd-sug-status">You&rsquo;re viewing the scan session</span>
+            ) : null}
+            {/* PARK the scan without ending it — the only control here that
+                closes the dialog and leaves the run alive.
+
+                Offered while `phase === 'scanning'` and only then: once the
+                scan has settled there is nothing left to preserve, and the X
+                already closes cleanly. Not restricted to the scan session
+                either, even though that is where it is most needed — "look at
+                this later" is a reasonable thing to want anywhere.
+
+                The X beside it still discards, deliberately, so the difference
+                is carried by the tooltip rather than by more visible copy: the
+                modal is deliberately sparse and this is the fourth control in
+                the row. */}
+            {phase === 'scanning' ? (
+              <button
+                className="dshtd-btn"
+                onClick={hide}
+                title="Close this dialog and leave the scan running — reopen it with Suggest"
+              >
+                Hide
+              </button>
             ) : null}
             {/* Disabled only WHILE a scan runs. An error must stay recoverable:
                 readSuggestions reports a transient errno as terminal, so a

@@ -542,12 +542,44 @@ therefore uses only public paths the plugin already depends on: `sessions.create
   - **Closing is distinguished from navigating by the deliberate ACT, never by the
     teardown.** Both unmount `SuggestDialog` and run the same cleanup, so the teardown
     cannot tell them apart — it now only sets `cancelledRef`, and neither clears the entry
-    nor archives. Every user-driven exit (the X, Escape, the backdrop, a completed **Add
-    selected**) routes through ONE `dismiss()` → `endScan()`, which clears the entry and
-    archives exactly as before, and runs BEFORE the unmount. Getting this backwards fails
-    both ways: a close that preserves strands a scan forever, and a navigation that clears
-    loses the one being watched. `suggest-lifecycle.mjs` pins both directions from one
-    simulator and asserts no close control calls `onClose` directly.
+    nor archives. Every DISCARDING exit (the X, Escape, the backdrop once the scan has
+    settled, a completed **Add selected**) routes through ONE `dismiss()` → `endScan()`,
+    which clears the entry and archives exactly as before, and runs BEFORE the unmount.
+    Getting this backwards fails both ways: a close that discards when it should preserve
+    strands nothing but destroys a live run, and a navigation that clears loses the one
+    being watched. `suggest-lifecycle.mjs` pins every direction from one simulator.
+  - **…but a close is no longer necessarily a discard: HIDE parks the scan.** The
+    close-vs-navigate split above was complete only while *every* user-driven close meant
+    "I am done with this run", and **Open scan session** is what made that untrue. The
+    button sends the user to the scan so they can watch it, and the modal then reopens
+    directly in front of that very conversation — so with `dismiss()` as the only door the
+    choice was to keep the dialog and never see the session, or close it and destroy a scan
+    minutes in. `hide()` is the third option, and it is defined by omission: it calls
+    `onClose()` and **skips `endScan()`**, so the registry entry, the session, the adoption
+    flag and the poll loop all survive and the teardown behaves exactly as it does on a
+    navigation. Reopening adds NO second mechanism — `TodoView` seeds `suggesting` from
+    `scanFor(workspaceId)`, the same resume route a return from navigation already takes,
+    which is why a parked scan and a navigated-away one are indistinguishable by
+    construction. Calling `onClose()` directly is safe only because that prop carries no
+    discard (`setSuggesting(false)` and nothing else); the discard lives in `dismiss`, which
+    is also why "no close control calls `onClose` directly" is no longer the invariant — the
+    invariant is that no *discarding* control does.
+    Two boundaries are deliberate. **The X and Escape are UNCHANGED** and still discard:
+    Hide parks, the X ends, and where two controls differ the difference must be legible —
+    carried by a tooltip rather than more visible copy, since the modal is deliberately
+    sparse. And Hide is offered **only while `phase === 'scanning'`**, not once the scan has
+    settled: there is nothing left to preserve then and the X already closes cleanly.
+    Pinned in `suggest-lifecycle.mjs` by **executing the extracted `dismiss` and `hide`
+    bodies over a live registry** — a Hide that gains an `endScan()` call, or a `dismiss`
+    that loses one, changes the ANSWER rather than a string a regex still matches — with the
+    phase gate and the button's `onClick` asserted separately, because the behavioural rows
+    run on a synthetic scope and stay green if no button ever reaches the handler. That
+    split is the lesson this file records four times over. Verified by sabotage, eleven
+    mutations, each confirmed to apply before its red was believed: Hide calling `endScan`,
+    Hide wired to `dismiss`, Hide clearing / archiving / cancelling by hand, the button
+    deleted, the button offered after the scan settles, the X or Escape repurposed to Hide,
+    `dismiss` losing its archive, and a second parked-scan registry each fail their own
+    assertion.
   - **Adoption is persisted before navigating, not just held in the ref.** The ref dies in
     the very navigation the Open button causes, so `openScanSession` writes
     `adopted: true` into the registry first — otherwise the scan would come back resumable
