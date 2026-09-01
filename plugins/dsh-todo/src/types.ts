@@ -282,12 +282,16 @@ export const SUGGESTIONS_DIR = '.dsh'
 /**
  * The legacy workspace-global result path.
  *
- * Kept only so a file written by a pre-runId build is recognised as an orphan
- * and swept, never read. Nothing composes a prompt against it any more: a
- * fixed path carries NO RUN IDENTITY, which is exactly the defect
- * {@link suggestionsFileFor} exists to close — a scan that timed out is
- * archived but never actually stopped, so its late write would otherwise be
- * read back as the NEXT run's answer.
+ * Documentation only — NOTHING READS THIS. A file written by a pre-runId build
+ * is swept as an orphan, but the sweep matches {@link SUGGESTIONS_FILE_RE},
+ * not this constant, so it is not load-bearing even for that. It records what
+ * the path used to be, and why it stopped being usable: a fixed path carries
+ * NO RUN IDENTITY, which is exactly the defect {@link suggestionsFileFor}
+ * exists to close — a scan that timed out is archived but never actually
+ * stopped, so its late write would otherwise be read back as the NEXT run's
+ * answer.
+ *
+ * Do not compose a path from it. Use {@link suggestionsFileFor}.
  */
 export const SUGGESTIONS_FILE = `${SUGGESTIONS_DIR}/suggestions.json`
 

@@ -369,6 +369,17 @@ dependency); it needs to be unique per scan, not unguessable.
   the ordinary case — closing the modal does it. `SUGGESTIONS_FILE_RE` is anchored at both
   ends: `.dsh` holds `todo.db` and whatever else the harness keeps there, and a wider guess
   would delete a neighbour's data.
+  **Sweeping on every poll has one known cost: two SIMULTANEOUS scans on one workspace now
+  DELETE each other's files rather than READING each other's.** The victim loses a result
+  that had genuinely completed, then polls a path that will never appear and reports *"the
+  scan did not finish in time"* — false, since the scan finished and the reader destroyed the
+  answer. Accepted deliberately, because the failure it replaces was worse and silent: a
+  stale run's suggestions presented as fresh, computed against an outdated exclusion set, and
+  poisoning `seenRef` on the way through. This trades wrong-and-silent for lost-and-noisy.
+  Reachability is low — `suggesting` is one boolean per tab and Refresh is disabled while
+  scanning, so a single tab cannot self-collide; it takes two browser tabs, or a tab plus the
+  Desktop, on one workspace at once. A proper fix needs an age threshold on the sweep, i.e. a
+  second timing constant, which is not worth it for this case.
 
 **A background session, and not a direct model call, because the alternatives are exactly
 the bet this file records losing four times.** `@deepseek-ai/dsh-llm` (service key `llm`) is
