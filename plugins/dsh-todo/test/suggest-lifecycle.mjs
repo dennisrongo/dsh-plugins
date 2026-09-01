@@ -396,6 +396,19 @@ const dialogSrc = dialog[0]
   )
 
   // The registry is what the decision is made from, and it is read per workspace.
+  //
+  // `resumedRef` must be SEEDED FROM the registry, not merely compared against
+  // it. This is the same name-vs-behaviour trap the comment above records, one
+  // level deeper: `scanFor(launch.workspaceId)` appears in three places (the
+  // seed, the poll, and the header button's gate), so asserting it appears
+  // ANYWHERE in the dialog stays true when the seed alone is broken. Verified by
+  // sabotage: replacing the seed with `resumedRef.current = undefined` left the
+  // `void resumeScan(inFlight)` text intact, so every check above still matched
+  // and the suite passed while a remount could no longer resume anything.
+  assert.ok(
+    /resumedRef\.current\s*=\s*scanFor\(launch\.workspaceId\)/.test(dialogSrc),
+    'resumedRef must be seeded FROM the registry — a remount that reads nothing resumes nothing',
+  )
   assert.ok(
     /scanFor\(launch\.workspaceId\)/.test(dialogSrc),
     'the dialog must consult the registry for THIS workspace',
