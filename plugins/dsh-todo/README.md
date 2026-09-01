@@ -65,6 +65,12 @@ next to the code it describes.
   description and labels, reorder (▲/▼), archive, and delete. Release and sprint
   inputs suggest labels already in use, so values converge on a shared
   vocabulary without a releases table to administer.
+- **Suggest** — a button in the tab header scans the workspace and proposes
+  concrete next tasks: unresolved `TODO`/`FIXME`/`HACK` comments, features the
+  docs promise but the code does not implement, and modules with no tests. Each
+  proposal comes with a one-line rationale, a priority, and a `file:line`
+  pointer where one exists. Tick the ones you want and **Add selected** files
+  them into the backlog. Never automatic — it runs only when you click it.
 - **Themed** — colors come only from the shell's `--dsw-*` tokens, so it follows
   light/dark automatically. Respects `prefers-reduced-motion`.
 
@@ -178,6 +184,46 @@ swallow a move.
 
 `clearCompleted` (hard delete of done items) is still exported for callers that
 want it, but it is no longer wired to a button.
+
+## Suggest — what to work on next
+
+The list holds work someone already thought of. Deciding what to do *next*
+usually happens somewhere else — reading the code and noticing what is missing.
+**Suggest**, in the tab header, moves that into the tab.
+
+Clicking it reads the workspace and proposes concrete tasks from three kinds of
+evidence:
+
+- **Unresolved comments** — `TODO`, `FIXME` and `HACK`, with the file and line.
+- **Docs-vs-implementation gaps** — the README and the file tree together, so
+  what is promised but absent has somewhere to show up.
+- **Untested modules** — source files with no matching test file. A name-based
+  hint rather than a coverage run, so it is offered as a hint.
+
+Each suggestion arrives as a checkbox row: a title, a one-line rationale, a
+priority, and a `file:line` pointer where there is one to give. Nothing is
+ticked by default — you opted into scanning, not into the results. **Add
+selected** writes the ticked rows into the backlog as real tasks, with the
+rationale as the description. Until then they are **proposals**: nothing is
+stored, and closing the dialog discards them.
+
+**Refresh returns genuinely new ideas, not a reshuffle.** Every title already
+shown joins the exclusion set, alongside every unfinished task already in the
+backlog, so the scan is told what not to repeat. Rows you have already ticked
+survive a refresh — the selection is yours, not the model's.
+
+> **A scan spends tokens.** It runs a real model session in the background —
+> created, prompted, and archived when the scan finishes or you close the
+> dialog; it never appears in the sidebar and is never navigated to. Nothing is
+> scheduled and nothing is automatic: a scan happens when you click **Suggest**
+> or **Refresh**, and only then.
+
+What is sent is a **bounded digest**, not the repository: a capped file tree, a
+capped list of comment matches one line each, and a leading slice of the README
+and `package.json`. Vendored and generated directories (`node_modules`, `lib`,
+`dist`, `vendor`, `target` and the rest) never enter it. Anything left out is
+marked in the digest rather than dropped quietly, so a big repository yields a
+smaller scan rather than a confident one about code it never read.
 
 ## CLI — for you and for AI agents
 

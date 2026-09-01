@@ -312,6 +312,134 @@ status and the session can never disagree about whether work started.
   field), shown by `show` and as `session=` in `list`. Unvalidated on purpose — a session
   id is an opaque harness token with no shape to check from a bare checkout.
 
+### Scanning for suggestions
+
+**Suggest** in the tab header opens `SuggestDialog`: the host builds a bounded evidence
+digest, the client hands it to a background session, and the session writes a result file
+the modal polls. Checked rows become real backlog tasks. `src/scan.ts` (the digest) and
+`src/suggest.ts` (the prompt and the parser) are both dependency-free — they import
+`./types.ts` and node builtins and nothing else — so both are importable by the tests under
+plain Node, the same constraint `launch.ts` carries.
+
+**The result is a FILE, not a return value, because there is nothing to await.**
+`session.prompt()` resolves when the prompt is *accepted*, not when the work is done, and
+the harness publishes no completion promise anywhere. So the result needs a rendezvous
+point rather than a callback. `<workspace>/.dsh/suggestions.json` is one the host can
+already read, is inspectable by hand when a scan misbehaves, and survives the modal being
+closed mid-scan — a return value would not exist to be collected.
+
+**A background session, and not a direct model call, because the alternatives are exactly
+the bet this file records losing four times.** `@deepseek-ai/dsh-llm` (service key `llm`) is
+a *config* service — `prepareCall`, `resolveModelInfo`, `listModels`. It resolves which
+model and which credentials, and exposes no "send a prompt, get text" method at all; the
+Desktop install ships no `.d.ts` for it, so building on it means reading a minified bundle
+for a call shape this repo does not own. `dsh-subagent`'s `prompt()` does send text, but it
+requires a live parent agent (`ctx.get('agents')?.get(parentSessionId)`, rejecting
+`subagent-parent-unavailable`) — it serves the agent loop, not a UI button. Both routes are
+reading harness internals that were guessed rather than published, which is the single
+cause of every outage above: `flattenModels` requiring a `model.provider` the catalog never
+had, the button gated on `ctx.remote.agentPresets`, the `ctx.remote?.agentPresets` fallback
+that threw through its own try/catch, and `directoryFor` throwing from inside a callee.
+All four failed silently, and none produced an error anywhere the tests could see. The scan
+therefore uses only public paths the plugin already depends on: `sessions.create()`,
+`sessions.binding(id).session.prompt()`, and its own host endpoints.
+
+- **The digest is bounded, and every truncation MARKS ITSELF.** Not a nicety: a model given
+  a clipped digest with no marker reasons confidently about a codebase it only half saw.
+  Every section header routes through `sectionHeader()` and reports its true total against
+  what survived (`(200 found, showing 80)`, with `+` when counting itself stopped at a
+  ceiling and the total is a LOWER BOUND), `fileHeader()` discloses a README or manifest
+  clipped to a leading slice, the walk appends its own `[walk truncated — …]` line, and
+  `assemble()` marks the byte ceiling. Only `MAX_COMMENT_LINE`'s 160-char body clip is
+  still silent, deliberately.
+- **The effective ceiling is ~17KB, not `DIGEST_BYTE_CAP`'s 24KB**, because the per-section
+  caps bind first and the byte ceiling is a backstop that rarely fires. Do NOT size a prompt
+  budget against 24KB, and never read a small digest as a complete one.
+- **`truncated` is advisory only.** It is a bare boolean over several independent caps, so
+  it conflates "the file tree was clipped" (cosmetic) with "half the TODO comments are
+  missing" (material). The digest TEXT is what distinguishes them, which is why the digest
+  is self-describing and why `scanDigest` passes the flag through uninterpreted rather than
+  branching on it.
+- **`MAX_FILES_READ` (400) is what bounds the scan's cost — not the comment cap.** An
+  earlier version removed `collectComments`' early exit so the total could be honest rather
+  than asserting that the 80 kept comments were all there were, and that alone took a
+  1200-file workspace to 3.4s and a 4000-file one to ~19s. A ceiling on comments FOUND does
+  not fix it: with one TODO per file, counting to 800 still opens 800 files, which measured
+  a 9% saving. The cost is per-FILE — the read and the line split — and is paid in full
+  whether or not the file contains anything, so the bound has to be on files opened. The
+  comment ceiling stays as the second of the two (whichever binds first stops the scan), and
+  either one makes the reported total a disclosed lower bound (`400+ found`) rather than a
+  silent drop. Deliberately not a time budget: a deadline makes the digest depend on machine
+  speed, so the same workspace yields different evidence twice and a test can only assert it
+  flakily.
+- **`scanDigest` BLOCKS the host event loop for its whole duration.** `buildDigest` is fully
+  synchronous and `async` does not yield, so the entire walk runs in one tick on a
+  single-threaded host and every other RPC stalls behind it — measured ~3.15s on a
+  1200-file fixture. The client therefore renders `SuggestSkeleton` **before** issuing the
+  call, or the tab reads as frozen rather than busy. That ordering is pinned in `smoke.mjs`
+  by comparing source indices (`setPhase('scanning')` before `remote.scanDigest(`), and
+  anyone issuing this call from a new place must preserve it.
+- **Only `ENOENT` means "not yet".** `readSuggestions`' read catch branches on errno,
+  because most failures are TERMINAL and waiting cannot clear them: a directory sitting at
+  the result path (`EISDIR`, from a bad `mkdir -p` or a hand-created folder) or a locked-down
+  volume (`EACCES`) will read the same way forever. Reported as `pending` those poll
+  FOREVER — the modal spins on "Scanning…", never offers Refresh, and never terminates.
+  Unknown errnos default to `error` **deliberately**, which slightly over-reports
+  (`EMFILE`/`ENFILE`/`EBUSY` are genuinely transient): the trade is asymmetric, because a
+  misclassified transient costs one dismissible error that Refresh recovers, while a
+  misclassified terminal costs an unbounded hang with no exit. A recoverable wrong answer
+  beats an unrecoverable one. The modal's half of that bargain is that **Refresh is disabled
+  only while `phase === 'scanning'`** and never latches off on an error.
+- **The result file is consumed on BOTH paths**, and the error path is the load-bearing one.
+  `unlinkSync` sits BEFORE the `parsed.ok` branch, so a malformed result cannot survive the
+  read. Left on disk it would be re-read on every poll and pin the modal to the same error
+  forever, with no way out but deleting the file by hand. Deleting on success separately
+  stops a previous run's answers appearing while a new scan is still working — a stale list
+  that looks fresh is worse than an honest empty one.
+- **The skeleton keyframe MUST be named `*-shimmer`, and this is a live trap for any future
+  skeleton in this package.** `scripts/check-progress.mjs` matches sweep keyframes as
+  `[a-z-]*shimmer`; under any other name all three sweep invariants — gradient
+  `background-position`, timing, the `prefers-reduced-motion` flatten — silently do not
+  apply. Proven by sabotage rather than reasoned about: under the original name
+  `dshtd-sug-sweep`, a deliberately broken `2s linear` animation printed *"ok — every
+  loading state follows the shared rule"*; renamed to `dshtd-sug-shimmer`, the identical
+  sabotage goes red. Note also that the checker's a11y regexes match `[a-z]+-skel`, which
+  cannot see a two-segment class like `dshtd-sug-skel` — so the `role="status"` /
+  `aria-busy` / `aria-hidden` contract escapes the repo-wide check and is pinned LOCALLY in
+  `smoke.mjs` instead. Widening the checker is a repo-wide change affecting all eleven
+  plugins and was left out of scope; until it lands, a new skeleton here gets no a11y
+  enforcement it does not write itself.
+- **A suggestion's TITLE is its identity** — the React key, the `checked` `Set` member, and
+  the dedupe key, all three. So `parseSuggestions` dedupes case-insensitively after
+  trimming, and models do repeat themselves. Without it two rows sharing a title collided
+  twice over: one checkbox toggled BOTH rows, and "Add selected" wrote the same task into
+  the backlog twice from one click. Keying rows by index would silence the React warning and
+  fix neither. The dedupe keys off the **clamped** title (post-`MAX_TEXT`), because the clamp
+  is what the modal renders and keys by — keying on the raw title would let two rows collide
+  downstream and reintroduce the exact bug. It also runs BEFORE `MAX_SUGGESTIONS` counts an
+  entry, so a repetitive response still yields up to 12 distinct ideas.
+- **The scan session's cleanup reads a ref and blanks it in the same step.** Same discipline
+  as the launch flow and for the same reason — see the `closeLaunch` outage documented
+  above, where a render-closure copy archived a session that had *just* received its prompt.
+  Here `cleanup()` takes `sessionRef.current`, nulls it, and only then discards, which is
+  what makes it idempotent across the five paths that call it (ready, error, timeout, the
+  catch, and unmount). A `cancelledRef` guards the poll loop; `runScan` may only clear it
+  because Refresh carries `disabled={phase === 'scanning'}`, so no earlier loop can still be
+  live — an invariant enforced in the JSX and consumed in the callback with nothing linking
+  the two.
+- **Suggestions are never stored.** They are proposals until promoted; only "Add selected"
+  writes, and it writes through the existing `store.update` path in exactly ONE place, as a
+  single batched call, so it inherits revision-conflict reconciliation and puts one
+  round-trip on the wire rather than one per checkbox. Note `makeItem(title, now, rand,
+  fields)` — `fields` is the FOURTH parameter, and passing the options object second
+  silently makes it the `now` timestamp, producing a garbage `id` and `createdAt` with no
+  error anywhere.
+- **The button is gated on the SAME `launch` context the rocket button uses**, and on
+  nothing else. A scan runs in a real session, `sessions` is the one service it cannot fake,
+  and `launchContext()` already yields `undefined` when it is unreachable — so a profile
+  without it gets a working todo tab with the button simply absent, never a throw inside the
+  `conversation.view` slot. `test/context-probe.mjs` covers it with the launch matrix.
+
 ### Destructive actions
 
 `ConfirmDialog` guards every irreversible action. There are three paths to deletion (a row,
@@ -443,6 +571,8 @@ credential check.
 
 - `POST /api/dshTodo/list` — `{ workspaceId }` → `{ list: { items, revision, updatedAt } }`
 - `POST /api/dshTodo/replace` — `{ workspaceId, items, ifRevision }` → `ok:true` with the new list, or `ok:false, code:'revision-conflict'` when `ifRevision` is stale
+- `POST /api/dshTodo/scanDigest` — `{ workspaceId }` → `{ digest, truncated }`. Read-only and side-effect free: it neither starts a scan nor touches the database. **Synchronous, and it blocks the host event loop** for the whole walk — never treat it as cheap.
+- `POST /api/dshTodo/readSuggestions` — `{ workspaceId }` → `{ status: 'pending' }` while `<workspace>/.dsh/suggestions.json` is absent, `{ status: 'ready', suggestions }` once it parses, or `{ status: 'error', error }` on a malformed result or any non-`ENOENT` read failure. **Consumes the file on both the ready and the error path.**
 
 Each takes exactly one parameter named `request`, and `wire: 'request'` in `src/remote.ts` must match it — the gateway resolves endpoints by reading parameter names off the function source.
 
