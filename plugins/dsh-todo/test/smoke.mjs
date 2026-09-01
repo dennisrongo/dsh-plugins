@@ -33,6 +33,11 @@ const hostSource = readFileSync(join(root, 'lib/index.js'), 'utf8')
 // so a minified host half would silently break the wire contract.
 assert.ok(/async list\(request\)/.test(hostSource), 'host list() lost its `request` parameter name')
 assert.ok(/async replace\(request\)/.test(hostSource), 'host replace() lost its `request` parameter name')
+assert.ok(/async scanDigest\(request\)/.test(hostSource), 'host scanDigest() lost its `request` parameter name')
+assert.ok(
+  /async readSuggestions\(request\)/.test(hostSource),
+  'host readSuggestions() lost its `request` parameter name',
+)
 // Native decorator syntax cannot be parsed by Node 22; it must be downleveled.
 assert.ok(!/^\s*@Remote\s*$/m.test(hostSource), 'decorators were emitted natively instead of downleveled')
 
@@ -51,7 +56,11 @@ assert.equal(host.todoDomainSpec.version, 2, 'unexpected storage domain version'
 // The @Remote markers are what publish these methods to the browser.
 const svc = new host.TodoService(new Context())
 const marked = remoteMethods(svc).map((m) => m.method).sort()
-assert.deepEqual(marked, ['list', 'replace'], 'host must export exactly list + replace as Remote')
+assert.deepEqual(
+  marked,
+  ['list', 'readSuggestions', 'replace', 'scanDigest'],
+  'host must export exactly list + replace + scanDigest + readSuggestions as Remote',
+)
 assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
 
 // --- host storage behavior --------------------------------------------------
@@ -206,6 +215,90 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   service2.close()
   rmSync(workspaceDir, { recursive: true, force: true })
   rmSync(secondDir, { recursive: true, force: true })
+}
+
+// --- the two scan endpoints -------------------------------------------------
+// Driven against a REAL temp workspace through the same stub-registry seam as
+// the storage tests above, so the workspace resolution and the file handling
+// are the shipped ones rather than a re-implementation.
+{
+  const { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-todo-scan-'))
+  const service = new host.TodoService(new Context())
+  service.ctx.workspaceRegistry = { list: () => [{ id: 'ws', path: dir }] }
+  const resultPath = join(dir, '.dsh', 'suggestions.json')
+
+  // --- scanDigest ----------------------------------------------------------
+  writeFileSync(join(dir, 'README.md'), '# Fixture\n\nA workspace to scan.\n')
+  writeFileSync(join(dir, 'a.ts'), 'const x = 1\n// TODO: wire the retry\n')
+  const scanned = await service.scanDigest({ workspaceId: 'ws' })
+  assert.equal(typeof scanned.digest, 'string', 'scanDigest must return digest text')
+  assert.equal(typeof scanned.truncated, 'boolean', 'scanDigest must return the truncation flag')
+  assert.ok(scanned.digest.includes('a.ts'), 'the digest must name the files it walked')
+  assert.ok(scanned.digest.includes('wire the retry'), 'the digest must carry the TODO comments it found')
+  // Read-only: a scan must not create the todo database or write a result file.
+  assert.ok(!existsSync(resultPath), 'scanDigest must not write a suggestions file')
+  await assert.rejects(
+    () => service.scanDigest({ workspaceId: 'ghost' }),
+    /unknown workspace/,
+    'an unregistered workspace must reject rather than scan a stray directory',
+  )
+
+  // --- readSuggestions: pending --------------------------------------------
+  // No file yet is the ORDINARY case while a scan session works, so it must be
+  // a status rather than a throw.
+  const pending = await service.readSuggestions({ workspaceId: 'ws' })
+  assert.deepEqual(pending, { status: 'pending' }, 'a missing result file must read as pending')
+
+  // --- readSuggestions: ready, and the file is consumed --------------------
+  mkdirSync(join(dir, '.dsh'), { recursive: true })
+  writeFileSync(resultPath, JSON.stringify([
+    { title: 'Add retry', rationale: 'Network calls are unguarded', priority: 'p1', evidence: 'a.ts:2' },
+  ]))
+  const ready = await service.readSuggestions({ workspaceId: 'ws' })
+  assert.equal(ready.status, 'ready', 'a well-formed result must read as ready')
+  assert.equal(ready.suggestions.length, 1)
+  assert.equal(ready.suggestions[0].title, 'Add retry')
+  assert.equal(ready.suggestions[0].evidence, 'a.ts:2')
+  assert.equal(ready.error, undefined, 'a ready result must carry no error')
+  assert.ok(!existsSync(resultPath), 'a consumed result file must be deleted')
+  // Consuming it is what stops a previous run's answers showing while a new
+  // scan is still working: the next poll must report pending, not the same list.
+  assert.deepEqual(
+    await service.readSuggestions({ workspaceId: 'ws' }),
+    { status: 'pending' },
+    'a second read must not replay the consumed result',
+  )
+
+  // --- readSuggestions: error, and the file is consumed ANYWAY -------------
+  // This endpoint is POLLED. A malformed result left on disk would be re-read
+  // on every tick and pin the modal to the same error forever, with no way out
+  // but deleting the file by hand — so the error path must delete too.
+  writeFileSync(resultPath, 'not json at all {{{')
+  const failed = await service.readSuggestions({ workspaceId: 'ws' })
+  assert.equal(failed.status, 'error', 'unusable output must report an error status')
+  assert.equal(typeof failed.error, 'string', 'an error status must carry a message')
+  assert.ok(failed.error.length > 0, 'the error message must not be empty')
+  assert.equal(failed.suggestions, undefined, 'an error result must carry no suggestions')
+  assert.ok(!existsSync(resultPath), 'a MALFORMED result file must be deleted too, or the poll pins forever')
+  // The recovery this buys: the very next poll is pending again, so a Refresh
+  // can actually retry instead of re-reading the same broken file.
+  assert.deepEqual(
+    await service.readSuggestions({ workspaceId: 'ws' }),
+    { status: 'pending' },
+    'after a malformed result is consumed the next poll must be pending again',
+  )
+
+  // A model that writes a valid but empty array is not an error: it is a scan
+  // that found nothing, and the modal says so rather than offering a retry.
+  writeFileSync(resultPath, '[]')
+  const none = await service.readSuggestions({ workspaceId: 'ws' })
+  assert.equal(none.status, 'ready', 'an empty array is a ready result, not an error')
+  assert.deepEqual(none.suggestions, [], 'an empty scan must report zero suggestions')
+
+  service.close()
+  rmSync(dir, { recursive: true, force: true })
 }
 
 // --- v1 -> v2 schema migration ----------------------------------------------
@@ -389,7 +482,11 @@ assert.equal(typeof m.apply, 'function', 'client half must export apply()')
   assert.ok(contribution, 'the client bundle must export TODO_REMOTE')
   assert.equal(contribution.package, '@dennisrongo/dsh-todo')
   const methods = contribution.descriptors.map((d) => d.method).sort()
-  assert.deepEqual(methods, ['list', 'replace'], 'contribution must cover both host methods')
+  assert.deepEqual(
+    methods,
+    ['list', 'readSuggestions', 'replace', 'scanDigest'],
+    'contribution must cover every host method',
+  )
 
   // Mirror of dsh's requireStrictCodec.
   const requireStrict = (codec, where) => {
@@ -460,6 +557,56 @@ assert.equal(typeof m.apply, 'function', 'client half must export apply()')
     code: 'revision-conflict',
     list: { items: [], revision: 9, updatedAt: 2 },
   })
+
+  // --- the two scan endpoints, on the same terms ---------------------------
+  const digestDesc = contribution.descriptors.find((d) => d.method === 'scanDigest')
+  digestDesc.parameters[0].codec.schema.parse({ workspaceId: 'w1' })
+  // Both fields must survive: a digest that arrives without `truncated` reads
+  // as a complete scan of the workspace, which is the exact false claim the
+  // flag exists to prevent.
+  const digestBack = digestDesc.result.schema.parse({ digest: 'D', truncated: true })
+  assert.equal(digestBack.digest, 'D', 'digest must survive the result codec')
+  assert.equal(digestBack.truncated, true, 'truncated must survive the result codec')
+  assert.throws(
+    () => digestDesc.result.schema.parse({ digest: 'D' }),
+    'truncated is not optional — a missing flag must be refused, not defaulted',
+  )
+
+  const readDesc = contribution.descriptors.find((d) => d.method === 'readSuggestions')
+  readDesc.parameters[0].codec.schema.parse({ workspaceId: 'w1' })
+  // The ordinary poll: no file yet, and no suggestions key at all.
+  assert.equal(readDesc.result.schema.parse({ status: 'pending' }).status, 'pending')
+  // A parse failure travels as a MESSAGE, so `error` must be named or the modal
+  // would render an error state with nothing in it.
+  const errBack = readDesc.result.schema.parse({ status: 'error', error: 'bad json' })
+  assert.equal(errBack.error, 'bad json', 'error must survive the result codec')
+  // Every Suggestion field has to be proven, for the same reason each TodoItem
+  // field is above: a strict codec drops what it does not name, in silence.
+  const suggestion = {
+    title: 'Add retry', rationale: 'Network calls are unguarded',
+    priority: 'p1', evidence: 'src/a.ts:12',
+  }
+  const readyBack = readDesc.result.schema.parse({ status: 'ready', suggestions: [suggestion] })
+  for (const key of Object.keys(suggestion)) {
+    assert.equal(readyBack.suggestions[0][key], suggestion[key], key + ' must survive the result codec')
+  }
+  // `evidence` is genuinely optional — a missing feature has no line number —
+  // so a suggestion without it must still pass rather than fail the whole read.
+  readDesc.result.schema.parse({
+    status: 'ready',
+    suggestions: [{ title: 't', rationale: 'r', priority: 'p2' }],
+  })
+  assert.throws(
+    () => readDesc.result.schema.parse({ status: 'nope' }),
+    'an unknown status must not pass the wire codec',
+  )
+  assert.throws(
+    () => readDesc.result.schema.parse({
+      status: 'ready',
+      suggestions: [{ title: 't', rationale: 'r', priority: 'urgent' }],
+    }),
+    'an invalid priority must not pass the wire codec',
+  )
 }
 
 // computeStats

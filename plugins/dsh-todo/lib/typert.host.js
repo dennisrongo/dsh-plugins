@@ -37,6 +37,22 @@ var replaceResultSchema = z.union([
     list: todoListSchema
   })
 ]);
+var scanRequestSchema = z.object({ workspaceId: z.string() });
+var scanDigestResultSchema = z.object({
+  digest: z.string(),
+  truncated: z.boolean()
+});
+var suggestionSchema = z.object({
+  title: z.string(),
+  rationale: z.string(),
+  priority: z.enum(["p0", "p1", "p2", "p3"]),
+  evidence: z.string().optional()
+});
+var readSuggestionsResultSchema = z.object({
+  status: z.enum(["pending", "ready", "error"]),
+  suggestions: z.array(suggestionSchema).optional(),
+  error: z.string().optional()
+});
 var PACKAGE = "@dennisrongo/dsh-todo";
 function descriptor(method, request, result) {
   return {
@@ -72,7 +88,9 @@ var TODO_REMOTE = {
   package: PACKAGE,
   descriptors: [
     descriptor("list", listRequestSchema, listResultSchema),
-    descriptor("replace", replaceRequestSchema, replaceResultSchema)
+    descriptor("replace", replaceRequestSchema, replaceResultSchema),
+    descriptor("scanDigest", scanRequestSchema, scanDigestResultSchema),
+    descriptor("readSuggestions", scanRequestSchema, readSuggestionsResultSchema)
   ]
 };
 
@@ -103,6 +121,18 @@ var TYPERT = {
             name: "replace",
             signature: "@Remote replace(request: TodoReplaceRequest): Promise<TodoReplaceResult>",
             summary: "Replace one workspace's list, guarded by the observed revision."
+          },
+          {
+            kind: "method",
+            name: "scanDigest",
+            signature: "@Remote scanDigest(request: SuggestScanRequest): Promise<ScanDigestResult>",
+            summary: "Build the bounded workspace evidence a scan session reasons over."
+          },
+          {
+            kind: "method",
+            name: "readSuggestions",
+            signature: "@Remote readSuggestions(request: SuggestScanRequest): Promise<ReadSuggestionsResult>",
+            summary: "Read and consume whatever a scan session has written so far."
           }
         ],
         types: [
@@ -129,6 +159,22 @@ var TYPERT = {
           {
             name: "TodoReplaceResult",
             declaration: "export type TodoReplaceResult = { ok: true; list: TodoList } | { ok: false; code: 'revision-conflict'; list: TodoList };"
+          },
+          {
+            name: "SuggestScanRequest",
+            declaration: "export interface SuggestScanRequest {\n    workspaceId: string;\n}"
+          },
+          {
+            name: "ScanDigestResult",
+            declaration: "export interface ScanDigestResult {\n    digest: string;\n    truncated: boolean;\n}"
+          },
+          {
+            name: "Suggestion",
+            declaration: "export interface Suggestion {\n    title: string;\n    rationale: string;\n    priority: TodoPriority;\n    evidence?: string;\n}"
+          },
+          {
+            name: "ReadSuggestionsResult",
+            declaration: "export interface ReadSuggestionsResult {\n    status: 'pending' | 'ready' | 'error';\n    suggestions?: Suggestion[];\n    error?: string;\n}"
           }
         ]
       }

@@ -37,7 +37,7 @@
  *
  * @module @dennisrongo/dsh-todo
  */
-import { readFileSync, renameSync, existsSync } from 'node:fs'
+import { readFileSync, renameSync, existsSync, unlinkSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute, join, resolve } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -49,15 +49,23 @@ import type { Workspace } from '@deepseek-ai/dsh-workspace'
 // The durable storage layer is shared with the CLI so there is exactly one
 // implementation of the schema and the v1 -> v2 migration.
 import { openDb as openTodoDb, readList as readTodoList, writeList as writeTodoList } from './db.ts'
+// The scanner and the suggestion parser are shared with the test and the client
+// bundle, so there is exactly one implementation of each.
+import { buildDigest } from './scan.ts'
+import { parseSuggestions } from './suggest.ts'
 import {
   MAX_DESC,
   MAX_ITEMS,
   MAX_LABEL,
   MAX_TEXT,
+  SUGGESTIONS_FILE,
   normalizeDueDate,
   normalizeLabel,
   toPriority,
   toStatus,
+  type ReadSuggestionsResult,
+  type ScanDigestResult,
+  type SuggestScanRequest,
   type TodoItem,
   type TodoList,
   type TodoListRequest,
@@ -297,6 +305,68 @@ export class TodoService extends TypertRemoteService {
       this.writeList(db, items, current.revision + 1)
       return { ok: true, list: this.readList(db) }
     })
+  }
+
+  /**
+   * Build the bounded evidence a scan session reasons over.
+   *
+   * Read-only and side-effect free: it neither starts a scan nor touches the
+   * todo database. The client sends the result on to a session it creates.
+   *
+   * `truncated` is passed through UNINTERPRETED. It is one flag over several
+   * independent caps, so it cannot say WHAT was dropped — the digest text
+   * discloses that per section. Nothing here may treat a small digest as a
+   * complete one.
+   *
+   * @param request - the workspace to scan.
+   * @returns the digest, and whether anything was left out.
+   */
+  @Remote
+  async scanDigest(request: SuggestScanRequest): Promise<ScanDigestResult> {
+    return buildDigest(this.workspaceDir(request?.workspaceId))
+  }
+
+  /**
+   * Read whatever a scan session has written so far.
+   *
+   * The file is DELETED once read — on BOTH paths, which is load-bearing on the
+   * error path too. This endpoint is polled, so a malformed result left on disk
+   * would be re-read on every tick and pin the modal to the same error forever,
+   * with no way out but deleting the file by hand. Consuming it means the next
+   * poll reports `pending` again and a Refresh can actually retry. Deleting on
+   * success separately stops a previous run's answers showing while a new scan
+   * is still working — a stale list that looks fresh is worse than an honest
+   * empty one.
+   *
+   * A model writing unusable JSON is an expected outcome, so this reports
+   * `status: 'error'` rather than throwing: the modal turns that into a
+   * Refresh, where a fault would take down the tab.
+   *
+   * @param request - the workspace whose scan result to read.
+   * @returns pending when no file exists yet, otherwise the parsed result.
+   */
+  @Remote
+  async readSuggestions(request: SuggestScanRequest): Promise<ReadSuggestionsResult> {
+    const path = join(this.workspaceDir(request?.workspaceId), ...SUGGESTIONS_FILE.split('/'))
+    let raw: string
+    try {
+      raw = readFileSync(path, 'utf8')
+    } catch {
+      // No file yet is the ordinary case while the session is still working.
+      return { status: 'pending' }
+    }
+
+    const parsed = parseSuggestions(raw)
+    // Consume the file either way: a malformed result left on disk would be
+    // re-read on every poll and pin the modal to the same error forever.
+    try {
+      unlinkSync(path)
+    } catch {
+      // Nothing actionable — the result is already in hand.
+    }
+
+    if (!parsed.ok) return { status: 'error', error: parsed.error }
+    return { status: 'ready', suggestions: parsed.suggestions }
   }
 
   /** Queue one whole read/compare/write behind this workspace's prior write. */

@@ -299,3 +299,37 @@ export interface Suggestion {
    */
   evidence?: string
 }
+
+/** Request for both scan endpoints — one workspace, nothing else. */
+export interface SuggestScanRequest {
+  workspaceId: string
+}
+
+/** The bounded evidence a scan session reasons over. */
+export interface ScanDigestResult {
+  digest: string
+  /**
+   * True when ANY evidence was left out — a clipped file tree, a capped comment
+   * list, or the whole digest hitting its byte ceiling.
+   *
+   * Deliberately a single flag, and therefore a WEAK signal: it conflates a
+   * cosmetic clip with half the TODO comments missing. The digest TEXT
+   * distinguishes them — every cap discloses itself in its section header — so
+   * a reader that needs to know WHAT was dropped must read the digest, not this
+   * boolean. Do not size anything against it.
+   */
+  truncated: boolean
+}
+
+/**
+ * Where a scan has got to.
+ *
+ * `pending` covers "no file yet" — the ordinary case while the session works.
+ * `error` is a model that wrote unusable output, which is EXPECTED, not
+ * exceptional, and must reach the UI as a message rather than a thrown fault.
+ */
+export interface ReadSuggestionsResult {
+  status: 'pending' | 'ready' | 'error'
+  suggestions?: Suggestion[]
+  error?: string
+}

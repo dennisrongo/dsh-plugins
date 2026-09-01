@@ -80,6 +80,18 @@ export const TYPERT = {
             signature: '@Remote replace(request: TodoReplaceRequest): Promise<TodoReplaceResult>',
             summary: "Replace one workspace's list, guarded by the observed revision.",
           },
+          {
+            kind: 'method' as const,
+            name: 'scanDigest',
+            signature: '@Remote scanDigest(request: SuggestScanRequest): Promise<ScanDigestResult>',
+            summary: 'Build the bounded workspace evidence a scan session reasons over.',
+          },
+          {
+            kind: 'method' as const,
+            name: 'readSuggestions',
+            signature: '@Remote readSuggestions(request: SuggestScanRequest): Promise<ReadSuggestionsResult>',
+            summary: "Read and consume whatever a scan session has written so far.",
+          },
         ],
         types: [
           {
@@ -109,6 +121,24 @@ export const TYPERT = {
             name: 'TodoReplaceResult',
             declaration:
               "export type TodoReplaceResult = { ok: true; list: TodoList } | { ok: false; code: 'revision-conflict'; list: TodoList };",
+          },
+          {
+            name: 'SuggestScanRequest',
+            declaration: 'export interface SuggestScanRequest {\n    workspaceId: string;\n}',
+          },
+          {
+            name: 'ScanDigestResult',
+            declaration: 'export interface ScanDigestResult {\n    digest: string;\n    truncated: boolean;\n}',
+          },
+          {
+            name: 'Suggestion',
+            declaration:
+              'export interface Suggestion {\n    title: string;\n    rationale: string;\n    priority: TodoPriority;\n    evidence?: string;\n}',
+          },
+          {
+            name: 'ReadSuggestionsResult',
+            declaration:
+              "export interface ReadSuggestionsResult {\n    status: 'pending' | 'ready' | 'error';\n    suggestions?: Suggestion[];\n    error?: string;\n}",
           },
         ],
       },
