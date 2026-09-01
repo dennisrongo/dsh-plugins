@@ -32,9 +32,7 @@ var IGNORED_DIRS = /* @__PURE__ */ new Set([
   "vendored",
   "third_party",
   "thirdparty",
-  "external",
   "generated",
-  "gen",
   "__generated__",
   "Pods",
   "Carthage",
@@ -65,7 +63,10 @@ var MAX_COMMENTS = 80;
 var MAX_UNTESTED = 40;
 var MAX_COMMENT_LINE = 160;
 var README_BYTES = 4e3;
+var MANIFEST_BYTES = 2e3;
 var MAX_DEPTH = 8;
+var SCAN_CEILING_FACTOR = 10;
+var MAX_FILES_READ = 400;
 var MAX_READ_BYTES = 2 * 1024 * 1024;
 function posix(path) {
   return path.split(sep).join("/");
@@ -116,14 +117,35 @@ function readText(path, limit = Number.MAX_SAFE_INTEGER) {
   if (raw.includes("\0")) return "";
   return raw.length > limit ? raw.slice(0, limit) : raw;
 }
+function skippedForSize(path) {
+  try {
+    return statSync(path).size > MAX_READ_BYTES;
+  } catch {
+    return false;
+  }
+}
 var COMMENT_RE = /(?:^|\s)(?:\/\/|#|\/\*|\*)\s*(TODO|FIXME|HACK)\b[:\s]?(.*)$/;
 function collectComments(root, files) {
+  const ceiling = MAX_COMMENTS * SCAN_CEILING_FACTOR;
   const kept = [];
   let total = 0;
+  let read = 0;
+  let skipped = 0;
+  let bounded = false;
   for (const rel of files) {
     const dot = rel.lastIndexOf(".");
     if (dot < 0 || !SOURCE_EXT.has(rel.slice(dot))) continue;
-    const text = readText(join(root, rel));
+    if (total >= ceiling || read >= MAX_FILES_READ) {
+      bounded = true;
+      break;
+    }
+    const full = join(root, rel);
+    if (skippedForSize(full)) {
+      skipped += 1;
+      continue;
+    }
+    read += 1;
+    const text = readText(full);
     if (text === "") continue;
     const lines = text.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
@@ -135,7 +157,7 @@ function collectComments(root, files) {
       kept.push(`${rel}:${i + 1}  ${match[1]} ${body}`.trimEnd());
     }
   }
-  return { kept, total };
+  return { kept, total, bounded, skippedForSize: skipped };
 }
 function hasTest(base, testNames) {
   return testNames.has(`${base}.test`) || testNames.has(`${base}.spec`) || testNames.has(`test_${base}`) || testNames.has(`${base}_test`) || testNames.has(base);
@@ -150,8 +172,10 @@ function collectUntested(files) {
       testNames.add(stem.replace(/\.(test|spec)$/i, ""));
     }
   }
+  const ceiling = MAX_UNTESTED * SCAN_CEILING_FACTOR;
   const kept = [];
   let total = 0;
+  let bounded = false;
   for (const rel of files) {
     const dot = rel.lastIndexOf(".");
     if (dot < 0 || !SOURCE_EXT.has(rel.slice(dot))) continue;
@@ -159,13 +183,25 @@ function collectUntested(files) {
     const stem = rel.slice(rel.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
     if (/^(index|main|types|constants)$/i.test(stem)) continue;
     if (hasTest(stem, testNames)) continue;
+    if (total >= ceiling) {
+      bounded = true;
+      break;
+    }
     total += 1;
     if (kept.length < MAX_UNTESTED) kept.push(rel);
   }
-  return { kept, total };
+  return { kept, total, bounded, skippedForSize: 0 };
 }
-function sectionHeader(title, total, kept) {
-  return kept < total ? `### ${title} (${total} found, showing ${kept})` : `### ${title} (${total})`;
+function sectionHeader(title, total, kept, options = {}) {
+  const bound = options.bounded === true ? "+" : "";
+  const skipped = options.skippedForSize ?? 0;
+  const note = skipped > 0 ? ` (${skipped} file(s) too large to read)` : "";
+  const counts = kept < total || options.bounded === true ? `(${total}${bound} found, showing ${kept})` : `(${total})`;
+  return `### ${title} ${counts}${note}`;
+}
+function fileHeader(name, text, limit) {
+  if (text.length < limit) return `### ${name}`;
+  return `### ${name} (clipped to first ${Math.round(limit / 1e3)} KB)`;
 }
 function assemble(sections, walkTruncated) {
   const parts = walkTruncated ? sections.concat(
@@ -190,31 +226,45 @@ ${tree.join("\n")}`);
   }
   const readmeName = files.find((f) => /^readme(\.md|\.txt)?$/i.test(f));
   if (readmeName !== void 0) {
-    const text = readText(join(root, readmeName), README_BYTES).trim();
-    if (text !== "") sections.push(`### ${readmeName}
+    const raw = readText(join(root, readmeName), README_BYTES);
+    const text = raw.trim();
+    if (text !== "") {
+      if (raw.length >= README_BYTES) sectionTruncated = true;
+      sections.push(`${fileHeader(readmeName, raw, README_BYTES)}
 ${text}`);
+    }
   }
   const manifest = files.find((f) => f === "package.json");
   if (manifest !== void 0) {
-    const text = readText(join(root, manifest), 2e3).trim();
-    if (text !== "") sections.push(`### package.json
+    const raw = readText(join(root, manifest), MANIFEST_BYTES);
+    const text = raw.trim();
+    if (text !== "") {
+      if (raw.length >= MANIFEST_BYTES) sectionTruncated = true;
+      sections.push(`${fileHeader("package.json", raw, MANIFEST_BYTES)}
 ${text}`);
+    }
   }
   const comments = collectComments(root, files);
-  if (comments.kept.length > 0) {
-    if (comments.kept.length < comments.total) sectionTruncated = true;
+  if (comments.kept.length > 0 || comments.skippedForSize > 0) {
+    if (comments.kept.length < comments.total || comments.bounded || comments.skippedForSize > 0) sectionTruncated = true;
     sections.push(
-      sectionHeader("Unresolved comments (TODO/FIXME/HACK)", comments.total, comments.kept.length) + "\n" + comments.kept.join("\n")
+      sectionHeader(
+        "Unresolved comments (TODO/FIXME/HACK)",
+        comments.total,
+        comments.kept.length,
+        { bounded: comments.bounded, skippedForSize: comments.skippedForSize }
+      ) + (comments.kept.length > 0 ? "\n" + comments.kept.join("\n") : "")
     );
   }
   const untested = collectUntested(files);
   if (untested.kept.length > 0) {
-    if (untested.kept.length < untested.total) sectionTruncated = true;
+    if (untested.kept.length < untested.total || untested.bounded) sectionTruncated = true;
     sections.push(
       sectionHeader(
         "Untested modules (name-based hint, not a coverage run)",
         untested.total,
-        untested.kept.length
+        untested.kept.length,
+        { bounded: untested.bounded }
       ) + "\n" + untested.kept.join("\n")
     );
   }

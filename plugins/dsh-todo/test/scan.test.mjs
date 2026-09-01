@@ -249,6 +249,149 @@ test('an implausibly large source file is skipped rather than read whole', () =>
   assert.ok(out.digest.includes('still scanned'), 'ordinary files must still be scanned')
 })
 
+test('a file skipped for size is DISCLOSED, not silently dropped', () => {
+  const out = withWorkspace((root) => {
+    // The size skip is the newest silent truncation: the file is listed under
+    // ### Files, never read, and nothing said so. Same defect class as every
+    // other cap here — evidence dropped while the digest claimed completeness.
+    const filler = 'x'.repeat(1024)
+    writeFileSync(join(root, 'huge.js'), '// TODO: HUGE-FILE-LEAK\n' + filler.repeat(2200))
+    writeFileSync(join(root, 'small.ts'), '// TODO: still scanned\n')
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### Unresolved comments'))
+  assert.ok(header !== undefined, 'the comments section must be present')
+  assert.ok(
+    /1 file\(s\) too large to read/.test(header),
+    `the size skip was not disclosed: ${header}`,
+  )
+  // The file is listed in ### Files, so the digest asserts it is present. A
+  // scan that never opened it has lost evidence and must say so on the flag.
+  assert.ok(out.digest.includes('huge.js'), 'the file is listed, which is what makes silence a lie')
+  assert.equal(out.truncated, true, 'a file skipped for size must set the truncated flag')
+})
+
+test('an unreadable-but-small file does NOT claim a size skip', () => {
+  // The disclosure must count only the SIZE skip. readText also yields '' for
+  // a binary or unreadable file, and conflating those would report a size
+  // problem that does not exist — a false claim in the other direction.
+  const out = withWorkspace((root) => {
+    writeFileSync(join(root, 'bin.js'), Buffer.from([0x2f, 0x2f, 0x20, 0x00, 0x01, 0x0a]))
+    writeFileSync(join(root, 'a.ts'), '// TODO: real work\n')
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### Unresolved comments'))
+  assert.ok(header !== undefined, 'the comments section must be present')
+  assert.ok(!/too large to read/.test(header), `a binary file was miscounted as oversized: ${header}`)
+})
+
+// --- Bounded comment scan -------------------------------------------------
+//
+// Removing collectComments' early `break` to report a true total made the
+// WORST case universal: every source file in the repo got read on every scan,
+// measured at 3.4s for 1200x180KB and ~19s at 4000 files. The fix is a ceiling
+// on how far counting continues, with the total disclosed as a LOWER BOUND
+// once it binds. A disclosed lower bound is honest; a silent drop is not.
+
+test('the comment scan stops at a bounded ceiling and discloses a lower bound', () => {
+  const out = withWorkspace((root) => {
+    // MAX_COMMENTS is 80 and the ceiling is MAX_COMMENTS * 10 = 800. Two
+    // comments per file over 600 files is 1200 available, comfortably past it,
+    // so the ceiling — not the file supply — is what stops the scan.
+    for (let i = 0; i < 600; i += 1) {
+      writeFileSync(join(root, `c${i}.ts`), `// TODO: first ${i}\n// FIXME: second ${i}\n`)
+    }
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### Unresolved comments'))
+  assert.ok(header !== undefined, 'the comments section must be present')
+  // Asserting the DISCLOSURE, not a wall-clock time: a timing assertion is
+  // flaky in CI, but the '+' can only be printed on the path that stopped
+  // early, so it is exact evidence that the early exit was taken.
+  assert.ok(
+    /800\+ found, showing 80/.test(header),
+    `the ceiling must disclose the total as a lower bound: ${header}`,
+  )
+  assert.equal(out.truncated, true, 'a bounded scan still dropped evidence')
+})
+
+test('the scan stops after a bounded number of FILES, not only comments', () => {
+  const out = withWorkspace((root) => {
+    // One comment per file — the density that makes a comment-only ceiling
+    // useless, and the shape of the fixture the slowdown was measured on. To
+    // count 800 comments the scan must open 800 files, so the comment ceiling
+    // saves nothing here; only a bound on files opened does. 700 files is past
+    // MAX_FILES_READ (400) but far short of the 800-comment ceiling, so this
+    // can ONLY pass if the file bound exists.
+    for (let i = 0; i < 700; i += 1) {
+      writeFileSync(join(root, `f${i}.ts`), `// TODO: single item ${i}\n`)
+    }
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### Unresolved comments'))
+  assert.ok(header !== undefined, 'the comments section must be present')
+  // 400 files x 1 comment = 400 found, disclosed as a lower bound. A scan that
+  // read everything would report exactly 700 with no '+'.
+  assert.ok(
+    /400\+ found, showing 80/.test(header),
+    `the file-read bound did not stop the scan: ${header}`,
+  )
+  assert.equal(out.truncated, true, 'a bounded scan still dropped evidence')
+})
+
+test('below the ceiling the comment total stays EXACT, with no lower-bound marker', () => {
+  // The bound must not cost the exactness C1 bought. Below the ceiling the
+  // header reports the true count and never decorates it with '+'.
+  const out = withWorkspace((root) => {
+    for (let i = 0; i < 200; i += 1) {
+      writeFileSync(join(root, `c${i}.ts`), `// TODO: item number ${i}\n`)
+    }
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### Unresolved comments'))
+  assert.ok(header !== undefined, 'the comments section must be present')
+  assert.ok(/200 found, showing 80/.test(header), `exact total was lost: ${header}`)
+  assert.ok(!/\+ found/.test(header), `an exact total must not be marked as a bound: ${header}`)
+})
+
+// --- Clipped file sections ------------------------------------------------
+
+test('a clipped README says it was clipped', () => {
+  const out = withWorkspace((root) => {
+    // README_BYTES is 4000. The clip was silent: the header was a bare
+    // '### README.md', so a model read a truncated file as the whole file.
+    writeFileSync(join(root, 'README.md'), '# Project\n' + 'promises. '.repeat(600))
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### README.md'))
+  assert.ok(header !== undefined, 'the README section must be present')
+  assert.ok(/clipped to first 4 KB/.test(header), `the README clip was not disclosed: ${header}`)
+})
+
+test('a short README is NOT labelled clipped', () => {
+  const out = withWorkspace((root) => {
+    writeFileSync(join(root, 'README.md'), '# Project\nShort and complete.\n')
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### README.md'))
+  assert.ok(header !== undefined, 'the README section must be present')
+  assert.ok(!/clipped/.test(header), `an unclipped README was labelled clipped: ${header}`)
+})
+
+test('a clipped package.json says it was clipped', () => {
+  const out = withWorkspace((root) => {
+    // The package.json slice is 2000 bytes, and was equally silent.
+    const deps = {}
+    for (let i = 0; i < 200; i += 1) deps[`package-with-a-long-name-${i}`] = '^1.0.0'
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x', dependencies: deps }, null, 2))
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### package.json'))
+  assert.ok(header !== undefined, 'the package.json section must be present')
+  assert.ok(/clipped to first 2 KB/.test(header), `the manifest clip was not disclosed: ${header}`)
+})
+
+test('a short package.json is NOT labelled clipped', () => {
+  const out = withWorkspace((root) => {
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x' }, null, 2))
+  })
+  const header = out.digest.split('\n').find((l) => l.startsWith('### package.json'))
+  assert.ok(header !== undefined, 'the package.json section must be present')
+  assert.ok(!/clipped/.test(header), `an unclipped manifest was labelled clipped: ${header}`)
+})
+
 // --- Ignore list ----------------------------------------------------------
 
 test('common vendored and generated roots are never walked', () => {
@@ -264,6 +407,24 @@ test('common vendored and generated roots are never walked', () => {
     assert.ok(!out.digest.includes(`LEAK-FROM-${dir}`), `${dir} reached the digest`)
   }
   assert.ok(out.digest.includes('my own work'), 'first-party files must still be scanned')
+})
+
+test('plausibly first-party directory names are NOT ignored', () => {
+  // The ignore list is the one place a false positive costs the user their own
+  // code, and it erases it with NO disclosure — unlike every cap above, an
+  // ignored tree is not counted, not headed, and not flagged. `gen` and
+  // `external` are ordinary first-party names (a `gen/` module, an `external/`
+  // adapter layer), unlike `node_modules`, which nobody hand-writes.
+  const dirs = ['gen', 'external']
+  const out = withWorkspace((root) => {
+    for (const dir of dirs) {
+      mkdirSync(join(root, dir), { recursive: true })
+      writeFileSync(join(root, dir, 'v.js'), `// TODO: MINE-IN-${dir}\n`)
+    }
+  })
+  for (const dir of dirs) {
+    assert.ok(out.digest.includes(`MINE-IN-${dir}`), `${dir}/ was silently erased from the scan`)
+  }
 })
 
 // --- Symlink immunity -----------------------------------------------------
@@ -282,8 +443,13 @@ test('a symlink pointing at its own ancestor does not loop the walk', () => {
         'cannot create a symlink here: ' + error.code)
       return
     }
-    // The assertion is TERMINATION. buildDigest returning at all is the result;
-    // a regression here hangs or blows the stack rather than failing an assert.
+    // The REGEX ASSERTION BELOW IS THE DETECTOR — do not delete it as
+    // redundant. A regression here does NOT hang and does NOT blow the stack:
+    // MAX_DEPTH bounds the sabotaged walk, so following the link terminates
+    // normally and merely reports a truncated scan. What distinguishes the two
+    // is the repeated `loop/a/b/loop` path segment, which can only appear if
+    // the link was descended through. Reaching `buildDigest` returning is not
+    // evidence of anything.
     const out = buildDigest(root)
     assert.ok(out.digest.includes('reached'), 'the real file must still be found')
     assert.ok(
