@@ -35,3 +35,8 @@ scratch/
 
 # machine-local dev-link targets
 .dev-link.json
+
+# Subagent-driven-development scratch: per-plan ledgers, task briefs, reports
+# and review packages. Coordination state for an in-flight plan, never source —
+# the git history is the durable record once a plan lands.
+.superpowers/
