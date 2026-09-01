@@ -1362,7 +1362,9 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   //    `dshtd-sug-skel` does not match, so this skeleton would otherwise ship
   //    entirely unchecked — pin it here instead of trusting a checker that
   //    cannot see it.
-  const skel = /function SuggestSkeleton\(\)[\s\S]*?\n\}/.exec(source)
+  // Takes a `stage` prop: the caption names which half of the wait is running,
+  // so the component can no longer be argument-less.
+  const skel = /function SuggestSkeleton\(\{[\s\S]*?\n\}/.exec(source)
   assert.ok(skel, 'SuggestSkeleton must exist')
   assert.ok(skel[0].includes('role="status"'), 'the suggestion skeleton root must be a live region')
   assert.ok(skel[0].includes('aria-busy'), 'the suggestion skeleton root must carry aria-busy')
@@ -1374,8 +1376,18 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   //     — a loading state making a false claim about state, which is the thing
   //     the repo's loading rule exists to prevent. The ticker must therefore
   //     exist and be visible in the pane.
-  assert.ok(/Scanning the workspace/.test(skel[0]),
-    'the skeleton must caption what it is waiting for')
+  //     …and the caption must name WHICH wait. `scanning` covers two genuinely
+  //     different things — the host walking the workspace, and a real session
+  //     working while the modal polls — and one static sentence over both is
+  //     the loading rule's own failure mode: a state asserting more than it
+  //     knows. Both captions are pinned, so dropping either reverts to the
+  //     single-sentence version silently.
+  assert.ok(/Reading the workspace/.test(skel[0]),
+    'the digest half must caption itself — no session exists yet to wait on')
+  assert.ok(/Waiting for the scan session/.test(skel[0]),
+    'the polling half must caption itself — the wait is now on a real session')
+  assert.ok(/stage === 'digest'/.test(skel[0]),
+    'the caption must be chosen from the stage the client itself set')
   assert.ok(/\{elapsed\}s|\$\{elapsed\}s/.test(skel[0]),
     'the skeleton must show elapsed seconds, or a 180s wait reads as hung')
 
@@ -1432,6 +1444,22 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   //    exactly what archived a just-prompted session in the launch flow.
   assert.ok(/const id = sessionRef\.current\s*\n\s*sessionRef\.current = null/.test(source),
     'cleanup must take the session id and blank the ref in the SAME step')
+
+  // 9b. …and the blank must stay UNCONDITIONAL now that adoption can suppress
+  //     the discard. Archiving is skipped for a session the user opened, but a
+  //     cleanup that also skips the blank stops being idempotent and the five
+  //     callers (ready, error, timeout, catch, unmount) diverge. The full
+  //     both-directions contract lives in test/suggest-lifecycle.mjs; this pins
+  //     the ORDER, which is what a refactor is most likely to invert.
+  {
+    const cleanupBody = /const cleanup = React\.useCallback\(\(\): void => \{[\s\S]*?\n  \}, \[[^\]]*\]\)/.exec(source)
+    assert.ok(cleanupBody, 'SuggestDialog must define cleanup as a useCallback')
+    const blankAt = cleanupBody[0].indexOf('sessionRef.current = null')
+    const adoptAt = cleanupBody[0].indexOf('adoptedRef.current')
+    assert.ok(adoptAt !== -1, 'cleanup must consult the adoption ref')
+    assert.ok(blankAt !== -1 && blankAt < adoptAt,
+      'the ref must be blanked BEFORE the adoption branch, or an adopted cleanup is no longer idempotent')
+  }
 
   // 10. AN EMPTY DIGEST IS GUARDED, AND THE GUARD RUNS BEFORE sessions.create.
   //     buildDigest returns digest:'' for four distinct cases — a missing

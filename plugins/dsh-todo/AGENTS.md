@@ -498,6 +498,72 @@ therefore uses only public paths the plugin already depends on: `sessions.create
   because Refresh carries `disabled={phase === 'scanning'}`, so no earlier loop can still be
   live — an invariant enforced in the JSX and consumed in the callback with nothing linking
   the two.
+- **…but it does NOT archive on every path any more: OPENING THE SCAN SESSION ADOPTS IT.**
+  A skeleton and a counter cannot distinguish *working* from *stuck*, so **Open scan
+  session** navigates to the run through `launch.sessions.open(sessionId)` — the same public
+  call the launch flow ends on — and the user watches the real conversation view. Archiving
+  that session on the next poll, 1.5s later, would be the modal opening a door and then
+  removing the room behind it. `adoptedRef` is set when they open it, and `cleanup()` skips
+  `discardSession` while it is set.
+  Four properties are load-bearing, and three of them are the ways this goes wrong:
+  - **The blank is still unconditional.** `cleanup()` takes the id, nulls `sessionRef`, and
+    only *then* consults `adoptedRef` — the adoption branch sits AFTER the blank. Skipping
+    the blank for an adopted session would leave a live id for the next of the five callers
+    and end the idempotency the whole shape exists for. The shape is otherwise unchanged,
+    deliberately: this must not become state, for exactly the `closeLaunch` reason above.
+  - **Adoption is recorded BEFORE navigating.** A poll lands every 1.5s, and it can land
+    between the two statements; setting the flag after `sessions.open` leaves a window in
+    which the session being navigated to is archived on the way.
+  - **A non-adopted scan must STILL be archived.** Deleting the discard "fixes" the same
+    symptom and reintroduces the sidebar litter that create-on-open pays `discardSession` to
+    prevent — abandoning a scan by closing the modal is the ORDINARY case.
+    `test/suggest-lifecycle.mjs` pins both directions the way `launch-lifecycle.mjs` does,
+    from one simulator, plus idempotency across repeated calls.
+  - **The SECOND discard cannot be adopted, and that is not an oversight.** The one at the
+    cancelled-between-create-and-store window (`src/client.tsx`, in `runScan` right after
+    `sessions.create`) fires on a session whose id has not yet reached `sessionRef` — let
+    alone `scanSessionId`, which is what the button renders from. The user cannot have opened
+    a session that was never stored, never rendered, and never offered, so there is no
+    adoption to honour and the archive is unconditionally right there. `runScan` also clears
+    `adoptedRef` *after* its opening `cleanup()`, so a previous run's adoption is honoured by
+    that cleanup and does not leak into the new run's session.
+- **The open button renders only when an id is actually held, and it never resurrects.**
+  `scanSessionId` is separate state, not `sessionRef`, because the two need different
+  lifetimes: the ref is blanked on read to keep cleanup idempotent, while the button must
+  outlive that blanking — on the **error** phase `cleanup()` has already nulled the ref, and
+  that is precisely when the user needs to open the session to see what it did. During the
+  digest stage there is no session at all, so the button is absent rather than present and
+  broken. Null means no button; nothing here un-archives anything, because adoption is what
+  prevents the archive in the first place.
+- **The scan session is NAMED, through the same borrowed face `launchSession` uses.**
+  `binding.session.rename(scanSessionTitle(workspaceName))` — `Scan: <workspace>` — after the
+  prompt, for the same reason step 5 is late in a launch. Unnamed, the session is titled by
+  `session-title-first-prompt-llm` summarising a 17KB evidence digest, which is the one input
+  guaranteed to produce a name nobody can find in a sidebar. **Both the call and the await are
+  guarded** (`typeof … === 'function'` plus a `try`): `rename` is absent on an older binding,
+  and a failure is **non-fatal** — never fail a scan the user is waiting on over a cosmetic
+  title. `scanSessionTitle` mirrors the connection's own normalisation and falls back to a
+  fixed label rather than sending the blank the wire refuses with `title-invalid`. The
+  workspace name comes off the **same `workspaces.list` projection row** the slot already
+  reads for `workspaceId` (the shell's sidebar labels its groups from that `title`), so it
+  costs no new service and no new guarded read; it is typed optional because this package
+  does not own that projection.
+- **The caption names WHICH wait, from local state only.** `phase === 'scanning'` covers two
+  genuinely different things — the host walking the workspace, and a real session working
+  while the modal polls — and one static sentence over both is the loading rule's own failure
+  mode: a loading state asserting more than it knows. A `stage` of `digest` | `polling`,
+  set where each step actually happens, drives `Reading the workspace…` and `Waiting for the
+  scan session…`; the elapsed counter, the single `role="status"` region and the
+  `aria-hidden` ticker are all unchanged.
+  **Live token streaming was investigated and REJECTED — do not revisit it.**
+  `uiConversation.binding(id).snapshot` is a `createSnapshotStore` over `{views,
+  activeTargets}` — a **view registry, not messages** — so extracting a current step needs
+  `ConversationNodeAssembler` plus registered event matchers; the alternative feed,
+  `owner.eventSource`, is consumed in `dsh-client-ui-conversation` and **defined in no client
+  bundle**; and `uiConversation.binding()` **throws** on an unknown session. Every route runs
+  through unpublished internals, which is the exact bet this file records losing four times,
+  three of them emptying the tab. The Open button buys the same visibility through one public
+  call instead.
 - **Suggestions are never stored.** They are proposals until promoted; only "Add selected"
   writes, and it writes through the existing `store.update` path in exactly ONE place, as a
   single batched call, so it inherits revision-conflict reconciliation and puts one
