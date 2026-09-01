@@ -114,6 +114,42 @@ Expect this warning on install; it is orientation, not a fault:
 
 The library is a plain library. Only the plugin is a bundle.
 
+## Tests
+
+`pnpm test` → `test/smoke.mjs`, offline, no harness, no build step. It builds throwaway
+catalogs in `tmpdir()` and drives `apply()` with a stub context whose `skills.registerProvider`
+captures the constructed provider.
+
+**Why this package needs tests more than its ~300 lines suggest: every failure mode is
+silent, and each is silent differently.** `validateCandidate` **throws** on a malformed
+candidate and the registry then skips the *whole* provider with a warning — so one wrong
+field costs you the entire catalog, not one skill. `enabled: false`, an unresolvable root,
+and an unreadable catalog all register nothing and let dsh boot normally. And the root
+`test` script is `pnpm -r --if-present run test`, so this package having **no test script
+at all** kept `pnpm test` green for eleven releases. `scripts/check-suites.mjs` now fails
+that state; see the root `AGENTS.md`.
+
+The 23 checks cover the candidate contract field by field (including `provider` having to
+equal the provider's own `name`, and `resourceBase` being the **directory** rather than the
+`SKILL.md`), `get()` re-reading from disk, an unreadable catalog reporting
+`complete: false` instead of a complete-and-empty list, one malformed bundle not sinking the
+others (missing description, non-kebab name, and the real upstream `": "` YAML defect),
+`_`/`.`-prefixed directories staying out, registration going through `ctx.effect`, and the
+full resolution precedence (config > env > bundled dependency).
+
+Every check was verified to FAIL against a matching sabotage before being trusted — 14 of
+them, including renaming `PROVIDER`, pointing `resourceBase` at the file, emptying
+`invocation`, dropping `names.sort()`, serving `raw` instead of the stripped body, returning
+`[]` for an unreadable catalog, ignoring `enabled: false`, bypassing `ctx.effect`, and
+dropping config precedence. All 14 were caught.
+
+**One test is deliberately asserted against the warning TEXT, not by driving `apply()` into
+the unresolved-library branch.** That branch is unreachable wherever the library is
+installed — which is every developer machine and CI, since it is a hard dependency of this
+package. `dsh-superpowers`' `AGENTS.md` records the same trap: a resolution test that does
+not force the miss silently exercises the *found* path and proves nothing. Confirmed here by
+observation — an unconfigured `apply()` on this machine resolves a real 30-skill catalog.
+
 ## Editing notes
 
 - `yaml` is a real **dependency**, not a peer: `scripts/anchor.mjs` only anchors
