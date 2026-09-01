@@ -32,6 +32,7 @@ import {
   type PresetOption,
   type RawCatalogGroup,
 } from './launch.ts'
+import { composeScanPrompt } from './suggest.ts'
 import {
   DEFAULT_PRIORITY,
   DEFAULT_STATUS,
@@ -40,12 +41,16 @@ import {
   PRIORITIES,
   STATUSES,
   compareVersionsDesc,
+  makeRunId,
   normalizeDueDate,
   normalizeLabel,
   normalizeVersionLabel,
   toPriority,
   toStatus,
   type LabelField,
+  type ReadSuggestionsResult,
+  type ScanDigestResult,
+  type Suggestion,
   type TodoItem,
   type TodoPriority,
   type TodoStatus,
@@ -669,6 +674,19 @@ export class TodoStore {
 
   getSnapshot = (): TodoState => this.state
 
+  /**
+   * The host handle this store already holds.
+   *
+   * Exposed so the suggest dialog can reach `scanDigest`/`readSuggestions`
+   * without re-probing the cordis context. Re-probing would mean a second
+   * guarded read of `remote.dshTodo` from a fiber that may not declare it —
+   * the exact class of failure AGENTS.md records three outages for — when the
+   * view already has a handle that provably resolved.
+   */
+  get remoteFace(): TodoRemote {
+    return this.remote
+  }
+
   subscribe = (fn: Listener): (() => void) => {
     this.listeners.add(fn)
     return () => {
@@ -711,14 +729,27 @@ export class TodoStore {
 
   /**
    * Apply a pure list transform, echo it immediately, and persist it.
+   *
+   * Returns whether the write was APPLIED, which is not a formality: this drops
+   * the transform silently when the store is not `ready`, and a caller that
+   * treats calling as succeeding will act on a write that never happened. The
+   * suggest dialog is the case that matters — it closed unconditionally, so a
+   * store in `error` swallowed five checked suggestions and dismissed the only
+   * copy of them, unrecoverable without another 180s scan.
+   *
+   * `false` also covers a no-op transform (the same array back). Callers that
+   * close on success want that too: nothing changed, so nothing was lost.
+   *
    * @param fn - pure transform over the current items.
+   * @returns true when the new list was published and queued for persistence.
    */
-  update(fn: (items: TodoItem[]) => TodoItem[]): void {
-    if (this.state.status !== 'ready') return
+  update(fn: (items: TodoItem[]) => TodoItem[]): boolean {
+    if (this.state.status !== 'ready') return false
     const next = fn(this.state.items)
-    if (next === this.state.items) return
+    if (next === this.state.items) return false
     this.publish({ ...this.state, items: next, saving: true })
     void this.commit(next)
+    return true
   }
 
   /** Serialize writes so queued saves always compare against the committed revision. */
@@ -767,7 +798,7 @@ export class TodoStore {
   }
 }
 
-/** The two host calls this half needs, as the generated Remote face shapes them. */
+/** The host calls this half needs, as the generated Remote face shapes them. */
 export interface TodoRemote {
   list: (request: { workspaceId: string }) => Promise<RemoteReply<{ list: StoredList }>>
   replace: (request: {
@@ -775,6 +806,27 @@ export interface TodoRemote {
     items: TodoItem[]
     ifRevision: number | null
   }) => Promise<RemoteReply<ReplaceReply>>
+  /**
+   * Build the bounded workspace evidence a scan session reasons over.
+   *
+   * BLOCKS THE HOST EVENT LOOP: `buildDigest` is fully synchronous and `async`
+   * does not yield, so every other RPC stalls for its duration (~3s on a
+   * 1200-file workspace). Render the loading state BEFORE issuing this call,
+   * never after it resolves.
+   */
+  scanDigest: (request: { workspaceId: string }) => Promise<RemoteReply<ScanDigestResult>>
+  /**
+   * Poll for what THIS scan run has written, if anything yet.
+   *
+   * `runId` is required, and the host reads only that run's file. Archiving a
+   * scan session does not cancel it, so a timed-out or abandoned run still
+   * writes eventually; a shared path would let that late write be read back as
+   * the current run's answer.
+   */
+  readSuggestions: (request: {
+    workspaceId: string
+    runId: string
+  }) => Promise<RemoteReply<ReadSuggestionsResult>>
 }
 
 interface StoredList {
@@ -1201,6 +1253,18 @@ body[data-ds-dark-theme] .dshtd-status option {
 /* ---- toolbar (group-by) ---- */
 .dshtd-tools { flex: none; display: flex; align-items: center; gap: 6px; padding: 0 20px 10px; }
 .dshtd-tools label { color: var(--td-caption); font-size: 12px; line-height: 18px; }
+/* Pushed to the trailing edge so it reads as a tab-level action rather than a
+   third control on the group-by cluster. Smaller than .dshtd-btn, which is
+   sized for a dialog footer, but on the same 12px caption rung as the toolbar
+   it sits in. */
+.dshtd-suggest {
+  margin-left: auto;
+  border: 1px solid var(--td-border); border-radius: 999px; background: transparent;
+  color: var(--td-primary); font: inherit; font-size: 12px; line-height: 18px;
+  padding: 3px 12px; cursor: pointer;
+}
+.dshtd-suggest:hover { background: var(--td-hover); }
+.dshtd-suggest:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #6b7280); outline-offset: 1px; }
 
 /* ---- loading skeleton ----
    Shaped like the real list rather than a centred spinner, because the tab is a
@@ -1271,11 +1335,86 @@ body[data-ds-dark-theme] .dshtd-status option {
 .dshtd-state { color: var(--td-caption); font-size: 12px; line-height: 18px; }
 .dshtd-state.err { color: var(--td-danger); }
 
+/* ---- suggestion rows ----
+   Geometry is copied by .dshtd-sug-skel below — change both together or the
+   swap to real content will lurch. */
+.dshtd-sug-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px; border-radius: 8px;
+  border: 1px solid transparent;
+}
+.dshtd-sug-row:hover { background: var(--td-hover); border-color: var(--td-border); }
+.dshtd-sug-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.dshtd-sug-title { font-size: 14px; line-height: 20px; color: var(--td-primary); }
+.dshtd-sug-why {
+  font-size: 12px; line-height: 18px; color: var(--td-caption);
+  margin-top: 2px;
+}
+/* The evidence pointer is a file:line, so it follows the CODE font — the same
+   token the launch dialog's prompt uses. Clipped rather than wrapped: it is a
+   reference, and a wrapped path costs a whole row to say nothing more. */
+.dshtd-sug-eviden {
+  font-size: 12px; line-height: 18px; color: var(--td-caption);
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+  margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dshtd-sug-empty {
+  font-size: 14px; line-height: 22px; color: var(--td-caption);
+  padding: 24px 12px; text-align: center;
+}
+.dshtd-sug-status { font-size: 12px; line-height: 18px; color: var(--td-caption); }
+/* The scan's elapsed-time caption. Same rung as .dshtd-sug-status above — the
+   small-surface caption rule, 12px on an 18px line in the tertiary tone — so
+   the pane gains a sign of life without gaining a second visual weight.
+   Indented to the skeleton's own 12px gutter so it hangs under the bars rather
+   than under the pane edge. */
+.dshtd-sug-elapsed {
+  display: block; font-size: 12px; line-height: 18px; color: var(--td-caption);
+  padding: 6px 12px 0;
+}
+/* The suggestion checkbox rides the 20px title line the way .dshtd-check rides
+   the row's, so a long title cannot drag it off the first line. */
+.dshtd-sug-row > input[type="checkbox"] {
+  flex: none; width: 16px; height: 16px; margin: 2px 0;
+  accent-color: var(--td-accent); cursor: pointer;
+}
+
+/* Skeleton: the SAME padding, line boxes and gaps as .dshtd-sug-row, so nothing
+   moves when the real rows arrive. Bar heights are box dimensions stated
+   directly — never calc() off a font size, which lands between scale rungs. */
+.dshtd-sug-skel { display: flex; gap: 10px; padding: 10px 12px; }
+.dshtd-sug-skel > i {
+  display: block; height: 16px; border-radius: 4px; flex: 0 0 16px;
+  margin: 2px 0;
+  background: var(--td-hover);
+}
+.dshtd-sug-skel-body { flex: 1 1 auto; min-width: 0; }
+.dshtd-sug-skel-bar {
+  display: block; height: 12px; border-radius: 4px; margin: 4px 0;
+  background: linear-gradient(
+    90deg, var(--td-hover) 0%, var(--td-border) 50%, var(--td-hover) 100%
+  );
+  background-size: 300% 100%;
+  animation: dshtd-sug-shimmer 1.4s ease-in-out infinite;
+}
+/* background-position, never transform/width/opacity: those either reflow or
+   move the bar relative to the text it stands in for, which is the lurch a
+   skeleton exists to prevent.
+
+   Named *-shimmer deliberately. scripts/check-progress.mjs matches a sweep
+   keyframe as [a-z-]*shimmer, so a name like "-sweep" would ship this skeleton
+   with the timing, property and reduced-motion invariants silently UNCHECKED. */
+@keyframes dshtd-sug-shimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dshtd-progress > i, .dshtd-rowbtns { transition: none; }
   /* Hold the bars at a flat mid-tone: the skeleton still communicates "loading"
      by being there, without the sweep. */
   .dshtd-skel-lead > i, .dshtd-skel-bar { animation: none; background: var(--td-border); }
+  .dshtd-sug-skel-bar { animation: none; background: var(--td-border); }
 }
 `
 
@@ -1744,6 +1883,560 @@ export function LaunchDialog({
   )
 }
 
+/** How long to wait for a scan session before giving up and offering a retry. */
+const SCAN_TIMEOUT_MS = 180_000
+/** How often to ask the host whether the result file has landed. */
+const SCAN_POLL_MS = 1_500
+
+/**
+ * Which half of the `scanning` phase is running.
+ *
+ * The client knows exactly two things about a scan in progress, and they are
+ * genuinely different waits: `digest` is the host walking the workspace (a
+ * synchronous RPC with no session behind it yet), and `polling` is a real
+ * background session working while the modal reads for its result file. Only
+ * `polling` has a session to open, so this drives both the caption and whether
+ * the button can exist at all.
+ *
+ * Deliberately derived from what THIS component did — not from the session's
+ * own progress. Reading a live conversation would mean `uiConversation`'s
+ * binding snapshot (a view registry, not messages, and it throws on an unknown
+ * session) or `owner.eventSource`, which no client bundle defines. Both are
+ * unpublished internals, and betting on those is the single cause of every
+ * outage this package's AGENTS.md records.
+ */
+type ScanStage = 'digest' | 'polling'
+
+/**
+ * Name a scan session so it is identifiable once the user opens it.
+ *
+ * A scan session is created, prompted and never navigated to, so without a name
+ * it takes whatever `session-title-first-prompt-llm` invents from a 17KB
+ * evidence digest — which is the worst possible input for a one-line summary.
+ * The moment the modal offers to open it, that name is what the user has to
+ * find in the sidebar.
+ *
+ * Normalisation mirrors what the connection does on receipt (`trim`, collapse
+ * whitespace runs), exactly as `sessionTitleFor` does in launch.ts and for the
+ * same reason: a blank title is refused with `title-invalid`, so a workspace
+ * with no usable name falls back to a fixed label rather than spending a
+ * round-trip to be told no. Kept short — the sidebar row is narrow.
+ *
+ * @param workspaceName - the workspace being scanned, when it has a name.
+ * @returns the title to set; never blank, so the caller never sends one the
+ *   wire would refuse.
+ */
+export function scanSessionTitle(workspaceName: string | undefined): string {
+  const normalized = (workspaceName ?? '').replace(/\s+/g, ' ').trim()
+  if (normalized.length === 0) return 'Scan: workspace'
+  return `Scan: ${normalized.slice(0, MAX_SCAN_TITLE_NAME)}`
+}
+
+/** How much of a workspace name a scan title keeps. The sidebar row is narrow. */
+const MAX_SCAN_TITLE_NAME = 48
+
+/**
+ * Scan the workspace and offer the results as checkable proposals.
+ *
+ * The scan is a background session: created, prompted, never navigated to, and
+ * archived when it finishes or the dialog closes. That lifecycle is the same
+ * one LaunchDialog uses, minus the `sessions.open()` call.
+ *
+ * `phase` is an EXPLICIT flag, never inferred from `suggestions.length === 0`.
+ * Conflating "we have not looked" with "there is nothing" is what made
+ * dsh-plan-board claim a workspace had no plans during every read.
+ *
+ * An error is NOT terminal. `readSuggestions` classifies an unknown errno as a
+ * terminal `error`, which slightly over-reports — `EMFILE`/`EBUSY` are
+ * transient — so Refresh stays enabled in every phase but `scanning`, and
+ * nothing here may disable it permanently.
+ */
+export function SuggestDialog({
+  launch,
+  remote,
+  store,
+  items,
+  workspaceName,
+  onClose,
+}: {
+  launch: LaunchContext & { workspaceId: string }
+  /** The store's own host handle — never a fresh probe of the cordis context. */
+  remote: TodoRemote
+  store: TodoStore
+  items: TodoItem[]
+  /**
+   * OPTIONAL. The workspace's display name, for the scan session's title. Read
+   * from the SAME `workspaces.list` snapshot the slot already consults, so this
+   * costs no new service read; absent on a projection that carries no title,
+   * where the session gets a fixed label instead.
+   */
+  workspaceName?: string
+  onClose: () => void
+}): React.JSX.Element {
+  const [phase, setPhase] = React.useState<'scanning' | 'ready' | 'error'>('scanning')
+  /**
+   * Which half of `scanning` is running, for an honest caption.
+   *
+   * Two states because the client genuinely knows two things and no more: it is
+   * waiting on the host's digest walk, or it has handed a prompt to a real
+   * session and is polling for the result file. Everything finer would mean
+   * reading the session's own conversation, which is unpublished internals.
+   */
+  const [stage, setStage] = React.useState<ScanStage>('digest')
+  const [suggestions, setSuggestions] = React.useState<Suggestion[]>([])
+  const [checked, setChecked] = React.useState<Set<string>>(new Set())
+  const [error, setError] = React.useState<string | null>(null)
+  /**
+   * A REFUSED promotion, kept apart from `error`.
+   *
+   * `error` belongs to the scan and is rendered by the `phase === 'error'`
+   * branch, which replaces the rows. A failed "Add selected" must leave the
+   * rows and their checkboxes exactly where they are — suggestions are never
+   * stored, so blanking them costs another 180s scan — hence a second slot
+   * rather than reusing the first.
+   */
+  const [addError, setAddError] = React.useState<string | null>(null)
+  /** Titles already proposed this session, so Refresh returns new ideas. */
+  const seenRef = React.useRef<string[]>([])
+  /**
+   * The scan session, held in a REF and blanked in the same step it is read.
+   *
+   * A render-closure copy is exactly as stale as the one that archived a
+   * just-prompted session in the launch flow; blanking on read is what makes
+   * cleanup idempotent when two paths both try to clean up.
+   */
+  const sessionRef = React.useRef<string | null>(null)
+  /**
+   * True once the user has OPENED the scan session, which hands it to them.
+   *
+   * `cleanup()` archives the scan session on every exit path, and that is what
+   * keeps an abandoned scan out of the sidebar. But the moment the user clicks
+   * through to watch the conversation, the next poll would archive the very
+   * session they are reading — the modal offering a door and then removing the
+   * room behind it. Adoption is the flag that makes the archive skip.
+   *
+   * A REF, not state, for the same reason `sessionRef` is one: adoption and the
+   * cleanup it gates can both happen inside a single handler, before React
+   * commits anything, and a mirror refreshed only at render time would be
+   * exactly as stale as the render closure that archived a just-prompted
+   * session in the launch flow.
+   *
+   * It is only ever set, never cleared by cleanup — the user's claim on a
+   * session outlives the poll loop that created it. `runScan` clears it when a
+   * NEW scan starts, because that run owns a different session entirely.
+   */
+  const adoptedRef = React.useRef(false)
+  /**
+   * The scan session id AS RENDERED, which is deliberately not `sessionRef`.
+   *
+   * A ref cannot render a button into existence, and the two need different
+   * lifetimes: `sessionRef` is blanked on read so cleanup stays idempotent,
+   * while the button must survive that blanking — on the error path cleanup has
+   * already nulled the ref, and the session is exactly what the user needs to
+   * open to find out what went wrong. Null means NO button, never a button that
+   * fails on click: during the digest stage no session exists yet, and a run
+   * that never got one has nothing to offer.
+   *
+   * Nothing here resurrects an archived session. Adoption is what prevents the
+   * archive in the first place, so an id offered here is one the modal has not
+   * discarded.
+   */
+  const [scanSessionId, setScanSessionId] = React.useState<string | null>(null)
+  const cancelledRef = React.useRef(false)
+  /**
+   * The live items, for a Refresh that must exclude what the backlog holds NOW.
+   *
+   * `runScan` is deliberately not re-created when the list changes — a scan is
+   * started by opening the dialog or by Refresh, never by a re-render — so the
+   * list is read through a ref rather than captured in the closure.
+   */
+  const itemsRef = React.useRef(items)
+  itemsRef.current = items
+
+  /**
+   * Archive the scan session, exactly once, whoever asks — unless it was ADOPTED.
+   *
+   * The shape is unchanged and must stay unchanged: take the id, blank the ref,
+   * and only then decide. Blanking on READ is what makes this idempotent across
+   * the five paths that call it (ready, error, timeout, the catch, and unmount),
+   * and it is the same discipline that stopped a stale render closure archiving
+   * a just-prompted session in the launch flow. The adoption branch sits AFTER
+   * the blank, deliberately: an adopted cleanup must still leave the ref null,
+   * or a later caller sees a live id and the idempotency is gone.
+   *
+   * Adoption suppresses only the discard. It does not cancel the run, does not
+   * un-archive anything, and does not stop the poll loop — the user watching a
+   * scan session still gets its suggestions in the modal.
+   */
+  const cleanup = React.useCallback((): void => {
+    const id = sessionRef.current
+    sessionRef.current = null
+    if (id !== null && !adoptedRef.current) void discardSession(launch, id)
+  }, [launch])
+
+  /**
+   * Hand the scan session to the user and navigate to it.
+   *
+   * `sessions.open` is the same public call the launch flow ends on, and this
+   * is the whole reason the feature is public-calls-only: watching the real
+   * conversation view is how the user tells "working" from "stuck", and it
+   * needs no access to a session's internal event stream.
+   *
+   * ADOPTION IS RECORDED FIRST. A poll can land between this line and the
+   * navigation — `readSuggestions` runs every 1.5s — and cleanup consults the
+   * ref, so setting it after the open would leave a window in which the session
+   * being navigated to is archived on the way.
+   */
+  const openScanSession = (): void => {
+    if (scanSessionId === null) return
+    adoptedRef.current = true
+    launch.sessions.open(scanSessionId)
+  }
+
+  const runScan = React.useCallback(async (): Promise<void> => {
+    cleanup()
+    // Safe to un-cancel only because no earlier loop can still be live: the
+    // sole re-entry point is the Refresh button, which carries
+    // `disabled={phase === 'scanning'}`. That invariant is ENFORCED IN THE JSX
+    // and consumed here, with nothing in between linking the two — dropping
+    // that `disabled` would let a second scan clear the flag the first is
+    // polling on, leaving both loops writing into the same state.
+    cancelledRef.current = false
+    // This run's identity, minted BEFORE anything is issued so the prompt and
+    // every poll below name the same file. Held as a local, not a ref: a
+    // superseded run must keep polling its OWN path until its loop exits, and
+    // a ref would repoint it at the new run's file mid-flight.
+    const runId = makeRunId()
+    // `suggestions` and `checked` deliberately survive a Refresh, so the old
+    // rows stay put until the new set lands rather than blanking the pane. The
+    // consequence is that a title in BOTH sets arrives pre-checked — harmless:
+    // it is the same suggestion the user already chose, and it is one row and
+    // one Set member either way now that parseSuggestions dedupes titles.
+    setPhase('scanning')
+    // Back to the first half of the wait: this run has no session yet, so the
+    // caption must not claim to be waiting on one and the button must not offer
+    // the PREVIOUS run's session. Adoption resets with it — the user's claim was
+    // on that other session, and this run creates its own.
+    setStage('digest')
+    setScanSessionId(null)
+    adoptedRef.current = false
+    setError(null)
+    // A refusal from the previous set must not sit over a fresh one.
+    setAddError(null)
+
+    try {
+      // Issued only after the phase above is armed: this call blocks the host
+      // event loop for the whole digest, so the placeholder must already be on
+      // screen or the tab looks frozen rather than busy.
+      const digestReply = await remote.scanDigest({ workspaceId: launch.workspaceId })
+      if (cancelledRef.current) return
+      // RemoteReply, exactly as list/replace answer: the payload is under
+      // `.value`, and a failure carries `.error.message`. Reading the result at
+      // the top level would silently yield undefined.
+      if (!digestReply.ok) throw new Error(digestReply.error.message)
+      const { digest } = digestReply.value
+
+      // An empty digest means the walk found NOTHING TO LOOK AT — a workspace
+      // directory that is missing, is not a directory, is genuinely empty, or
+      // holds only ignored/dot directories. Stop here, BEFORE sessions.create,
+      // which is what makes this cheap: no session is spent and no tokens are
+      // burnt on evidence that does not exist.
+      //
+      // Continuing would put an empty "## Evidence" section directly under an
+      // instruction not to speculate about unseen code. A compliant model then
+      // writes `[]`, and the modal reports "Nothing new to suggest — the
+      // backlog already covers what the scan found" — a FALSE CLAIM about the
+      // user's workspace, since the scan found nothing because it could not
+      // look. That is dsh-plan-board's "there is nothing" conflated with "we
+      // could not look", one layer up: the loading flag is right and the empty
+      // state is the lie. A non-compliant model instead writes prose, and the
+      // user watches the skeleton for the full 180s.
+      //
+      // `phase: 'error'` is deliberately the recoverable state — Refresh is
+      // disabled only while scanning — so a workspace that was merely being
+      // remounted retries with one click.
+      if (digest.trim() === '') {
+        setError('this workspace has no scannable files — it may have been moved or is empty')
+        setPhase('error')
+        return
+      }
+
+      // Titles only: descriptions would multiply the cost of every scan to
+      // restate the very work the model is being told to avoid.
+      const exclude = [
+        ...activeItems(itemsRef.current)
+          .filter((i) => !isDone(i))
+          .map((i) => i.title),
+        ...seenRef.current,
+      ]
+
+      const sessionId = await launch.sessions.create({ workspaceId: launch.workspaceId })
+      if (cancelledRef.current) {
+        void discardSession(launch, sessionId)
+        return
+      }
+      sessionRef.current = sessionId
+
+      const binding = launch.sessions.binding(sessionId)
+      if (binding === undefined) throw new Error('the scan session is not addressable yet')
+      const sent = await binding.session.prompt(
+        [{ type: 'text', text: composeScanPrompt(digest, exclude, runId) }],
+        'queue',
+      )
+      if (!sent.ok) throw new Error(sent.error?.message ?? 'the scan session refused the prompt')
+
+      // Name the scan session, AFTER the prompt for the same reason launch.ts
+      // renames late: there is no blank-session window to beat — the connection
+      // just appends a `session/title` event — and a run that failed above
+      // leaves no renamed session behind to explain.
+      //
+      // NOT fatal, and both the call and the await are guarded: `rename` is a
+      // borrowed face that may be absent on an older binding, and a scan the
+      // user is waiting on must never fail over a cosmetic title. Without it
+      // the session is titled by an LLM summarising a 17KB evidence digest,
+      // which is precisely the name nobody can find in a sidebar.
+      if (typeof binding.session.rename === 'function') {
+        try {
+          await binding.session.rename(scanSessionTitle(workspaceName))
+        } catch {
+          // The scan is running and has its brief; the title is cosmetic.
+        }
+      }
+
+      // The prompt is away, so the wait is now on a real session — which is
+      // both what the caption should say and what makes an Open button
+      // meaningful. Set together, because they describe the same fact.
+      if (cancelledRef.current) return
+      setStage('polling')
+      setScanSessionId(sessionId)
+
+      const deadline = Date.now() + SCAN_TIMEOUT_MS
+      for (;;) {
+        if (cancelledRef.current) return
+        await new Promise((r) => setTimeout(r, SCAN_POLL_MS))
+        if (cancelledRef.current) return
+        // Only THIS run's file. A previous scan that timed out is archived but
+        // still running, and its late write must never be read as this one's.
+        const reply = await remote.readSuggestions({ workspaceId: launch.workspaceId, runId })
+        if (!reply.ok) throw new Error(reply.error.message)
+        const result = reply.value
+        if (result.status === 'ready') {
+          const found = result.suggestions ?? []
+          seenRef.current = [...seenRef.current, ...found.map((s) => s.title)]
+          setSuggestions(found)
+          setPhase('ready')
+          cleanup()
+          return
+        }
+        if (result.status === 'error') {
+          setError(result.error ?? 'the scan produced unusable output')
+          setPhase('error')
+          cleanup()
+          return
+        }
+        if (Date.now() > deadline) {
+          setError('the scan did not finish in time')
+          setPhase('error')
+          cleanup()
+          return
+        }
+      }
+    } catch (cause) {
+      if (cancelledRef.current) return
+      setError(describe(cause))
+      setPhase('error')
+      cleanup()
+    }
+  }, [cleanup, launch, remote, workspaceName])
+
+  React.useEffect(() => {
+    void runScan()
+    return () => {
+      cancelledRef.current = true
+      cleanup()
+    }
+    // Deliberately once: a scan is started by opening the dialog or by
+    // Refresh, never by a re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const toggle = (title: string): void => {
+    setChecked((prev) => {
+      const next = new Set(prev)
+      if (next.has(title)) next.delete(title)
+      else next.add(title)
+      return next
+    })
+  }
+
+  /**
+   * Promote the checked suggestions to real tasks.
+   *
+   * ONE store.update for the whole batch, not one per row: the store treats
+   * each call as a reason to write, so a per-row loop would put a round-trip
+   * on the wire for every checkbox.
+   *
+   * The close is GATED on the write applying. `store.update` drops the
+   * transform and returns false when the store is not `ready`, and closing
+   * anyway destroys the only copy of the picks: suggestions are never stored,
+   * so a dismissed dialog costs another 180s scan to get them back. Gating here
+   * rather than disabling the button is deliberate — the button's `disabled`
+   * tracks `phase`, which is the SCAN's state and says nothing about the
+   * store's, so the two can disagree; and leaving the dialog open with the rows
+   * still checked lets the user retry the moment the list reloads.
+   */
+  const addSelected = (): void => {
+    const picked = suggestions.filter((s) => checked.has(s.title))
+    if (picked.length === 0) return
+    // NOTE the signature: makeItem(title, now, rand, fields) — `fields` is the
+    // FOURTH parameter. Passing the options object second would silently make
+    // it the `now` timestamp, producing a garbage id and createdAt with no
+    // error anywhere.
+    const applied = store.update((current) => [
+      ...current,
+      ...picked.map((s) =>
+        makeItem(normalizeText(s.title), Date.now(), Math.random, {
+          description: s.rationale,
+          priority: s.priority,
+          status: 'backlog',
+        }),
+      ),
+    ])
+    if (!applied) {
+      // Reported through its OWN state, deliberately not `phase`. Setting
+      // phase='error' would stop the rows rendering — they are gated on
+      // phase==='ready' — and blanking the picks is precisely the loss this
+      // guard exists to prevent. The dialog stays open, ready, and checked.
+      setAddError('the task list is not loaded — reopen the tab and try again')
+      return
+    }
+    onClose()
+  }
+
+  // Dismissing is always allowed, matching every other dialog here: a modal you
+  // cannot leave because a scan is still running is a trap.
+  const onKeyDown = (e: React.KeyboardEvent): void => {
+    e.stopPropagation()
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onClose()
+    }
+  }
+
+  return createPortal(
+    <div className="dshtd-modal-backdrop" onClick={onClose} onKeyDown={onKeyDown}>
+      <div
+        className="dshtd-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Suggested work"
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="dshtd-modal-head">
+          <strong className="dshtd-launch-title">Suggested work</strong>
+          <button className="dshtd-icon" onClick={onClose} aria-label="Close">
+            <Icon path={ICON.close} />
+          </button>
+        </div>
+
+        <div className="dshtd-modal-body">
+          {phase === 'scanning' ? <SuggestSkeleton stage={stage} /> : null}
+
+          {phase === 'error' ? (
+            <p className="dshtd-sug-empty">{error ?? 'the scan failed'}</p>
+          ) : null}
+
+          {phase === 'ready' && suggestions.length === 0 ? (
+            <p className="dshtd-sug-empty">
+              Nothing new to suggest — the backlog already covers what the scan found.
+            </p>
+          ) : null}
+
+          {phase === 'ready' && suggestions.length > 0
+            ? suggestions.map((s) => (
+                // KEYED BY TITLE, and that is only safe because
+                // parseSuggestions() in suggest.ts dedupes titles
+                // case-insensitively before this list ever exists. The title is
+                // the identity here three times over — this key, the `checked`
+                // Set member below, and that dedupe key. Do not "fix" one side
+                // alone: switching to an index key would silence a React
+                // warning while leaving one checkbox toggling two rows and "Add
+                // selected" writing the same task twice.
+                <label className="dshtd-sug-row" key={s.title}>
+                  <input
+                    type="checkbox"
+                    checked={checked.has(s.title)}
+                    onChange={() => toggle(s.title)}
+                  />
+                  <span className="dshtd-sug-body">
+                    <span className="dshtd-sug-title">{s.title}</span>
+                    {s.rationale ? <span className="dshtd-sug-why">{s.rationale}</span> : null}
+                    {s.evidence ? <span className="dshtd-sug-eviden">{s.evidence}</span> : null}
+                  </span>
+                  <span className="dshtd-chip">{PRIORITY_LABEL[s.priority]}</span>
+                </label>
+              ))
+            : null}
+        </div>
+
+        <div className="dshtd-modal-foot">
+          {/* The refusal takes the status line rather than a slot of its own:
+              it is the answer to the click that just happened, and it must sit
+              where the user is already looking. `role="alert"` because it
+              reports a failed action, not ambient state. */}
+          <span className="dshtd-sug-status" {...(addError !== null ? { role: 'alert' } : {})}>
+            {addError !== null
+              ? addError
+              : phase === 'ready' && checked.size > 0
+                ? `${checked.size} selected`
+                : ''}
+          </span>
+          <span style={{ display: 'flex', gap: 8 }}>
+            {/* The scan is a real session, and this is the door to it. A skeleton
+                plus a counter cannot distinguish "working" from "stuck"; the
+                conversation view can, and it costs one PUBLIC call.
+
+                Rendered only when an id is actually held — during the digest
+                stage there is no session yet, and a run that never got one must
+                show nothing rather than a button that fails on click. It stays
+                on the ERROR phase deliberately: that is exactly when the user
+                needs to see what the session did. Opening ADOPTS the session,
+                so cleanup will not archive what they are reading. */}
+            {scanSessionId !== null && (phase === 'scanning' || phase === 'error') ? (
+              <button
+                className="dshtd-btn"
+                onClick={openScanSession}
+                title="Watch the scan session's conversation"
+              >
+                Open scan session
+              </button>
+            ) : null}
+            {/* Disabled only WHILE a scan runs. An error must stay recoverable:
+                readSuggestions reports a transient errno as terminal, so a
+                Refresh that latched off would dead-end the modal. */}
+            <button
+              className="dshtd-btn"
+              onClick={() => void runScan()}
+              disabled={phase === 'scanning'}
+            >
+              Refresh
+            </button>
+            <button
+              className="dshtd-btn primary"
+              onClick={addSelected}
+              disabled={phase !== 'ready' || checked.size === 0}
+            >
+              Add selected
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 /**
  * The full task detail dialog.
  *
@@ -2094,6 +2787,101 @@ function TodoSkeleton(): React.JSX.Element {
         </li>
       ))}
     </ul>
+  )
+}
+
+/** Bar widths, varied so the skeleton reads as content rather than a grid. */
+const SUG_SKELETON_WIDTHS = [72, 88, 61, 79, 68]
+
+/**
+ * Loading state for the suggestion list.
+ *
+ * A skeleton rather than a spinner because this is a large content pane — the
+ * repo rule assigns a spinner only to a button and a caption row only to a
+ * small surface. One `role="status"` announces the whole thing once; the bars
+ * are decorative and hidden from assistive tech, or a screen reader narrates
+ * five empty rows instead of one status line.
+ *
+ * It also carries an ELAPSED-TIME caption, because `SCAN_TIMEOUT_MS` is 180s
+ * and five motionless bars for three minutes claim "hung" rather than
+ * "working" — the loading rule's purpose is that the state must not make a
+ * false claim, and the shimmer alone cannot distinguish a running scan from a
+ * wedged one. Three properties of that caption are load-bearing:
+ *
+ * - It sits INSIDE the existing `role="status"` region. A second live region
+ *   would compete with the first for the same announcement.
+ * - The ticking number is `aria-hidden`, so the announced text stays the one
+ *   static sentence while only the visual number moves. Left exposed, a
+ *   per-second update would queue 180 announcements at a screen reader.
+ * - The interval is owned by THIS component, which is mounted only while
+ *   `phase === 'scanning'`. That is what makes "the ticker must not run in any
+ *   other phase" structural rather than a condition someone has to remember:
+ *   leaving the phase unmounts the component and the cleanup clears it.
+ *
+ * **The caption NAMES THE STAGE, and the stage is what the client itself did.**
+ * `scanning` covers two genuinely different waits — building the digest on the
+ * host, and polling for a file a background session has been asked to write —
+ * and one static sentence over both is the loading rule's own failure mode: a
+ * state making a claim it cannot support. The stage is plain local state, set
+ * where each step actually happens; nothing here reads harness conversation
+ * internals, which is the bet this package has lost four times.
+ *
+ * NOTE it is rendered BEFORE the scan is issued, not after. `scanDigest` runs
+ * a fully synchronous digest on the single-threaded host, so the first call
+ * blocks every other RPC for seconds — with no placeholder up first, the tab
+ * simply freezes.
+ *
+ * @param stage - which half of the wait is running, for an honest caption.
+ * @returns the loading placeholder for the suggestion pane.
+ */
+function SuggestSkeleton({ stage }: { stage: ScanStage }): React.JSX.Element {
+  const [elapsed, setElapsed] = React.useState(0)
+  React.useEffect(() => {
+    // Off the mount time rather than by incrementing a counter: a throttled
+    // background tab fires intervals late and irregularly, so counting ticks
+    // would under-report exactly when the wait is longest.
+    const started = Date.now()
+    const timer = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - started) / 1000))
+    }, 1000)
+    return () => {
+      clearInterval(timer)
+    }
+  }, [])
+
+  // Two captions, one per thing the client genuinely knows. The digest half
+  // never shows a session button because there is no session yet, so the copy
+  // must not promise one either.
+  const caption =
+    stage === 'digest' ? 'Reading the workspace…' : 'Waiting for the scan session…'
+
+  return (
+    <div role="status" aria-live="polite" aria-busy="true">
+      <span className="dshtd-sronly">Scanning the workspace for suggestions…</span>
+      {SUG_SKELETON_WIDTHS.map((w, i) => (
+        <div className="dshtd-sug-skel" key={i} aria-hidden="true">
+          <i />
+          <div className="dshtd-sug-skel-body">
+            <span
+              className="dshtd-sug-skel-bar"
+              /* Staggered so the sweep travels down the list instead of every
+                 bar flashing in lockstep, matching TodoSkeleton. */
+              style={{ width: `${w}%`, animationDelay: `${i * 70}ms` }}
+            />
+            <span
+              className="dshtd-sug-skel-bar"
+              style={{ width: `${w - 18}%`, animationDelay: `${i * 70}ms` }}
+            />
+          </div>
+        </div>
+      ))}
+      {/* aria-hidden covers the WHOLE caption, not just the number: the
+          sr-only line above already says what is happening, so re-announcing
+          the same sentence every second adds nothing but noise. */}
+      <span className="dshtd-sug-elapsed" aria-hidden="true">
+        {caption} {elapsed}s
+      </span>
+    </div>
   )
 }
 
@@ -2507,10 +3295,18 @@ function filterCount(items: TodoItem[], id: TodoFilter, stats: TodoStats): numbe
 export function TodoView({
   store,
   launch,
+  workspaceName,
 }: {
   store: TodoStore | null
   /** The harness services a launch needs; absent when they did not resolve. */
   launch?: LaunchContext & { workspaceId: string }
+  /**
+   * OPTIONAL. The workspace's display name, used to title a scan session so it
+   * is findable in the sidebar once opened. Comes off the SAME workspace list
+   * projection the slot already reads to resolve `workspaceId` — one more
+   * field on a snapshot in hand, not a new service read.
+   */
+  workspaceName?: string
 }): React.JSX.Element {
   const [filter, setFilter] = React.useState<TodoFilter>('all')
   const [groupBy, setGroupBy] = React.useState<TodoGroupBy>('none')
@@ -2524,6 +3320,9 @@ export function TodoView({
   // a boolean per call site, so every delete path routes through the same
   // dialog and none can quietly skip the guard.
   const [pending, setPending] = React.useState<PendingConfirm | null>(null)
+  // Whether the suggest dialog is open. Its scan lifecycle lives entirely
+  // inside SuggestDialog, so this is a plain boolean rather than a slot.
+  const [suggesting, setSuggesting] = React.useState(false)
   // The task being launched, plus the blank session created to receive it. The
   // session is made when the dialog OPENS so the model picker can bind to it,
   // which is why cancelling has to discard it again.
@@ -2717,6 +3516,18 @@ export function TodoView({
             </option>
           ))}
         </select>
+        {/* Gated on the SAME launch context the rocket button uses: a scan runs
+            in a real session, and `sessions` is the one service it cannot fake.
+            launchContext() already yields undefined when it is unreachable. */}
+        {launch !== undefined ? (
+          <button
+            className="dshtd-suggest"
+            onClick={() => setSuggesting(true)}
+            title="Scan the workspace and propose new tasks"
+          >
+            Suggest
+          </button>
+        ) : null}
       </div>
 
       <div className="dshtd-addrow">
@@ -2901,6 +3712,20 @@ export function TodoView({
             )
             closeLaunch(true)
           }}
+        />
+      ) : null}
+
+      {suggesting && launch !== undefined ? (
+        <SuggestDialog
+          launch={launch}
+          // The store's OWN handle, not a fresh probe of the cordis context:
+          // this one provably resolved, and re-probing would mean another
+          // guarded read from a fiber that may not declare remote.dshTodo.
+          remote={store.remoteFace}
+          store={store}
+          items={state.items}
+          workspaceName={workspaceName}
+          onClose={() => setSuggesting(false)}
         />
       ) : null}
 
@@ -3230,12 +4055,20 @@ export function apply(ctx: ClientContext): void {
             order: 20,
             label: () => 'Tasks',
             inject: (sessionId: string) => {
+              // `title` rides the SAME projection rows as workspaceId/sessionIds
+              // (the shell's own sidebar labels its groups from it), so reading
+              // it costs no new service and no new guarded read — it is one more
+              // field on a snapshot already in hand. Typed optional because this
+              // package does not own that projection: a build that stops
+              // carrying a title must fall back, not crash the slot.
               const workspaces = readyCtx.workspaces.list.getSnapshot().items as readonly {
                 workspaceId: string
                 sessionIds: readonly string[]
+                title?: string
               }[]
               const workspaceId = workspaceIdForSession(workspaces, sessionId)
               if (workspaceId === undefined) return { store: null }
+              const workspaceName = workspaces.find((w) => w.workspaceId === workspaceId)?.title
               let store = stores.get(workspaceId)
               if (store === undefined) {
                 store = new TodoStore(readyCtx.remote.dshTodo, workspaceId)
@@ -3266,7 +4099,11 @@ export function apply(ctx: ClientContext): void {
               // pinned `modelDirectories` to undefined for the dialog's whole
               // life. Reading it lazily lets a fiber that resolves a moment
               // later still supply the picker.
-              return { store, launch: launchContext(ctx, workspaceId, modelFiberCtx) }
+              return {
+                store,
+                launch: launchContext(ctx, workspaceId, modelFiberCtx),
+                workspaceName,
+              }
             },
           },
           TodoView,

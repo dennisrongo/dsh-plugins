@@ -42,6 +42,8 @@ function normalizeDueDate(raw) {
 var MAX_TEXT = 500;
 var MAX_DESC = 5e3;
 var MAX_LABEL = 60;
+var SUGGESTIONS_DIR = ".dsh";
+var SUGGESTIONS_FILE = `${SUGGESTIONS_DIR}/suggestions.json`;
 
 // src/db.ts
 var DOT_DSH = ".dsh";

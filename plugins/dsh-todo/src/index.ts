@@ -37,7 +37,7 @@
  *
  * @module @dennisrongo/dsh-todo
  */
-import { readFileSync, renameSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, renameSync, existsSync, unlinkSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute, join, resolve } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -49,15 +49,26 @@ import type { Workspace } from '@deepseek-ai/dsh-workspace'
 // The durable storage layer is shared with the CLI so there is exactly one
 // implementation of the schema and the v1 -> v2 migration.
 import { openDb as openTodoDb, readList as readTodoList, writeList as writeTodoList } from './db.ts'
+// The scanner and the suggestion parser are shared with the test and the client
+// bundle, so there is exactly one implementation of each.
+import { buildDigest } from './scan.ts'
+import { parseSuggestions } from './suggest.ts'
 import {
   MAX_DESC,
   MAX_ITEMS,
   MAX_LABEL,
   MAX_TEXT,
+  SUGGESTIONS_DIR,
+  SUGGESTIONS_FILE_RE,
   normalizeDueDate,
   normalizeLabel,
+  suggestionsFileFor,
   toPriority,
   toStatus,
+  type ReadSuggestionsRequest,
+  type ReadSuggestionsResult,
+  type ScanDigestResult,
+  type SuggestScanRequest,
   type TodoItem,
   type TodoList,
   type TodoListRequest,
@@ -297,6 +308,140 @@ export class TodoService extends TypertRemoteService {
       this.writeList(db, items, current.revision + 1)
       return { ok: true, list: this.readList(db) }
     })
+  }
+
+  /**
+   * Build the bounded evidence a scan session reasons over.
+   *
+   * Read-only and side-effect free: it neither starts a scan nor touches the
+   * todo database. The client sends the result on to a session it creates.
+   *
+   * `truncated` is passed through UNINTERPRETED. It is one flag over several
+   * independent caps, so it cannot say WHAT was dropped — the digest text
+   * discloses that per section. Nothing here may treat a small digest as a
+   * complete one.
+   *
+   * @param request - the workspace to scan.
+   * @returns the digest, and whether anything was left out.
+   */
+  @Remote
+  async scanDigest(request: SuggestScanRequest): Promise<ScanDigestResult> {
+    return buildDigest(this.workspaceDir(request?.workspaceId))
+  }
+
+  /**
+   * Read whatever a scan session has written so far.
+   *
+   * The file is DELETED once read — on BOTH paths, which is load-bearing on the
+   * error path too. This endpoint is polled, so a malformed result left on disk
+   * would be re-read on every tick and pin the modal to the same error forever,
+   * with no way out but deleting the file by hand. Consuming it means the next
+   * poll reports `pending` again and a Refresh can actually retry. Deleting on
+   * success separately stops a previous run's answers showing while a new scan
+   * is still working — a stale list that looks fresh is worse than an honest
+   * empty one.
+   *
+   * A model writing unusable JSON is an expected outcome, so this reports
+   * `status: 'error'` rather than throwing: the modal turns that into a
+   * Refresh, where a fault would take down the tab.
+   *
+   * Only ENOENT is `pending`. Any other read failure is terminal — waiting
+   * cannot clear a directory sitting at the path, or a permission denial — so
+   * it reports `error` and lets the modal offer Refresh rather than polling
+   * forever on a hang it can never escape.
+   *
+   * The path is PER RUN and this reads ONLY that one, which is what stops a
+   * late writer being mistaken for the current run. Archiving a scan session
+   * does not cancel it: a run that timed out, or whose modal was closed, keeps
+   * working and eventually writes. Against one fixed path that write is read
+   * back within one poll as the NEXT run's answer — computed against a stale
+   * exclusion set, so it re-proposes work the user added in between.
+   *
+   * @param request - the workspace, and WHICH RUN is asking.
+   * @returns pending when no file exists yet, otherwise the parsed result.
+   */
+  @Remote
+  async readSuggestions(request: ReadSuggestionsRequest): Promise<ReadSuggestionsResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const runId = request?.runId
+    // Same shape of domain error as workspaceId, and for the same reason: a
+    // missing run id must name the parameter the caller got wrong rather than
+    // reaching `join()` as undefined and throwing an opaque TypeError.
+    if (typeof runId !== 'string' || !/^[a-z0-9]+$/.test(runId)) {
+      throw new Error('dsh-todo: runId must be a non-empty lowercase alphanumeric string')
+    }
+    const path = join(dir, ...suggestionsFileFor(runId).split('/'))
+    // Sweep first, so an orphan is cleared even on the poll that finds nothing
+    // yet. Without it the directory accrues one file per abandoned scan
+    // forever, and abandoning one is ordinary — closing the modal does it.
+    this.sweepOrphanResults(dir, runId)
+    let raw: string
+    try {
+      raw = readFileSync(path, 'utf8')
+    } catch (err) {
+      // ONLY a missing file is "not yet". Every other errno is TERMINAL and
+      // waiting cannot clear it: a directory at the path (a bad `mkdir -p`, or
+      // one a user created by hand) reads EISDIR, a locked-down volume reads
+      // EACCES. Reported as `pending` those poll FOREVER — the modal spins on
+      // "Scanning...", never offers Refresh, and never terminates. `error` is
+      // the status that already drives Refresh, so a terminal failure gets a
+      // way out instead of a silent hang.
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return { status: 'pending' }
+      return { status: 'error', error: `dsh-todo: the scan result could not be read: ${code ?? String(err)}` }
+    }
+
+    const parsed = parseSuggestions(raw)
+    // Consume the file either way: a malformed result left on disk would be
+    // re-read on every poll and pin the modal to the same error forever.
+    try {
+      unlinkSync(path)
+    } catch {
+      // Nothing actionable — the result is already in hand.
+    }
+
+    if (!parsed.ok) return { status: 'error', error: parsed.error }
+    return { status: 'ready', suggestions: parsed.suggestions }
+  }
+
+  /**
+   * Delete every result file that is not the run currently reading.
+   *
+   * Per-run paths fix the cross-run bleed but introduce their own litter: a
+   * scan whose modal was closed still finishes and writes, and nobody ever
+   * reads that file. One orphan per abandoned scan accumulates in `.dsh`
+   * indefinitely, and abandoning a scan is the ordinary case, not the rare one.
+   *
+   * Sweeping on every poll — rather than at scan start — is deliberate and
+   * cheaper than it looks: a scan already polls this endpoint every 1.5s, one
+   * `readdir` of `.dsh` is trivially small beside the digest walk that preceded
+   * it, and it means a run started from a build with no sweep at all is still
+   * cleaned up by the next one. It also collects the legacy fixed-path file, so
+   * an upgrade needs no migration step.
+   *
+   * The regex is anchored on both ends: `.dsh` holds `todo.db` and whatever
+   * else the harness keeps there, and a sweep that guessed wider would delete a
+   * neighbour's data. Failure is swallowed throughout — this is housekeeping,
+   * and a scan that produced an answer must not fail over tidying.
+   *
+   * @param dir - the resolved workspace directory.
+   * @param runId - the run whose file must SURVIVE.
+   */
+  private sweepOrphanResults(dir: string, runId: string): void {
+    const keep = suggestionsFileFor(runId).split('/').pop()
+    try {
+      for (const name of readdirSync(join(dir, SUGGESTIONS_DIR))) {
+        if (name === keep || !SUGGESTIONS_FILE_RE.test(name)) continue
+        try {
+          unlinkSync(join(dir, SUGGESTIONS_DIR, name))
+        } catch {
+          // A directory at the path, or a permission denial. Neither is
+          // actionable here, and neither may stop the current run's read.
+        }
+      }
+    } catch {
+      // No `.dsh` yet is the ordinary case before the first scan writes.
+    }
   }
 
   /** Queue one whole read/compare/write behind this workspace's prior write. */

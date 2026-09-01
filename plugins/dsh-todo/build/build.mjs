@@ -135,6 +135,33 @@ await build({
   logLevel: 'info',
 })
 
+// 1f) the suggestion helpers, on the same terms as launch.ts: bundled
+// separately so the test can import the SHIPPED pure logic under plain Node.
+// No externals — this module imports only ./types.ts.
+await build({
+  entryPoints: [join(root, 'src/suggest.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'neutral',
+  target: 'es2022',
+  minify: false,
+  outfile: join(outdir, 'suggest.js'),
+  logLevel: 'info',
+})
+
+// 1g) the scanner, on the same terms: node platform (it uses node:fs) and no
+// externals, so the test imports the shipped module directly.
+await build({
+  entryPoints: [join(root, 'src/scan.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: 'es2022',
+  minify: false,
+  outfile: join(outdir, 'scan.js'),
+  logLevel: 'info',
+})
+
 // 2) client half — CJS body wrapped in the __ModuleLoader__ load call.
 //
 // This half bundles zod, because the client `$mount` rejects any descriptor

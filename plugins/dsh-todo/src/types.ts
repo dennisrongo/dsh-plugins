@@ -267,3 +267,145 @@ export const MAX_LABEL = 60
 
 /** Hard cap on stored items per workspace, so a runaway client cannot bloat the file. */
 export const MAX_ITEMS = 1000
+
+/**
+ * The directory a scan session leaves its result in, relative to the workspace
+ * root.
+ *
+ * A FILE rather than a return value because `session.prompt()` resolves when
+ * the prompt is ACCEPTED, not when the work is done — there is no public
+ * completion promise to await. A file is inspectable when a scan misbehaves
+ * and survives the modal being closed mid-scan.
+ */
+export const SUGGESTIONS_DIR = '.dsh'
+
+/**
+ * The legacy workspace-global result path.
+ *
+ * Documentation only — NOTHING READS THIS. A file written by a pre-runId build
+ * is swept as an orphan, but the sweep matches {@link SUGGESTIONS_FILE_RE},
+ * not this constant, so it is not load-bearing even for that. It records what
+ * the path used to be, and why it stopped being usable: a fixed path carries
+ * NO RUN IDENTITY, which is exactly the defect {@link suggestionsFileFor}
+ * exists to close — a scan that timed out is archived but never actually
+ * stopped, so its late write would otherwise be read back as the NEXT run's
+ * answer.
+ *
+ * Do not compose a path from it. Use {@link suggestionsFileFor}.
+ */
+export const SUGGESTIONS_FILE = `${SUGGESTIONS_DIR}/suggestions.json`
+
+/**
+ * Match every result file this feature has ever written, current or orphaned.
+ *
+ * Anchored on both ends so an unrelated `.dsh` file is never swept. The
+ * optional `-<runId>` tail covers the legacy fixed path as well as a per-run
+ * one, which is what lets a single sweep clear both.
+ */
+export const SUGGESTIONS_FILE_RE = /^suggestions(-[a-z0-9]+)?\.json$/
+
+/**
+ * A run identity, valid inside a file name.
+ *
+ * Deliberately no new dependency: `makeItem` already mints ids from
+ * `Date.now()` and `Math.random()` on exactly these terms, and this token needs
+ * to be unique per scan, not unguessable. Lowercase base36 only, because it is
+ * interpolated into a path and matched by {@link SUGGESTIONS_FILE_RE}.
+ *
+ * @param now - injectable clock, keeping the function pure-testable.
+ * @param rand - injectable randomness, for the same reason.
+ * @returns a short token safe to embed in a file name.
+ */
+export function makeRunId(now = Date.now(), rand = Math.random): string {
+  return `${now.toString(36)}${Math.floor(rand() * 1e6).toString(36)}`
+}
+
+/**
+ * Where THIS scan leaves its result, relative to the workspace root.
+ *
+ * Per-run rather than workspace-global, and that is load-bearing rather than
+ * tidy. Archiving a session is NOT cancelling it — `discardSession` only calls
+ * `uiWorkspace.archiveSession`, which controls sidebar visibility and nothing
+ * else — so a scan that timed out, or whose modal was closed, keeps running and
+ * eventually writes its file. Against one fixed path that late write is
+ * indistinguishable from the current run's answer: the next poll reads it
+ * within 1.5s and presents a stale list, computed against a stale exclusion
+ * set, as fresh. Naming the file after the run means a late writer simply
+ * cannot be mistaken for the reader.
+ *
+ * @param runId - the token minted by {@link makeRunId} for this scan.
+ * @returns the workspace-relative result path for that run.
+ */
+export function suggestionsFileFor(runId: string): string {
+  return `${SUGGESTIONS_DIR}/suggestions-${runId}.json`
+}
+
+/**
+ * The most suggestions worth showing at once.
+ *
+ * A cap rather than a scroll: this is a list someone triages in one sitting,
+ * and a model asked for "ideas" will happily produce fifty.
+ */
+export const MAX_SUGGESTIONS = 12
+
+/** One proposed task, before anyone decides to keep it. */
+export interface Suggestion {
+  title: string
+  /** One line on why this is worth doing — shown under the title. */
+  rationale: string
+  priority: TodoPriority
+  /**
+   * A `file:line` pointer backing the claim, when one exists. Absent is legal
+   * — a missing feature has no line number — but this is what makes a
+   * suggestion checkable rather than merely plausible.
+   */
+  evidence?: string
+}
+
+/** Request for `scanDigest` — one workspace, nothing else. */
+export interface SuggestScanRequest {
+  workspaceId: string
+}
+
+/**
+ * Request for `readSuggestions` — one workspace, and WHICH RUN is asking.
+ *
+ * `runId` is required, not optional. An optional one would fall back to the
+ * fixed legacy path on every caller that forgot it, silently restoring the
+ * cross-run bleed this field exists to prevent — and a strict wire codec drops
+ * a field it does not name, so a missing `runId` would never surface as an
+ * error either.
+ */
+export interface ReadSuggestionsRequest {
+  workspaceId: string
+  runId: string
+}
+
+/** The bounded evidence a scan session reasons over. */
+export interface ScanDigestResult {
+  digest: string
+  /**
+   * True when ANY evidence was left out — a clipped file tree, a capped comment
+   * list, or the whole digest hitting its byte ceiling.
+   *
+   * Deliberately a single flag, and therefore a WEAK signal: it conflates a
+   * cosmetic clip with half the TODO comments missing. The digest TEXT
+   * distinguishes them — every cap discloses itself in its section header — so
+   * a reader that needs to know WHAT was dropped must read the digest, not this
+   * boolean. Do not size anything against it.
+   */
+  truncated: boolean
+}
+
+/**
+ * Where a scan has got to.
+ *
+ * `pending` covers "no file yet" — the ordinary case while the session works.
+ * `error` is a model that wrote unusable output, which is EXPECTED, not
+ * exceptional, and must reach the UI as a message rather than a thrown fault.
+ */
+export interface ReadSuggestionsResult {
+  status: 'pending' | 'ready' | 'error'
+  suggestions?: Suggestion[]
+  error?: string
+}

@@ -17,7 +17,8 @@
  * everything the host sends back.
  *
  * The shape must match what the host actually exports: namespace `dshTodo`,
- * methods `list` and `replace`, each taking one JSON `request` parameter.
+ * methods `list`, `replace`, `scanDigest` and `readSuggestions`, each taking
+ * one JSON `request` parameter.
  *
  * @module @dennisrongo/dsh-todo/remote
  */
@@ -70,6 +71,48 @@ const replaceResultSchema = z.union([
   }),
 ])
 
+/** `scanDigest` takes one workspace and nothing else. */
+const scanRequestSchema = z.object({ workspaceId: z.string() })
+
+/**
+ * `readSuggestions` additionally carries WHICH RUN is asking.
+ *
+ * `runId` must be named here or it never arrives: these are strict codecs, and
+ * a strict codec strips a field it does not carry, silently. The host would
+ * then reject every poll for a missing run id, and the modal would report that
+ * as the scan failing — with the actual cause invisible on both ends.
+ */
+const readSuggestionsRequestSchema = z.object({
+  workspaceId: z.string(),
+  runId: z.string(),
+})
+
+const scanDigestResultSchema = z.object({
+  digest: z.string(),
+  truncated: z.boolean(),
+})
+
+/**
+ * One proposed task, as it crosses the wire.
+ *
+ * EVERY field must be named: a strict codec strips what it does not carry, and
+ * it does so silently — a suggestion field missing here simply never arrives.
+ * `evidence` is optional because a missing feature has no line number, exactly
+ * as `Suggestion` declares it.
+ */
+const suggestionSchema = z.object({
+  title: z.string(),
+  rationale: z.string(),
+  priority: z.enum(['p0', 'p1', 'p2', 'p3']),
+  evidence: z.string().optional(),
+})
+
+const readSuggestionsResultSchema = z.object({
+  status: z.enum(['pending', 'ready', 'error']),
+  suggestions: z.array(suggestionSchema).optional(),
+  error: z.string().optional(),
+})
+
 const PACKAGE = '@dennisrongo/dsh-todo'
 
 /**
@@ -115,6 +158,8 @@ export const TODO_REMOTE = {
   descriptors: [
     descriptor('list', listRequestSchema, listResultSchema),
     descriptor('replace', replaceRequestSchema, replaceResultSchema),
+    descriptor('scanDigest', scanRequestSchema, scanDigestResultSchema),
+    descriptor('readSuggestions', readSuggestionsRequestSchema, readSuggestionsResultSchema),
   ],
 }
 
