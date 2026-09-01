@@ -58,7 +58,7 @@ const html = [
   // A REAL path, not a token. The preview's job is to show where a worktree
   // will land, and a grid column sizes itself to the longest thing in it — so a
   // short placeholder here hides the exact defect this fixture exists to catch.
-  '<div class="dshgit-preview">C:/Users/denni/Documents/GitHub/dsh-plugins-swift-falcon</div>',
+  '<div class="dshgit-preview">C:/Users/me/Documents/GitHub/dsh-plugins-swift-falcon</div>',
   // A TALL body on purpose. With a short panel the backdrop's align-items:center
   // keeps it clear of the drag strip by accident, so deleting the top padding
   // changes nothing and the probe proves nothing. Only a panel driven to
