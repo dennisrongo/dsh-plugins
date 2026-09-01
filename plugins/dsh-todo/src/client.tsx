@@ -2519,6 +2519,31 @@ export function SuggestDialog({
     onClose()
   }
 
+  /**
+   * Backdrop click — INERT while a scan is running.
+   *
+   * Every other close (the X, Escape, a successful "Add selected") is a
+   * deliberate act on a control the user aimed at. A backdrop click is not: it
+   * is a near-miss on the panel, and it is the one close nobody intends.
+   *
+   * Discarding on it is expensive in a way that is easy to under-read.
+   * `discardSession()` only ARCHIVES — `uiWorkspace.archiveSession` hides the
+   * session from the sidebar and there is no abort, interrupt or kill anywhere
+   * in `launch.ts`. So a stray click stops the poll and hides the run, while
+   * the agent keeps working to completion, spends the whole scan's tokens, and
+   * writes a result file that the next scan sweeps as an orphan. The user pays
+   * in full for an answer nobody collects.
+   *
+   * So while `phase === 'scanning'` the backdrop does nothing at all. Once the
+   * scan has settled — ready or error — there is no work left to lose and it
+   * closes normally, which keeps the dismissal people expect from a finished
+   * dialog.
+   */
+  const onBackdrop = (): void => {
+    if (phase === 'scanning') return
+    dismiss()
+  }
+
   const toggle = (title: string): void => {
     setChecked((prev) => {
       const next = new Set(prev)
@@ -2586,7 +2611,7 @@ export function SuggestDialog({
   }
 
   return createPortal(
-    <div className="dshtd-modal-backdrop" onClick={dismiss} onKeyDown={onKeyDown}>
+    <div className="dshtd-modal-backdrop" onClick={onBackdrop} onKeyDown={onKeyDown}>
       <div
         className="dshtd-modal"
         role="dialog"

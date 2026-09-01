@@ -598,7 +598,7 @@ const dialogSrc = dialog[0]
   // Every user-driven exit goes through that one door, so none can skip the
   // clear. Pinned the way smoke.mjs pins the single delete path.
   for (const [handler, why] of [
-    ['onClick={dismiss}', 'the backdrop and the X must dismiss, not bare-close'],
+    ['onClick={dismiss}', 'the X must dismiss, not bare-close'],
     ['dismiss()', 'Escape must dismiss'],
   ]) {
     assert.ok(dialogSrc.includes(handler), why)
@@ -606,6 +606,33 @@ const dialogSrc = dialog[0]
   assert.ok(
     !/onClick=\{onClose\}/.test(dialogSrc),
     'no close control may call onClose directly — it would bypass endScan and strand the scan',
+  )
+
+  // The BACKDROP is the exception, and it is the one close nobody aims at.
+  //
+  // Discarding on a near-miss is expensive in a way the code does not show at
+  // the call site: `discardSession()` only ARCHIVES, and there is no abort
+  // anywhere in launch.ts, so a stray click stops the poll and hides the
+  // session while the agent runs to completion and bills the full scan for an
+  // answer that is then swept as an orphan. So the backdrop routes through
+  // `onBackdrop`, which returns early while the scan is still running.
+  //
+  // Asserted on the GUARD and on the WIRING separately: the handler existing
+  // proves nothing if the JSX still calls `dismiss`, and the JSX being right
+  // proves nothing if the guard is gone.
+  assert.ok(
+    /onClick=\{onBackdrop\}/.test(dialogSrc),
+    'the backdrop must route through onBackdrop, not dismiss — a near-miss must not discard a running scan',
+  )
+  const onBackdropFn = /const onBackdrop = \(\): void => \{[\s\S]*?\n  \}/.exec(dialogSrc)
+  assert.ok(onBackdropFn, 'onBackdrop must exist')
+  assert.ok(
+    /if \(phase === 'scanning'\) return/.test(onBackdropFn[0]),
+    'onBackdrop must be INERT while scanning — without the guard it is just dismiss under another name',
+  )
+  assert.ok(
+    /dismiss\(\)/.test(onBackdropFn[0]),
+    'a settled scan has no work left to lose, so the backdrop must still close it',
   )
   // The unmount teardown must NOT clear the registry, or navigating loses the scan.
   const teardown = /return \(\): void => \{[\s\S]*?\n    \}/.exec(dialogSrc)
