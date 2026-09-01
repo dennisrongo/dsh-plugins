@@ -227,7 +227,12 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   const dir = mkdtempSync(join(tmpdir(), 'dsh-todo-scan-'))
   const service = new host.TodoService(new Context())
   service.ctx.workspaceRegistry = { list: () => [{ id: 'ws', path: dir }] }
-  const resultPath = join(dir, '.dsh', 'suggestions.json')
+  // The result path is PER RUN. `run1` stands in for the token the client mints
+  // per scan; the host builds the same path from the same id.
+  const RUN = 'run1'
+  const resultPath = join(dir, '.dsh', `suggestions-${RUN}.json`)
+  /** Read as the current run — every existing assertion below is that run. */
+  const read = () => service.readSuggestions({ workspaceId: 'ws', runId: RUN })
 
   // --- scanDigest ----------------------------------------------------------
   writeFileSync(join(dir, 'README.md'), '# Fixture\n\nA workspace to scan.\n')
@@ -248,7 +253,7 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   // --- readSuggestions: pending --------------------------------------------
   // No file yet is the ORDINARY case while a scan session works, so it must be
   // a status rather than a throw.
-  const pending = await service.readSuggestions({ workspaceId: 'ws' })
+  const pending = await read()
   assert.deepEqual(pending, { status: 'pending' }, 'a missing result file must read as pending')
 
   // --- readSuggestions: ready, and the file is consumed --------------------
@@ -256,7 +261,7 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   writeFileSync(resultPath, JSON.stringify([
     { title: 'Add retry', rationale: 'Network calls are unguarded', priority: 'p1', evidence: 'a.ts:2' },
   ]))
-  const ready = await service.readSuggestions({ workspaceId: 'ws' })
+  const ready = await read()
   assert.equal(ready.status, 'ready', 'a well-formed result must read as ready')
   assert.equal(ready.suggestions.length, 1)
   assert.equal(ready.suggestions[0].title, 'Add retry')
@@ -266,7 +271,7 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   // Consuming it is what stops a previous run's answers showing while a new
   // scan is still working: the next poll must report pending, not the same list.
   assert.deepEqual(
-    await service.readSuggestions({ workspaceId: 'ws' }),
+    await read(),
     { status: 'pending' },
     'a second read must not replay the consumed result',
   )
@@ -276,7 +281,7 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   // on every tick and pin the modal to the same error forever, with no way out
   // but deleting the file by hand — so the error path must delete too.
   writeFileSync(resultPath, 'not json at all {{{')
-  const failed = await service.readSuggestions({ workspaceId: 'ws' })
+  const failed = await read()
   assert.equal(failed.status, 'error', 'unusable output must report an error status')
   assert.equal(typeof failed.error, 'string', 'an error status must carry a message')
   assert.ok(failed.error.length > 0, 'the error message must not be empty')
@@ -285,7 +290,7 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   // The recovery this buys: the very next poll is pending again, so a Refresh
   // can actually retry instead of re-reading the same broken file.
   assert.deepEqual(
-    await service.readSuggestions({ workspaceId: 'ws' }),
+    await read(),
     { status: 'pending' },
     'after a malformed result is consumed the next poll must be pending again',
   )
@@ -293,7 +298,7 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   // A model that writes a valid but empty array is not an error: it is a scan
   // that found nothing, and the modal says so rather than offering a retry.
   writeFileSync(resultPath, '[]')
-  const none = await service.readSuggestions({ workspaceId: 'ws' })
+  const none = await read()
   assert.equal(none.status, 'ready', 'an empty array is a ready result, not an error')
   assert.deepEqual(none.suggestions, [], 'an empty scan must report zero suggestions')
 
@@ -305,7 +310,7 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   // "Scanning...", never offers Refresh, and never terminates. So the catch
   // must branch on the code rather than treat every failure as "not yet".
   mkdirSync(resultPath, { recursive: true })
-  const blocked = await service.readSuggestions({ workspaceId: 'ws' })
+  const blocked = await read()
   assert.equal(blocked.status, 'error', 'a directory at the result path must be an error, not pending')
   assert.equal(typeof blocked.error, 'string', 'a terminal read failure must carry a message')
   assert.ok(
@@ -318,10 +323,77 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   // ...and the fix must not over-correct: a genuinely ABSENT file is still the
   // ordinary case while a scan session is working, and must stay `pending`.
   assert.deepEqual(
-    await service.readSuggestions({ workspaceId: 'ws' }),
+    await read(),
     { status: 'pending' },
     'a genuinely absent file must still read as pending, not error',
   )
+
+  // --- readSuggestions: RUN IDENTITY ---------------------------------------
+  // The reason the path is per-run at all: ARCHIVING IS NOT CANCELLATION.
+  // `discardSession` calls only `uiWorkspace.archiveSession`, which controls
+  // sidebar visibility; the agent turn keeps running. So a scan that timed out,
+  // or whose modal the user closed, finishes later and writes its file. Against
+  // one fixed path that write is read back by the NEXT run within one 1.5s poll
+  // and presented as its answer — computed against a stale exclusion set, so it
+  // re-proposes work the user added in between, and poisons `seenRef` with
+  // titles the current run never produced.
+  {
+    const LATE = 'runlate'
+    const FRESH = 'runfresh'
+    mkdirSync(join(dir, '.dsh'), { recursive: true })
+    // Run A finishes late and writes ITS file.
+    const latePath = join(dir, '.dsh', `suggestions-${LATE}.json`)
+    writeFileSync(latePath, JSON.stringify([
+      { title: "A's stale answer", rationale: 'computed against an old backlog', priority: 'p1' },
+    ]))
+    // Run B polls. It must NOT see A's answer — that is the whole defect.
+    const fresh = await service.readSuggestions({ workspaceId: 'ws', runId: FRESH })
+    assert.equal(fresh.status, 'pending',
+      "a late writer's file must never be read as the current run's result")
+
+    // ...and B's own file, when it lands, IS read.
+    const freshPath = join(dir, '.dsh', `suggestions-${FRESH}.json`)
+    writeFileSync(freshPath, JSON.stringify([
+      { title: "B's own answer", rationale: 'the run that was actually asked', priority: 'p2' },
+    ]))
+    const mine = await service.readSuggestions({ workspaceId: 'ws', runId: FRESH })
+    assert.equal(mine.status, 'ready', "the run's OWN file must still be read")
+    assert.equal(mine.suggestions[0].title, "B's own answer")
+    assert.ok(!existsSync(freshPath), 'the consumed file is still deleted on the ready path')
+
+    // The orphan sweep: A's file is gone, or `.dsh` accrues one file per
+    // abandoned scan forever — and abandoning one is ordinary, since closing
+    // the modal does it.
+    assert.ok(!existsSync(latePath), 'an orphaned run file must be swept, not left to accumulate')
+
+    // The legacy fixed path is swept too, so an upgrade needs no migration.
+    const legacyPath = join(dir, '.dsh', 'suggestions.json')
+    writeFileSync(legacyPath, '[]')
+    await service.readSuggestions({ workspaceId: 'ws', runId: FRESH })
+    assert.ok(!existsSync(legacyPath), "the legacy workspace-global file must be swept, never read")
+
+    // The sweep is ANCHORED. `.dsh` holds todo.db and whatever else the harness
+    // keeps there; a sweep that guessed wider would delete a neighbour's data.
+    const bystander = join(dir, '.dsh', 'suggestions-notes.txt')
+    const dbLike = join(dir, '.dsh', 'todo.db')
+    writeFileSync(bystander, 'keep me')
+    writeFileSync(dbLike, 'keep me too')
+    await service.readSuggestions({ workspaceId: 'ws', runId: FRESH })
+    assert.ok(existsSync(bystander), 'the sweep must not delete unrelated .dsh files')
+    assert.ok(existsSync(dbLike), 'the sweep must never touch the database')
+    rmSync(bystander, { force: true })
+    rmSync(dbLike, { force: true })
+
+    // A malformed runId must be REFUSED, not silently joined into a path.
+    // Traversal is the sharp end: `..` would put the read outside `.dsh`.
+    for (const bad of [undefined, '', '../../etc/passwd', 'has space', 'UPPER', 'a/b']) {
+      await assert.rejects(
+        () => service.readSuggestions({ workspaceId: 'ws', runId: bad }),
+        /runId must be a non-empty lowercase alphanumeric string/,
+        `a runId of ${JSON.stringify(bad)} must be refused, not interpolated into a path`,
+      )
+    }
+  }
 
   // --- both scan endpoints: a MISSING request is a domain error ------------
   // `request?.workspaceId` exists so a call with no argument produces the same
@@ -616,7 +688,29 @@ assert.equal(typeof m.apply, 'function', 'client half must export apply()')
   )
 
   const readDesc = contribution.descriptors.find((d) => d.method === 'readSuggestions')
-  readDesc.parameters[0].codec.schema.parse({ workspaceId: 'w1' })
+  // `runId` must be NAMED in the request codec. These are strict codecs, which
+  // STRIP a field they do not carry — silently — so an unnamed runId would
+  // never leave the browser, the host would reject every poll for a missing run
+  // id, and the modal would report that as the scan failing with the real cause
+  // invisible on both ends. This is the "additive change still needs remote.ts"
+  // trap AGENTS.md records for every other field.
+  const readReq = readDesc.parameters[0].codec.schema.parse({ workspaceId: 'w1', runId: 'r1' })
+  assert.equal(readReq.workspaceId, 'w1', 'workspaceId must survive the request codec')
+  assert.equal(readReq.runId, 'r1', 'runId must survive the request codec, or the poll is unaddressed')
+  assert.throws(
+    () => readDesc.parameters[0].codec.schema.parse({ workspaceId: 'w1' }),
+    'runId is not optional — an unidentified read is the cross-run bleed itself',
+  )
+  // scanDigest is deliberately NOT given one: it is read-only and stateless, so
+  // a run identity would be noise on the wire. Asserted as the codec DROPPING
+  // it rather than rejecting it — a zod object passes unknown keys through its
+  // parse and strips them, which is precisely the silent-strip behaviour that
+  // makes the `runId` assertion above load-bearing.
+  assert.equal(
+    digestDesc.parameters[0].codec.schema.parse({ workspaceId: 'w1', runId: 'r1' }).runId,
+    undefined,
+    'scanDigest carries no runId — it neither writes nor reads a result file',
+  )
   // The ordinary poll: no file yet, and no suggestions key at all.
   assert.equal(readDesc.result.schema.parse({ status: 'pending' }).status, 'pending')
   // A parse failure travels as a MESSAGE, so `error` must be named or the modal
@@ -1204,10 +1298,12 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
 
   // 2. The prompt names the output path the host reads back. These are the two
   //    ends of one contract in different files: if composeScanPrompt stopped
-  //    naming SUGGESTIONS_FILE, every scan would poll forever on a file the
-  //    model was never asked to write, and nothing would throw.
-  assert.ok(bundle.includes('suggestions.json'),
-    'the scan prompt must name the file the host reads back')
+  //    naming the same path readSuggestions builds, every scan would poll
+  //    forever on a file the model was never asked to write, and nothing would
+  //    throw. The path is per-run now, so the shared literal is the STEM.
+  assert.ok(bundle.includes('/suggestions-'),
+    'the scan prompt must name the per-run file the host reads back')
+  assert.ok(bundle.includes('.json'), 'the result file must still be JSON')
 
   // 3. THE SINGLE WRITE PATH, mirroring the single-deletion-path rule above.
   //    Deletion is guarded because a second call site would bypass the confirm
@@ -1336,6 +1432,71 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   //    exactly what archived a just-prompted session in the launch flow.
   assert.ok(/const id = sessionRef\.current\s*\n\s*sessionRef\.current = null/.test(source),
     'cleanup must take the session id and blank the ref in the SAME step')
+
+  // 10. AN EMPTY DIGEST IS GUARDED, AND THE GUARD RUNS BEFORE sessions.create.
+  //     buildDigest returns digest:'' for four distinct cases — a missing
+  //     workspace directory, a root that is not a directory, a genuinely empty
+  //     workspace, and one whose files are all ignored/dot directories. Left
+  //     unguarded, composeScanPrompt emits an empty "## Evidence" section
+  //     directly under "do not speculate about code you cannot see". A
+  //     compliant model then writes `[]` and the modal reports "Nothing new to
+  //     suggest — the backlog already covers what the scan found": a FALSE
+  //     CLAIM about the user's workspace, since the scan found nothing because
+  //     it could not look. That is dsh-plan-board's defect one layer up, where
+  //     the loading flag is right and the EMPTY STATE is wrong.
+  //
+  //     The ORDERING is the fix. A guard after sessions.create still shows the
+  //     right message, but has already spent a session and its tokens on
+  //     evidence that does not exist. Pinned by comparing source indices, the
+  //     same way the setPhase-before-scanDigest ordering above is pinned —
+  //     otherwise this is one refactor away from silently reverting.
+  const guarded = source.indexOf("digest.trim() === ''")
+  const created = source.indexOf('launch.sessions.create(')
+  assert.ok(guarded !== -1, 'an empty digest must be guarded — it means the scan could not look')
+  assert.ok(created !== -1, 'the scan must still create its session')
+  assert.ok(guarded < created,
+    'the empty-digest guard must run BEFORE sessions.create — after it, the session is already spent')
+  //     ...and it must be a terminal, RECOVERABLE state, not a silent return:
+  //     a workspace being remounted should retry with one Refresh click.
+  const guardBlock = source.slice(guarded, created)
+  assert.ok(/setPhase\('error'\)/.test(guardBlock),
+    'the empty-digest guard must land in the error phase, which is where Refresh stays enabled')
+  assert.ok(/setError\(/.test(guardBlock),
+    'the empty-digest guard must SAY why — "no scannable files", not a bare failure')
+
+  // 11. RUN IDENTITY. Archiving a scan session does not cancel it, so a
+  //     timed-out or abandoned run still writes its file. The prompt and every
+  //     poll must therefore name THIS run, or that late write is read back as
+  //     the current run's answer within one 1.5s poll.
+  assert.ok(/const runId = makeRunId\(\)/.test(source),
+    'each scan must mint its own run id')
+  assert.ok(/composeScanPrompt\(digest, exclude, runId\)/.test(source),
+    'the prompt must name this run, or the model writes to a shared path')
+  assert.ok(/readSuggestions\(\{ workspaceId: launch\.workspaceId, runId \}\)/.test(source),
+    'every poll must identify its run, or it reads whatever landed last')
+  //     Minted per RUN, not per component: a ref or a state slot would let a
+  //     superseded loop repoint at the new run's file mid-flight.
+  const dialogSrc = /export function SuggestDialog\(\{[\s\S]*?\n\}\n\n\/\*\*\n \* The full task detail dialog/.exec(source)[0]
+  assert.equal((dialogSrc.match(/makeRunId\(/g) ?? []).length, 1,
+    'exactly one run id per scan, minted in runScan')
+  assert.ok(!/runIdRef/.test(dialogSrc),
+    'the run id must be a per-run local, never a ref a later scan can repoint')
+
+  // 12. "Add selected" must not close on a DROPPED write. store.update returns
+  //     early and silently when the store is not `ready`; closing anyway
+  //     dismisses the picks, and suggestions are NEVER STORED — so the work is
+  //     unrecoverable without another 180s scan.
+  assert.ok(/const applied = store\.update\(/.test(source),
+    'the promotion must observe whether the write applied')
+  assert.ok(/if \(!applied\) \{[\s\S]{0,400}?return\s*\n\s*\}/.test(source),
+    'a dropped write must return early, never fall through to onClose()')
+  //     The refusal must NOT be reported through `phase`: the rows render only
+  //     while phase === 'ready', so phase='error' would blank the very picks
+  //     this guard exists to preserve.
+  const refusal = /if \(!applied\) \{[\s\S]{0,400}?\n\s*\}/.exec(source)[0]
+  assert.ok(!/setPhase\(/.test(refusal),
+    'a failed promotion must not change the scan phase — that would blank the checked rows')
+  assert.ok(/setAddError\(/.test(refusal), 'a failed promotion must say why')
 }
 
 // --- the launch button must be VISIBLE without hovering ----------------------

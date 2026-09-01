@@ -324,9 +324,51 @@ plain Node, the same constraint `launch.ts` carries.
 **The result is a FILE, not a return value, because there is nothing to await.**
 `session.prompt()` resolves when the prompt is *accepted*, not when the work is done, and
 the harness publishes no completion promise anywhere. So the result needs a rendezvous
-point rather than a callback. `<workspace>/.dsh/suggestions.json` is one the host can
-already read, is inspectable by hand when a scan misbehaves, and survives the modal being
-closed mid-scan — a return value would not exist to be collected.
+point rather than a callback. `<workspace>/.dsh/suggestions-<runId>.json` is one the host
+can already read, is inspectable by hand when a scan misbehaves, and survives the modal
+being closed mid-scan — a return value would not exist to be collected.
+
+**The rendezvous is PER RUN, because ARCHIVING IS NOT CANCELLATION.** `discardSession()`
+calls only `uiWorkspace.archiveSession(sessionId)`, which in the harness is a one-line
+delegation to `workspaces.archiveSession` — **sidebar visibility, nothing else**. There is
+no abort, interrupt, cancel or stop anywhere in `launch.ts`, and none is reachable: the
+agent turn keeps running to completion and eventually writes its file. Against one fixed
+workspace-global path that late write is indistinguishable from the current run's answer,
+and it lands two ways:
+
+- **Timeout.** Scan A exceeds `SCAN_TIMEOUT_MS`, the modal says so, A is archived-but-alive.
+  The user clicks Refresh (legal — Refresh is disabled only while `phase === 'scanning'`),
+  and B starts. A finishes, writes, and B's next poll — within 1.5s — reads A's file,
+  reports `ready`, and presents **A's suggestions as B's results**, then deletes the file so
+  B's real output is later read by nobody. A's answers were computed against a **stale
+  exclusion set**, so they duplicate tasks the user added in between, defeating the feature's
+  premise; `seenRef` is then poisoned with A's titles as though B produced them.
+- **Closed modal, and this is the likelier one.** The user closes the modal mid-scan. The
+  session finishes and writes. The file sits on disk. The *next* scan — minutes or days
+  later, after the backlog has changed — reads it within 1.5s and presents it as fresh.
+  Silently.
+
+So `composeScanPrompt(digest, exclude, runId)` names a per-run path, `readSuggestions` takes
+the `runId` and reads **only** that path, and a late writer therefore cannot be mistaken for
+the current run. Deleting any pre-existing file before prompting would be the minimal fix and
+is **not enough** — it leaves the closed-modal path wide open. `makeRunId()` mints the token
+on the same terms `makeItem` mints an id (`Date.now()` + `Math.random()`, base36, no new
+dependency); it needs to be unique per scan, not unguessable.
+
+- **The runId must be named in `src/remote.ts`.** The change is additive, but a **strict
+  codec strips fields it does not name**, so an unlisted `runId` never leaves the browser and
+  the host rejects every poll — with the real cause invisible on both ends. This is the same
+  trap as "Adding a field is a SIX-place change", one field wide.
+- **The host REFUSES a malformed runId** (`/^[a-z0-9]+$/`) rather than interpolating it into
+  a path. `..` would put the read outside `.dsh`, and the token is generated, so anything
+  else is a caller bug worth naming.
+- **Orphans are swept on every poll**, not at scan start: one `readdir` of `.dsh` is trivial
+  beside the digest walk that just ran, it clears a file left by a build that had no sweep,
+  and it collects the **legacy fixed-path file** too, so the upgrade needs no migration step.
+  Without it `.dsh` accrues one orphan per abandoned scan forever, and abandoning a scan is
+  the ordinary case — closing the modal does it. `SUGGESTIONS_FILE_RE` is anchored at both
+  ends: `.dsh` holds `todo.db` and whatever else the harness keeps there, and a wider guess
+  would delete a neighbour's data.
 
 **A background session, and not a direct model call, because the alternatives are exactly
 the bet this file records losing four times.** `@deepseek-ai/dsh-llm` (service key `llm`) is
@@ -379,6 +421,24 @@ therefore uses only public paths the plugin already depends on: `sessions.create
   call, or the tab reads as frozen rather than busy. That ordering is pinned in `smoke.mjs`
   by comparing source indices (`setPhase('scanning')` before `remote.scanDigest(`), and
   anyone issuing this call from a new place must preserve it.
+- **An EMPTY digest is guarded, and the guard runs BEFORE `sessions.create`.** `buildDigest`
+  returns `{digest: '', truncated: false}` for **four** distinct cases — a missing workspace
+  directory, a root that is not a directory, a genuinely empty workspace, and one whose files
+  are all under `IGNORED_DIRS`/dotdirs — and none of them is an error. Unguarded,
+  `composeScanPrompt('')` emits an empty `## Evidence` section directly under the instruction
+  *"do not speculate about code you cannot see"*. A compliant model then writes `[]`, and the
+  modal renders *"Nothing new to suggest — the backlog already covers what the scan found"*:
+  a **FALSE CLAIM about the user's workspace**, since the scan found nothing because it could
+  not look. That is the `dsh-plan-board` defect — "there is nothing" conflated with "we could
+  not look" — reintroduced one layer up, where the loading flag is right and the EMPTY STATE
+  is the lie. A non-compliant model instead writes prose and the user watches the skeleton for
+  the full 180s.
+  The **ordering is the fix, not the message**. A guard placed after `sessions.create` still
+  shows the right text but has already spent a real session and its tokens on evidence that
+  does not exist. `smoke.mjs` therefore compares source indices — the same technique that pins
+  `setPhase('scanning')` before `scanDigest` — because otherwise the fix is one refactor away
+  from silently reverting. It lands in `phase: 'error'`, deliberately the recoverable state, so
+  a workspace that was merely being remounted retries with one Refresh click.
 - **Only `ENOENT` means "not yet".** `readSuggestions`' read catch branches on errno,
   because most failures are TERMINAL and waiting cannot clear them: a directory sitting at
   the result path (`EISDIR`, from a bad `mkdir -p` or a hand-created folder) or a locked-down
@@ -434,6 +494,20 @@ therefore uses only public paths the plugin already depends on: `sessions.create
   fields)` — `fields` is the FOURTH parameter, and passing the options object second
   silently makes it the `now` timestamp, producing a garbage `id` and `createdAt` with no
   error anywhere.
+- **…which is exactly why the close is GATED on the write applying.** `store.update` returns
+  early and silently when `this.state.status !== 'ready'`, so a store in `error` swallows the
+  transform. Closing anyway meant the user checked five suggestions, clicked **Add selected**,
+  watched the modal close, and got nothing — and since suggestions are never stored, the picks
+  were unrecoverable without another 180s scan. `update` therefore returns **whether it
+  applied** (false also covers a no-op transform, which callers that close on success want
+  too), and `addSelected` returns early on false. Two details are load-bearing:
+  - The refusal is reported through its **own** `addError` state, never `phase`. The rows
+    render only while `phase === 'ready'`, so `setPhase('error')` would blank the very picks
+    the guard exists to preserve — the fix reintroducing its own bug.
+  - Gating beats disabling the button. `disabled` tracks `phase`, which is the **scan's**
+    state and says nothing about the store's, so the two can legitimately disagree; and
+    leaving the dialog open with the rows still checked lets the user retry the moment the
+    list reloads.
 - **The button is gated on the SAME `launch` context the rocket button uses**, and on
   nothing else. A scan runs in a real session, `sessions` is the one service it cannot fake,
   and `launchContext()` already yields `undefined` when it is unreachable — so a profile
@@ -572,7 +646,7 @@ credential check.
 - `POST /api/dshTodo/list` — `{ workspaceId }` → `{ list: { items, revision, updatedAt } }`
 - `POST /api/dshTodo/replace` — `{ workspaceId, items, ifRevision }` → `ok:true` with the new list, or `ok:false, code:'revision-conflict'` when `ifRevision` is stale
 - `POST /api/dshTodo/scanDigest` — `{ workspaceId }` → `{ digest, truncated }`. Read-only and side-effect free: it neither starts a scan nor touches the database. **Synchronous, and it blocks the host event loop** for the whole walk — never treat it as cheap.
-- `POST /api/dshTodo/readSuggestions` — `{ workspaceId }` → `{ status: 'pending' }` while `<workspace>/.dsh/suggestions.json` is absent, `{ status: 'ready', suggestions }` once it parses, or `{ status: 'error', error }` on a malformed result or any non-`ENOENT` read failure. **Consumes the file on both the ready and the error path.**
+- `POST /api/dshTodo/readSuggestions` — `{ workspaceId, runId }` → `{ status: 'pending' }` while `<workspace>/.dsh/suggestions-<runId>.json` is absent, `{ status: 'ready', suggestions }` once it parses, or `{ status: 'error', error }` on a malformed result or any non-`ENOENT` read failure. **Consumes the file on both the ready and the error path**, reads **only** the named run's file, and sweeps every other `suggestions*.json` in `.dsh` as an orphan. `runId` is **required** and must match `/^[a-z0-9]+$/`; a missing or malformed one rejects rather than being joined into a path.
 
 Each takes exactly one parameter named `request`, and `wire: 'request'` in `src/remote.ts` must match it — the gateway resolves endpoints by reading parameter names off the function source.
 

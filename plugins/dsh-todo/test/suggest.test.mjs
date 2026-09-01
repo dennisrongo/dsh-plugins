@@ -6,7 +6,7 @@
  * that would mean matching renamed identifiers.
  */
 import { strict as assert } from 'node:assert'
-import { composeScanPrompt, parseSuggestions } from '../lib/suggest.js'
+import { composeScanPrompt, makeRunId, parseSuggestions, suggestionsFileFor } from '../lib/suggest.js'
 
 // The caps are stated as LITERALS, not imported: types.ts is bundled into each
 // entry point and never emitted as lib/types.js, and a test that imported the
@@ -30,12 +30,12 @@ function test(name, fn) {
 }
 
 test('the prompt carries the digest verbatim', () => {
-  const prompt = composeScanPrompt('DIGEST-MARKER', [])
+  const prompt = composeScanPrompt('DIGEST-MARKER', [], 'run1')
   assert.ok(prompt.includes('DIGEST-MARKER'))
 })
 
 test('existing titles are listed as exclusions', () => {
-  const prompt = composeScanPrompt('d', ['Fix token refresh', 'Add dark mode'])
+  const prompt = composeScanPrompt('d', ['Fix token refresh', 'Add dark mode'], 'run1')
   assert.ok(prompt.includes('Fix token refresh'))
   assert.ok(prompt.includes('Add dark mode'))
 })
@@ -43,14 +43,65 @@ test('existing titles are listed as exclusions', () => {
 test('an empty exclusion list does not emit an empty heading', () => {
   // An empty "Already planned:" section teaches the model the field is
   // meaningless, exactly as composePrompt() avoids an empty "Priority: —".
-  const prompt = composeScanPrompt('d', [])
+  const prompt = composeScanPrompt('d', [], 'run1')
   assert.ok(!/already planned/i.test(prompt))
 })
 
 test('the prompt names the output path and demands JSON only', () => {
-  const prompt = composeScanPrompt('d', [])
-  assert.ok(prompt.includes('.dsh/suggestions.json'))
+  const prompt = composeScanPrompt('d', [], 'run1')
+  assert.ok(prompt.includes('.dsh/suggestions-run1.json'))
   assert.ok(/json/i.test(prompt))
+})
+
+// --- run identity ----------------------------------------------------------
+// The prompt names a PER-RUN file, and the host reads only that one. This is
+// what makes a late writer harmless: `discardSession` archives a scan session
+// (uiWorkspace.archiveSession — sidebar visibility) and does not cancel it, so
+// a run that timed out or whose modal was closed keeps working and eventually
+// writes. Against one fixed path, the next run's poll reads that write within
+// 1.5s and presents it as its own — computed against a stale exclusion set.
+
+test('the prompt names a path unique to the run it was composed for', () => {
+  const a = composeScanPrompt('d', [], 'aaa111')
+  const b = composeScanPrompt('d', [], 'bbb222')
+  assert.ok(a.includes('.dsh/suggestions-aaa111.json'))
+  assert.ok(b.includes('.dsh/suggestions-bbb222.json'))
+  // Neither may name the other's file, or the two runs share a rendezvous.
+  assert.ok(!a.includes('bbb222'))
+  assert.ok(!b.includes('aaa111'))
+})
+
+test('the prompt never names the legacy workspace-global path', () => {
+  // The exact regression: a fixed path carries no run identity at all, so
+  // reintroducing it re-opens both failure paths (timeout, and closed modal).
+  const prompt = composeScanPrompt('d', [], 'run1')
+  assert.ok(!/`\.dsh\/suggestions\.json`/.test(prompt))
+})
+
+test('the run id reaches the prompt as-is, so the host can match it', () => {
+  // The two ends of one contract in different modules: the client mints the id,
+  // the prompt tells the model where to write, and readSuggestions builds the
+  // same path from the same id. A transform on either side (case-folding, a
+  // prefix) would leave the model writing where nobody reads.
+  const runId = makeRunId(1_700_000_000_000, () => 0.5)
+  assert.ok(composeScanPrompt('d', [], runId).includes(`.dsh/suggestions-${runId}.json`))
+})
+
+test('the prompt path is built by the same helper the host reads with', () => {
+  // One implementation, two ends. If the prompt composed its path by hand the
+  // two could drift silently — the model would write where nobody polls, and
+  // the modal would simply time out with no error to explain it.
+  const runId = 'zz9'
+  assert.ok(composeScanPrompt('d', [], runId).includes(suggestionsFileFor(runId)))
+  assert.equal(suggestionsFileFor(runId), '.dsh/suggestions-zz9.json')
+})
+
+test('a minted run id is file-name safe and unique per call', () => {
+  // It is interpolated into a path and matched by the host's sweep regex, so
+  // anything outside [a-z0-9] would either break the path or escape the sweep.
+  assert.match(makeRunId(), /^[a-z0-9]+$/)
+  const ids = new Set(Array.from({ length: 200 }, () => makeRunId()))
+  assert.ok(ids.size > 1, 'run ids must differ between scans, or two runs collide')
 })
 
 test('a well-formed array parses', () => {

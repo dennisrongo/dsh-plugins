@@ -7,11 +7,18 @@ function toPriority(value) {
 var MAX_TEXT = 500;
 var MAX_DESC = 5e3;
 var MAX_LABEL = 60;
-var SUGGESTIONS_FILE = ".dsh/suggestions.json";
+var SUGGESTIONS_DIR = ".dsh";
+var SUGGESTIONS_FILE = `${SUGGESTIONS_DIR}/suggestions.json`;
+function makeRunId(now = Date.now(), rand = Math.random) {
+  return `${now.toString(36)}${Math.floor(rand() * 1e6).toString(36)}`;
+}
+function suggestionsFileFor(runId) {
+  return `${SUGGESTIONS_DIR}/suggestions-${runId}.json`;
+}
 var MAX_SUGGESTIONS = 12;
 
 // src/suggest.ts
-function composeScanPrompt(digest, excludeTitles) {
+function composeScanPrompt(digest, excludeTitles, runId) {
   const parts = [
     "# Propose work for this codebase",
     "You are reviewing a workspace to propose concrete next tasks. Base every suggestion on the evidence below \u2014 do not speculate about code you cannot see.",
@@ -28,7 +35,7 @@ function composeScanPrompt(digest, excludeTitles) {
   }
   parts.push(
     "## Output",
-    `Write ONLY a JSON array to \`${SUGGESTIONS_FILE}\` (create the directory if needed).`,
+    `Write ONLY a JSON array to \`${suggestionsFileFor(runId)}\` (create the directory if needed).`,
     'Each element: {"title": string, "rationale": string, "priority": "p0"|"p1"|"p2"|"p3", "evidence": string}',
     "`evidence` is a `file:line` pointer where one exists; omit it otherwise.",
     `Produce at most ${MAX_SUGGESTIONS} suggestions. Write the file and stop \u2014 do not implement anything.`
@@ -80,5 +87,7 @@ function parseSuggestions(raw) {
 }
 export {
   composeScanPrompt,
-  parseSuggestions
+  makeRunId,
+  parseSuggestions,
+  suggestionsFileFor
 };

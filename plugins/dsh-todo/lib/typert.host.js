@@ -38,6 +38,10 @@ var replaceResultSchema = z.union([
   })
 ]);
 var scanRequestSchema = z.object({ workspaceId: z.string() });
+var readSuggestionsRequestSchema = z.object({
+  workspaceId: z.string(),
+  runId: z.string()
+});
 var scanDigestResultSchema = z.object({
   digest: z.string(),
   truncated: z.boolean()
@@ -90,7 +94,7 @@ var TODO_REMOTE = {
     descriptor("list", listRequestSchema, listResultSchema),
     descriptor("replace", replaceRequestSchema, replaceResultSchema),
     descriptor("scanDigest", scanRequestSchema, scanDigestResultSchema),
-    descriptor("readSuggestions", scanRequestSchema, readSuggestionsResultSchema)
+    descriptor("readSuggestions", readSuggestionsRequestSchema, readSuggestionsResultSchema)
   ]
 };
 
@@ -131,7 +135,7 @@ var TYPERT = {
           {
             kind: "method",
             name: "readSuggestions",
-            signature: "@Remote readSuggestions(request: SuggestScanRequest): Promise<ReadSuggestionsResult>",
+            signature: "@Remote readSuggestions(request: ReadSuggestionsRequest): Promise<ReadSuggestionsResult>",
             summary: "Read and consume whatever a scan session has written so far."
           }
         ],
@@ -163,6 +167,13 @@ var TYPERT = {
           {
             name: "SuggestScanRequest",
             declaration: "export interface SuggestScanRequest {\n    workspaceId: string;\n}"
+          },
+          {
+            // `runId` is REQUIRED. A per-run result path is what stops a scan
+            // that timed out — archived, but never actually cancelled — writing
+            // its answer where the NEXT run reads it as fresh.
+            name: "ReadSuggestionsRequest",
+            declaration: "export interface ReadSuggestionsRequest {\n    workspaceId: string;\n    runId: string;\n}"
           },
           {
             name: "ScanDigestResult",

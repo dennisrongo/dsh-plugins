@@ -41,6 +41,7 @@ import {
   PRIORITIES,
   STATUSES,
   compareVersionsDesc,
+  makeRunId,
   normalizeDueDate,
   normalizeLabel,
   normalizeVersionLabel,
@@ -728,14 +729,27 @@ export class TodoStore {
 
   /**
    * Apply a pure list transform, echo it immediately, and persist it.
+   *
+   * Returns whether the write was APPLIED, which is not a formality: this drops
+   * the transform silently when the store is not `ready`, and a caller that
+   * treats calling as succeeding will act on a write that never happened. The
+   * suggest dialog is the case that matters — it closed unconditionally, so a
+   * store in `error` swallowed five checked suggestions and dismissed the only
+   * copy of them, unrecoverable without another 180s scan.
+   *
+   * `false` also covers a no-op transform (the same array back). Callers that
+   * close on success want that too: nothing changed, so nothing was lost.
+   *
    * @param fn - pure transform over the current items.
+   * @returns true when the new list was published and queued for persistence.
    */
-  update(fn: (items: TodoItem[]) => TodoItem[]): void {
-    if (this.state.status !== 'ready') return
+  update(fn: (items: TodoItem[]) => TodoItem[]): boolean {
+    if (this.state.status !== 'ready') return false
     const next = fn(this.state.items)
-    if (next === this.state.items) return
+    if (next === this.state.items) return false
     this.publish({ ...this.state, items: next, saving: true })
     void this.commit(next)
+    return true
   }
 
   /** Serialize writes so queued saves always compare against the committed revision. */
@@ -801,9 +815,17 @@ export interface TodoRemote {
    * never after it resolves.
    */
   scanDigest: (request: { workspaceId: string }) => Promise<RemoteReply<ScanDigestResult>>
-  /** Poll for what a scan session has written, if anything yet. */
+  /**
+   * Poll for what THIS scan run has written, if anything yet.
+   *
+   * `runId` is required, and the host reads only that run's file. Archiving a
+   * scan session does not cancel it, so a timed-out or abandoned run still
+   * writes eventually; a shared path would let that late write be read back as
+   * the current run's answer.
+   */
   readSuggestions: (request: {
     workspaceId: string
+    runId: string
   }) => Promise<RemoteReply<ReadSuggestionsResult>>
 }
 
@@ -1900,6 +1922,16 @@ export function SuggestDialog({
   const [suggestions, setSuggestions] = React.useState<Suggestion[]>([])
   const [checked, setChecked] = React.useState<Set<string>>(new Set())
   const [error, setError] = React.useState<string | null>(null)
+  /**
+   * A REFUSED promotion, kept apart from `error`.
+   *
+   * `error` belongs to the scan and is rendered by the `phase === 'error'`
+   * branch, which replaces the rows. A failed "Add selected" must leave the
+   * rows and their checkboxes exactly where they are — suggestions are never
+   * stored, so blanking them costs another 180s scan — hence a second slot
+   * rather than reusing the first.
+   */
+  const [addError, setAddError] = React.useState<string | null>(null)
   /** Titles already proposed this session, so Refresh returns new ideas. */
   const seenRef = React.useRef<string[]>([])
   /**
@@ -1937,6 +1969,11 @@ export function SuggestDialog({
     // that `disabled` would let a second scan clear the flag the first is
     // polling on, leaving both loops writing into the same state.
     cancelledRef.current = false
+    // This run's identity, minted BEFORE anything is issued so the prompt and
+    // every poll below name the same file. Held as a local, not a ref: a
+    // superseded run must keep polling its OWN path until its loop exits, and
+    // a ref would repoint it at the new run's file mid-flight.
+    const runId = makeRunId()
     // `suggestions` and `checked` deliberately survive a Refresh, so the old
     // rows stay put until the new set lands rather than blanking the pane. The
     // consequence is that a title in BOTH sets arrives pre-checked — harmless:
@@ -1944,6 +1981,8 @@ export function SuggestDialog({
     // one Set member either way now that parseSuggestions dedupes titles.
     setPhase('scanning')
     setError(null)
+    // A refusal from the previous set must not sit over a fresh one.
+    setAddError(null)
 
     try {
       // Issued only after the phase above is armed: this call blocks the host
@@ -1956,6 +1995,31 @@ export function SuggestDialog({
       // the top level would silently yield undefined.
       if (!digestReply.ok) throw new Error(digestReply.error.message)
       const { digest } = digestReply.value
+
+      // An empty digest means the walk found NOTHING TO LOOK AT — a workspace
+      // directory that is missing, is not a directory, is genuinely empty, or
+      // holds only ignored/dot directories. Stop here, BEFORE sessions.create,
+      // which is what makes this cheap: no session is spent and no tokens are
+      // burnt on evidence that does not exist.
+      //
+      // Continuing would put an empty "## Evidence" section directly under an
+      // instruction not to speculate about unseen code. A compliant model then
+      // writes `[]`, and the modal reports "Nothing new to suggest — the
+      // backlog already covers what the scan found" — a FALSE CLAIM about the
+      // user's workspace, since the scan found nothing because it could not
+      // look. That is dsh-plan-board's "there is nothing" conflated with "we
+      // could not look", one layer up: the loading flag is right and the empty
+      // state is the lie. A non-compliant model instead writes prose, and the
+      // user watches the skeleton for the full 180s.
+      //
+      // `phase: 'error'` is deliberately the recoverable state — Refresh is
+      // disabled only while scanning — so a workspace that was merely being
+      // remounted retries with one click.
+      if (digest.trim() === '') {
+        setError('this workspace has no scannable files — it may have been moved or is empty')
+        setPhase('error')
+        return
+      }
 
       // Titles only: descriptions would multiply the cost of every scan to
       // restate the very work the model is being told to avoid.
@@ -1976,7 +2040,7 @@ export function SuggestDialog({
       const binding = launch.sessions.binding(sessionId)
       if (binding === undefined) throw new Error('the scan session is not addressable yet')
       const sent = await binding.session.prompt(
-        [{ type: 'text', text: composeScanPrompt(digest, exclude) }],
+        [{ type: 'text', text: composeScanPrompt(digest, exclude, runId) }],
         'queue',
       )
       if (!sent.ok) throw new Error(sent.error?.message ?? 'the scan session refused the prompt')
@@ -1986,7 +2050,9 @@ export function SuggestDialog({
         if (cancelledRef.current) return
         await new Promise((r) => setTimeout(r, SCAN_POLL_MS))
         if (cancelledRef.current) return
-        const reply = await remote.readSuggestions({ workspaceId: launch.workspaceId })
+        // Only THIS run's file. A previous scan that timed out is archived but
+        // still running, and its late write must never be read as this one's.
+        const reply = await remote.readSuggestions({ workspaceId: launch.workspaceId, runId })
         if (!reply.ok) throw new Error(reply.error.message)
         const result = reply.value
         if (result.status === 'ready') {
@@ -2044,6 +2110,15 @@ export function SuggestDialog({
    * ONE store.update for the whole batch, not one per row: the store treats
    * each call as a reason to write, so a per-row loop would put a round-trip
    * on the wire for every checkbox.
+   *
+   * The close is GATED on the write applying. `store.update` drops the
+   * transform and returns false when the store is not `ready`, and closing
+   * anyway destroys the only copy of the picks: suggestions are never stored,
+   * so a dismissed dialog costs another 180s scan to get them back. Gating here
+   * rather than disabling the button is deliberate — the button's `disabled`
+   * tracks `phase`, which is the SCAN's state and says nothing about the
+   * store's, so the two can disagree; and leaving the dialog open with the rows
+   * still checked lets the user retry the moment the list reloads.
    */
   const addSelected = (): void => {
     const picked = suggestions.filter((s) => checked.has(s.title))
@@ -2052,7 +2127,7 @@ export function SuggestDialog({
     // FOURTH parameter. Passing the options object second would silently make
     // it the `now` timestamp, producing a garbage id and createdAt with no
     // error anywhere.
-    store.update((current) => [
+    const applied = store.update((current) => [
       ...current,
       ...picked.map((s) =>
         makeItem(normalizeText(s.title), Date.now(), Math.random, {
@@ -2062,6 +2137,14 @@ export function SuggestDialog({
         }),
       ),
     ])
+    if (!applied) {
+      // Reported through its OWN state, deliberately not `phase`. Setting
+      // phase='error' would stop the rows rendering — they are gated on
+      // phase==='ready' — and blanking the picks is precisely the loss this
+      // guard exists to prevent. The dialog stays open, ready, and checked.
+      setAddError('the task list is not loaded — reopen the tab and try again')
+      return
+    }
     onClose()
   }
 
@@ -2107,6 +2190,14 @@ export function SuggestDialog({
 
           {phase === 'ready' && suggestions.length > 0
             ? suggestions.map((s) => (
+                // KEYED BY TITLE, and that is only safe because
+                // parseSuggestions() in suggest.ts dedupes titles
+                // case-insensitively before this list ever exists. The title is
+                // the identity here three times over — this key, the `checked`
+                // Set member below, and that dedupe key. Do not "fix" one side
+                // alone: switching to an index key would silence a React
+                // warning while leaving one checkbox toggling two rows and "Add
+                // selected" writing the same task twice.
                 <label className="dshtd-sug-row" key={s.title}>
                   <input
                     type="checkbox"
@@ -2125,8 +2216,16 @@ export function SuggestDialog({
         </div>
 
         <div className="dshtd-modal-foot">
-          <span className="dshtd-sug-status">
-            {phase === 'ready' && checked.size > 0 ? `${checked.size} selected` : ''}
+          {/* The refusal takes the status line rather than a slot of its own:
+              it is the answer to the click that just happened, and it must sit
+              where the user is already looking. `role="alert"` because it
+              reports a failed action, not ambient state. */}
+          <span className="dshtd-sug-status" {...(addError !== null ? { role: 'alert' } : {})}>
+            {addError !== null
+              ? addError
+              : phase === 'ready' && checked.size > 0
+                ? `${checked.size} selected`
+                : ''}
           </span>
           <span style={{ display: 'flex', gap: 8 }}>
             {/* Disabled only WHILE a scan runs. An error must stay recoverable:

@@ -11,10 +11,18 @@ import {
   MAX_LABEL,
   MAX_SUGGESTIONS,
   MAX_TEXT,
-  SUGGESTIONS_FILE,
+  makeRunId,
+  suggestionsFileFor,
   type Suggestion,
   toPriority,
 } from './types.ts'
+
+// Re-exported so the test can drive the SHIPPED implementation: types.ts is
+// bundled into each entry point and never emitted as lib/types.js, and these
+// two are the client's half of the run-identity contract whose other half is
+// the host's readSuggestions. A test that reimplemented either could only
+// prove it agrees with itself.
+export { makeRunId, suggestionsFileFor }
 
 /**
  * Compose the brief a scan session works from.
@@ -23,12 +31,24 @@ import {
  * cost of every scan to restate work the model is being asked to avoid, and a
  * title is enough to recognise a duplicate.
  *
+ * The output path is PER RUN, and that is the whole reason `runId` is a
+ * parameter here rather than a constant in `types.ts`. Archiving a scan session
+ * does not stop it, so a timed-out or abandoned run finishes and writes its
+ * file regardless; against one fixed path the next run reads that late write as
+ * its own answer. Naming the file after the run that was asked for it is what
+ * makes a late writer harmless.
+ *
  * @param digest - the bounded workspace evidence from `buildDigest`.
  * @param excludeTitles - titles already in the backlog, plus anything already
  *   shown this session so Refresh returns genuinely new ideas.
+ * @param runId - this scan's identity, naming the file it must write.
  * @returns the prompt text for the scan session.
  */
-export function composeScanPrompt(digest: string, excludeTitles: readonly string[]): string {
+export function composeScanPrompt(
+  digest: string,
+  excludeTitles: readonly string[],
+  runId: string,
+): string {
   const parts: string[] = [
     '# Propose work for this codebase',
     'You are reviewing a workspace to propose concrete next tasks. Base every ' +
@@ -52,7 +72,7 @@ export function composeScanPrompt(digest: string, excludeTitles: readonly string
 
   parts.push(
     '## Output',
-    `Write ONLY a JSON array to \`${SUGGESTIONS_FILE}\` (create the directory if needed).`,
+    `Write ONLY a JSON array to \`${suggestionsFileFor(runId)}\` (create the directory if needed).`,
     'Each element: {"title": string, "rationale": string, "priority": "p0"|"p1"|"p2"|"p3", "evidence": string}',
     '`evidence` is a `file:line` pointer where one exists; omit it otherwise.',
     `Produce at most ${MAX_SUGGESTIONS} suggestions. Write the file and stop — do not implement anything.`,

@@ -89,7 +89,7 @@ export const TYPERT = {
           {
             kind: 'method' as const,
             name: 'readSuggestions',
-            signature: '@Remote readSuggestions(request: SuggestScanRequest): Promise<ReadSuggestionsResult>',
+            signature: '@Remote readSuggestions(request: ReadSuggestionsRequest): Promise<ReadSuggestionsResult>',
             summary: "Read and consume whatever a scan session has written so far.",
           },
         ],
@@ -125,6 +125,14 @@ export const TYPERT = {
           {
             name: 'SuggestScanRequest',
             declaration: 'export interface SuggestScanRequest {\n    workspaceId: string;\n}',
+          },
+          {
+            // `runId` is REQUIRED. A per-run result path is what stops a scan
+            // that timed out — archived, but never actually cancelled — writing
+            // its answer where the NEXT run reads it as fresh.
+            name: 'ReadSuggestionsRequest',
+            declaration:
+              'export interface ReadSuggestionsRequest {\n    workspaceId: string;\n    runId: string;\n}',
           },
           {
             name: 'ScanDigestResult',

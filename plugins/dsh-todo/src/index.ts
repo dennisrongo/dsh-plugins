@@ -37,7 +37,7 @@
  *
  * @module @dennisrongo/dsh-todo
  */
-import { readFileSync, renameSync, existsSync, unlinkSync } from 'node:fs'
+import { readFileSync, readdirSync, renameSync, existsSync, unlinkSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute, join, resolve } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -58,11 +58,14 @@ import {
   MAX_ITEMS,
   MAX_LABEL,
   MAX_TEXT,
-  SUGGESTIONS_FILE,
+  SUGGESTIONS_DIR,
+  SUGGESTIONS_FILE_RE,
   normalizeDueDate,
   normalizeLabel,
+  suggestionsFileFor,
   toPriority,
   toStatus,
+  type ReadSuggestionsRequest,
   type ReadSuggestionsResult,
   type ScanDigestResult,
   type SuggestScanRequest,
@@ -347,12 +350,31 @@ export class TodoService extends TypertRemoteService {
    * it reports `error` and lets the modal offer Refresh rather than polling
    * forever on a hang it can never escape.
    *
-   * @param request - the workspace whose scan result to read.
+   * The path is PER RUN and this reads ONLY that one, which is what stops a
+   * late writer being mistaken for the current run. Archiving a scan session
+   * does not cancel it: a run that timed out, or whose modal was closed, keeps
+   * working and eventually writes. Against one fixed path that write is read
+   * back within one poll as the NEXT run's answer — computed against a stale
+   * exclusion set, so it re-proposes work the user added in between.
+   *
+   * @param request - the workspace, and WHICH RUN is asking.
    * @returns pending when no file exists yet, otherwise the parsed result.
    */
   @Remote
-  async readSuggestions(request: SuggestScanRequest): Promise<ReadSuggestionsResult> {
-    const path = join(this.workspaceDir(request?.workspaceId), ...SUGGESTIONS_FILE.split('/'))
+  async readSuggestions(request: ReadSuggestionsRequest): Promise<ReadSuggestionsResult> {
+    const dir = this.workspaceDir(request?.workspaceId)
+    const runId = request?.runId
+    // Same shape of domain error as workspaceId, and for the same reason: a
+    // missing run id must name the parameter the caller got wrong rather than
+    // reaching `join()` as undefined and throwing an opaque TypeError.
+    if (typeof runId !== 'string' || !/^[a-z0-9]+$/.test(runId)) {
+      throw new Error('dsh-todo: runId must be a non-empty lowercase alphanumeric string')
+    }
+    const path = join(dir, ...suggestionsFileFor(runId).split('/'))
+    // Sweep first, so an orphan is cleared even on the poll that finds nothing
+    // yet. Without it the directory accrues one file per abandoned scan
+    // forever, and abandoning one is ordinary — closing the modal does it.
+    this.sweepOrphanResults(dir, runId)
     let raw: string
     try {
       raw = readFileSync(path, 'utf8')
@@ -380,6 +402,46 @@ export class TodoService extends TypertRemoteService {
 
     if (!parsed.ok) return { status: 'error', error: parsed.error }
     return { status: 'ready', suggestions: parsed.suggestions }
+  }
+
+  /**
+   * Delete every result file that is not the run currently reading.
+   *
+   * Per-run paths fix the cross-run bleed but introduce their own litter: a
+   * scan whose modal was closed still finishes and writes, and nobody ever
+   * reads that file. One orphan per abandoned scan accumulates in `.dsh`
+   * indefinitely, and abandoning a scan is the ordinary case, not the rare one.
+   *
+   * Sweeping on every poll — rather than at scan start — is deliberate and
+   * cheaper than it looks: a scan already polls this endpoint every 1.5s, one
+   * `readdir` of `.dsh` is trivially small beside the digest walk that preceded
+   * it, and it means a run started from a build with no sweep at all is still
+   * cleaned up by the next one. It also collects the legacy fixed-path file, so
+   * an upgrade needs no migration step.
+   *
+   * The regex is anchored on both ends: `.dsh` holds `todo.db` and whatever
+   * else the harness keeps there, and a sweep that guessed wider would delete a
+   * neighbour's data. Failure is swallowed throughout — this is housekeeping,
+   * and a scan that produced an answer must not fail over tidying.
+   *
+   * @param dir - the resolved workspace directory.
+   * @param runId - the run whose file must SURVIVE.
+   */
+  private sweepOrphanResults(dir: string, runId: string): void {
+    const keep = suggestionsFileFor(runId).split('/').pop()
+    try {
+      for (const name of readdirSync(join(dir, SUGGESTIONS_DIR))) {
+        if (name === keep || !SUGGESTIONS_FILE_RE.test(name)) continue
+        try {
+          unlinkSync(join(dir, SUGGESTIONS_DIR, name))
+        } catch {
+          // A directory at the path, or a permission denial. Neither is
+          // actionable here, and neither may stop the current run's read.
+        }
+      }
+    } catch {
+      // No `.dsh` yet is the ordinary case before the first scan writes.
+    }
   }
 
   /** Queue one whole read/compare/write behind this workspace's prior write. */

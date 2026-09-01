@@ -269,14 +269,72 @@ export const MAX_LABEL = 60
 export const MAX_ITEMS = 1000
 
 /**
- * Where a scan session leaves its result, relative to the workspace root.
+ * The directory a scan session leaves its result in, relative to the workspace
+ * root.
  *
  * A FILE rather than a return value because `session.prompt()` resolves when
  * the prompt is ACCEPTED, not when the work is done — there is no public
  * completion promise to await. A file is inspectable when a scan misbehaves
  * and survives the modal being closed mid-scan.
  */
-export const SUGGESTIONS_FILE = '.dsh/suggestions.json'
+export const SUGGESTIONS_DIR = '.dsh'
+
+/**
+ * The legacy workspace-global result path.
+ *
+ * Kept only so a file written by a pre-runId build is recognised as an orphan
+ * and swept, never read. Nothing composes a prompt against it any more: a
+ * fixed path carries NO RUN IDENTITY, which is exactly the defect
+ * {@link suggestionsFileFor} exists to close — a scan that timed out is
+ * archived but never actually stopped, so its late write would otherwise be
+ * read back as the NEXT run's answer.
+ */
+export const SUGGESTIONS_FILE = `${SUGGESTIONS_DIR}/suggestions.json`
+
+/**
+ * Match every result file this feature has ever written, current or orphaned.
+ *
+ * Anchored on both ends so an unrelated `.dsh` file is never swept. The
+ * optional `-<runId>` tail covers the legacy fixed path as well as a per-run
+ * one, which is what lets a single sweep clear both.
+ */
+export const SUGGESTIONS_FILE_RE = /^suggestions(-[a-z0-9]+)?\.json$/
+
+/**
+ * A run identity, valid inside a file name.
+ *
+ * Deliberately no new dependency: `makeItem` already mints ids from
+ * `Date.now()` and `Math.random()` on exactly these terms, and this token needs
+ * to be unique per scan, not unguessable. Lowercase base36 only, because it is
+ * interpolated into a path and matched by {@link SUGGESTIONS_FILE_RE}.
+ *
+ * @param now - injectable clock, keeping the function pure-testable.
+ * @param rand - injectable randomness, for the same reason.
+ * @returns a short token safe to embed in a file name.
+ */
+export function makeRunId(now = Date.now(), rand = Math.random): string {
+  return `${now.toString(36)}${Math.floor(rand() * 1e6).toString(36)}`
+}
+
+/**
+ * Where THIS scan leaves its result, relative to the workspace root.
+ *
+ * Per-run rather than workspace-global, and that is load-bearing rather than
+ * tidy. Archiving a session is NOT cancelling it — `discardSession` only calls
+ * `uiWorkspace.archiveSession`, which controls sidebar visibility and nothing
+ * else — so a scan that timed out, or whose modal was closed, keeps running and
+ * eventually writes its file. Against one fixed path that late write is
+ * indistinguishable from the current run's answer: the next poll reads it
+ * within 1.5s and presents a stale list, computed against a stale exclusion
+ * set, as fresh. Naming the file after the run means a late writer simply
+ * cannot be mistaken for the reader.
+ *
+ * @param runId - the token minted by {@link makeRunId} for this scan.
+ * @returns the workspace-relative result path for that run.
+ */
+export function suggestionsFileFor(runId: string): string {
+  return `${SUGGESTIONS_DIR}/suggestions-${runId}.json`
+}
 
 /**
  * The most suggestions worth showing at once.
@@ -300,9 +358,23 @@ export interface Suggestion {
   evidence?: string
 }
 
-/** Request for both scan endpoints — one workspace, nothing else. */
+/** Request for `scanDigest` — one workspace, nothing else. */
 export interface SuggestScanRequest {
   workspaceId: string
+}
+
+/**
+ * Request for `readSuggestions` — one workspace, and WHICH RUN is asking.
+ *
+ * `runId` is required, not optional. An optional one would fall back to the
+ * fixed legacy path on every caller that forgot it, silently restoring the
+ * cross-run bleed this field exists to prevent — and a strict wire codec drops
+ * a field it does not name, so a missing `runId` would never surface as an
+ * error either.
+ */
+export interface ReadSuggestionsRequest {
+  workspaceId: string
+  runId: string
 }
 
 /** The bounded evidence a scan session reasons over. */

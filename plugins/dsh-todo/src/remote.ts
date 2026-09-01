@@ -71,8 +71,21 @@ const replaceResultSchema = z.union([
   }),
 ])
 
-/** Both scan endpoints take the same request: one workspace, nothing else. */
+/** `scanDigest` takes one workspace and nothing else. */
 const scanRequestSchema = z.object({ workspaceId: z.string() })
+
+/**
+ * `readSuggestions` additionally carries WHICH RUN is asking.
+ *
+ * `runId` must be named here or it never arrives: these are strict codecs, and
+ * a strict codec strips a field it does not carry, silently. The host would
+ * then reject every poll for a missing run id, and the modal would report that
+ * as the scan failing — with the actual cause invisible on both ends.
+ */
+const readSuggestionsRequestSchema = z.object({
+  workspaceId: z.string(),
+  runId: z.string(),
+})
 
 const scanDigestResultSchema = z.object({
   digest: z.string(),
@@ -146,7 +159,7 @@ export const TODO_REMOTE = {
     descriptor('list', listRequestSchema, listResultSchema),
     descriptor('replace', replaceRequestSchema, replaceResultSchema),
     descriptor('scanDigest', scanRequestSchema, scanDigestResultSchema),
-    descriptor('readSuggestions', scanRequestSchema, readSuggestionsResultSchema),
+    descriptor('readSuggestions', readSuggestionsRequestSchema, readSuggestionsResultSchema),
   ],
 }
 

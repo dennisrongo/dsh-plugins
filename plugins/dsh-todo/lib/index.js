@@ -48,7 +48,7 @@ var __privateSet = (obj, member, value, setter) => (__accessCheck(obj, member, "
 var __privateMethod = (obj, member, method) => (__accessCheck(obj, member, "access private method"), method);
 
 // src/index.ts
-import { readFileSync as readFileSync2, renameSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync as readFileSync2, readdirSync as readdirSync2, renameSync, existsSync, unlinkSync } from "node:fs";
 import { isAbsolute, join as join3, resolve as resolve2 } from "node:path";
 import { Service } from "@deepseek-ai/cordis";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
@@ -92,7 +92,13 @@ var MAX_TEXT = 500;
 var MAX_DESC = 5e3;
 var MAX_LABEL = 60;
 var MAX_ITEMS = 1e3;
-var SUGGESTIONS_FILE = ".dsh/suggestions.json";
+var SUGGESTIONS_DIR = ".dsh";
+var SUGGESTIONS_FILE = `${SUGGESTIONS_DIR}/suggestions.json`;
+var SUGGESTIONS_FILE_RE = /^suggestions(-[a-z0-9]+)?\.json$/;
+function suggestionsFileFor(runId) {
+  return `${SUGGESTIONS_DIR}/suggestions-${runId}.json`;
+}
+__name(suggestionsFileFor, "suggestionsFileFor");
 var MAX_SUGGESTIONS = 12;
 
 // src/db.ts
@@ -704,7 +710,13 @@ var _TodoService = class _TodoService extends (_b = TypertRemoteService) {
     return buildDigest(this.workspaceDir(request?.workspaceId));
   }
   async readSuggestions(request) {
-    const path = join3(this.workspaceDir(request?.workspaceId), ...SUGGESTIONS_FILE.split("/"));
+    const dir = this.workspaceDir(request?.workspaceId);
+    const runId = request?.runId;
+    if (typeof runId !== "string" || !/^[a-z0-9]+$/.test(runId)) {
+      throw new Error("dsh-todo: runId must be a non-empty lowercase alphanumeric string");
+    }
+    const path = join3(dir, ...suggestionsFileFor(runId).split("/"));
+    this.sweepOrphanResults(dir, runId);
     let raw;
     try {
       raw = readFileSync2(path, "utf8");
@@ -720,6 +732,42 @@ var _TodoService = class _TodoService extends (_b = TypertRemoteService) {
     }
     if (!parsed.ok) return { status: "error", error: parsed.error };
     return { status: "ready", suggestions: parsed.suggestions };
+  }
+  /**
+   * Delete every result file that is not the run currently reading.
+   *
+   * Per-run paths fix the cross-run bleed but introduce their own litter: a
+   * scan whose modal was closed still finishes and writes, and nobody ever
+   * reads that file. One orphan per abandoned scan accumulates in `.dsh`
+   * indefinitely, and abandoning a scan is the ordinary case, not the rare one.
+   *
+   * Sweeping on every poll — rather than at scan start — is deliberate and
+   * cheaper than it looks: a scan already polls this endpoint every 1.5s, one
+   * `readdir` of `.dsh` is trivially small beside the digest walk that preceded
+   * it, and it means a run started from a build with no sweep at all is still
+   * cleaned up by the next one. It also collects the legacy fixed-path file, so
+   * an upgrade needs no migration step.
+   *
+   * The regex is anchored on both ends: `.dsh` holds `todo.db` and whatever
+   * else the harness keeps there, and a sweep that guessed wider would delete a
+   * neighbour's data. Failure is swallowed throughout — this is housekeeping,
+   * and a scan that produced an answer must not fail over tidying.
+   *
+   * @param dir - the resolved workspace directory.
+   * @param runId - the run whose file must SURVIVE.
+   */
+  sweepOrphanResults(dir, runId) {
+    const keep = suggestionsFileFor(runId).split("/").pop();
+    try {
+      for (const name of readdirSync2(join3(dir, SUGGESTIONS_DIR))) {
+        if (name === keep || !SUGGESTIONS_FILE_RE.test(name)) continue;
+        try {
+          unlinkSync(join3(dir, SUGGESTIONS_DIR, name));
+        } catch {
+        }
+      }
+    } catch {
+    }
   }
   /** Queue one whole read/compare/write behind this workspace's prior write. */
   async enqueue(workspaceId, run) {
