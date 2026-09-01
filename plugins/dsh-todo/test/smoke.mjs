@@ -297,6 +297,49 @@ assert.equal(svc.typertRemote.namespace, 'dshTodo', 'wrong Remote namespace')
   assert.equal(none.status, 'ready', 'an empty array is a ready result, not an error')
   assert.deepEqual(none.suggestions, [], 'an empty scan must report zero suggestions')
 
+  // --- readSuggestions: a TERMINAL read failure is an error, not pending ----
+  // Only ENOENT means "no file yet". Every other errno is permanent: a
+  // directory at the path (a bad `mkdir -p`, or a user creating it by hand)
+  // yields EISDIR and an EACCES volume yields EACCES, and NEITHER resolves by
+  // waiting. Reported as `pending` they would poll forever — the modal spins on
+  // "Scanning...", never offers Refresh, and never terminates. So the catch
+  // must branch on the code rather than treat every failure as "not yet".
+  mkdirSync(resultPath, { recursive: true })
+  const blocked = await service.readSuggestions({ workspaceId: 'ws' })
+  assert.equal(blocked.status, 'error', 'a directory at the result path must be an error, not pending')
+  assert.equal(typeof blocked.error, 'string', 'a terminal read failure must carry a message')
+  assert.ok(
+    blocked.error.includes('EISDIR'),
+    `the message must name the errno so the failure is diagnosable, got: ${blocked.error}`,
+  )
+  assert.equal(blocked.suggestions, undefined, 'an error result must carry no suggestions')
+  rmSync(resultPath, { recursive: true, force: true })
+
+  // ...and the fix must not over-correct: a genuinely ABSENT file is still the
+  // ordinary case while a scan session is working, and must stay `pending`.
+  assert.deepEqual(
+    await service.readSuggestions({ workspaceId: 'ws' }),
+    { status: 'pending' },
+    'a genuinely absent file must still read as pending, not error',
+  )
+
+  // --- both scan endpoints: a MISSING request is a domain error ------------
+  // `request?.workspaceId` exists so a call with no argument produces the same
+  // clear domain error as an empty id, rather than a TypeError on reading
+  // `workspaceId` of undefined. A TypeError crosses the wire as an opaque
+  // fault; this message names the parameter the caller got wrong.
+  for (const method of ['scanDigest', 'readSuggestions']) {
+    await assert.rejects(
+      () => service[method](),
+      (err) => {
+        assert.ok(!(err instanceof TypeError), `${method}() with no request must not throw a TypeError`)
+        assert.match(err.message, /workspaceId must be a non-empty string/, `${method}() must name the bad field`)
+        return true
+      },
+      `${method}() with no request must reject with the domain error`,
+    )
+  }
+
   service.close()
   rmSync(dir, { recursive: true, force: true })
 }

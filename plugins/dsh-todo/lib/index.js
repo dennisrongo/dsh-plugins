@@ -707,8 +707,10 @@ var _TodoService = class _TodoService extends (_b = TypertRemoteService) {
     let raw;
     try {
       raw = readFileSync2(path, "utf8");
-    } catch {
-      return { status: "pending" };
+    } catch (err) {
+      const code = err.code;
+      if (code === "ENOENT") return { status: "pending" };
+      return { status: "error", error: `dsh-todo: the scan result could not be read: ${code ?? String(err)}` };
     }
     const parsed = parseSuggestions(raw);
     try {

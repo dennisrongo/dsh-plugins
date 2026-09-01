@@ -342,6 +342,11 @@ export class TodoService extends TypertRemoteService {
    * `status: 'error'` rather than throwing: the modal turns that into a
    * Refresh, where a fault would take down the tab.
    *
+   * Only ENOENT is `pending`. Any other read failure is terminal — waiting
+   * cannot clear a directory sitting at the path, or a permission denial — so
+   * it reports `error` and lets the modal offer Refresh rather than polling
+   * forever on a hang it can never escape.
+   *
    * @param request - the workspace whose scan result to read.
    * @returns pending when no file exists yet, otherwise the parsed result.
    */
@@ -351,9 +356,17 @@ export class TodoService extends TypertRemoteService {
     let raw: string
     try {
       raw = readFileSync(path, 'utf8')
-    } catch {
-      // No file yet is the ordinary case while the session is still working.
-      return { status: 'pending' }
+    } catch (err) {
+      // ONLY a missing file is "not yet". Every other errno is TERMINAL and
+      // waiting cannot clear it: a directory at the path (a bad `mkdir -p`, or
+      // one a user created by hand) reads EISDIR, a locked-down volume reads
+      // EACCES. Reported as `pending` those poll FOREVER — the modal spins on
+      // "Scanning...", never offers Refresh, and never terminates. `error` is
+      // the status that already drives Refresh, so a terminal failure gets a
+      // way out instead of a silent hang.
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return { status: 'pending' }
+      return { status: 'error', error: `dsh-todo: the scan result could not be read: ${code ?? String(err)}` }
     }
 
     const parsed = parseSuggestions(raw)
