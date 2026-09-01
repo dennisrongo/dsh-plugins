@@ -41,7 +41,7 @@ plugins/dsh-memory       host + client — /remember + instruction inspector, se
                          reports what dsh-agent-instructions' byte budget kept.
 scripts/                 verify.mjs, anchor.mjs, host-deps.mjs, check-type-scale.mjs,
                          check-tokens.mjs, check-context.mjs, check-progress.mjs,
-                         link-superpowers-skills.mjs (all portable)
+                         check-suites.mjs, link-superpowers-skills.mjs (all portable)
                          dev-link.mjs (entry point; the root postinstall runs it)
                          -> dev-link.ps1 (Windows) / dev-link.sh (macOS/Linux):
                             anchors + junctions into profiles
@@ -265,6 +265,24 @@ without declaring — a matrix where those are all absent structurally cannot re
 present-but-uncallable method. It runs LAST in `pnpm test` because it
 reads built `lib/`, and it fails a plugin that registers zero slots, because a check that
 exercised nothing must not report a pass.
+
+**`pnpm -r --if-present run test` skips a package with no `test` script and still reports
+green.** That is not a warning — it is silent, and it is how `dsh-skills` shipped eleven
+releases with **zero tests** while `pnpm test` passed the whole time. No amount of reading
+the root script reveals it; the gap is in a package manifest that simply says nothing.
+`node scripts/check-suites.mjs` fails that state, and it also rejects a `test` script
+naming a file that does not exist (which otherwise breaks only for whoever runs that one
+package). It runs FIRST in `pnpm test` because it is the cheapest gate and a structurally
+missing suite makes every later result partial. It is deliberately **not** a coverage
+threshold: coverage measures execution, not assertion, and a line executed by a
+tautological test is worse than an uncovered one because it looks protected. Like
+`check-context.mjs`, it fails when it examines nothing.
+
+Verified by sabotage before it was trusted: deleting a package's `scripts` block, pointing
+its `test` script at a missing file, and setting the script to whitespace each fail it.
+The first of those matters most and is the easiest to fake — an early attempt "passed"
+only because the mutation never applied, so **confirm the mutation landed before believing
+a red or a green.**
 
 **One type scale across every plugin: 11 / 12 / 13 / 14 / 16 / 20 / 24 px.** Those are the
 sizes the harness's own typography tokens define, so a plugin on this ladder matches the

@@ -666,6 +666,11 @@ one type scale (11/12/13/14/16/20/24 px) and no `var(--dsw-*)` naming a token th
 not define. A misspelt token never errors: CSS falls back to the second argument and silently
 stops following the theme. The `.githooks/pre-commit` hook runs the same two.
 
+It runs `check-suites.mjs` first, which fails any plugin that declares no `test` script.
+That check exists because `pnpm -r --if-present run test` **skips such a package silently** and
+still reports success — which is how `dsh-skills` shipped eleven releases with no tests while
+`pnpm test` passed throughout.
+
 Each package also ships **opt-in probes that are not part of `pnpm test`** — mostly headless
 Chrome against the *built* bundle, asserting things a unit test cannot see: that opening a diff
 does not move a row, that the branch menu stacks above the panes, that the todo modal clears
@@ -695,6 +700,7 @@ scripts/     verify.mjs                    — check the plugins against your in
              dev-link.sh                   — anchor + symlink into profiles (macOS/Linux)
              check-type-scale.mjs          — one type scale across every plugin
              check-tokens.mjs              — every var(--dsw-*) must be a real token
+             check-suites.mjs              — every plugin must declare a test script that runs
              link-superpowers-skills.mjs   — link an upstream superpowers clone's skills
 
 AGENTS.md            repo conventions and the rules that are not obvious

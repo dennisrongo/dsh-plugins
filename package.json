@@ -8,7 +8,9 @@
   "scripts": {
     "build": "pnpm -r --if-present run build",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "node scripts/check-type-scale.mjs && node scripts/check-tokens.mjs && node scripts/check-progress.mjs && pnpm -r --if-present run test && node scripts/check-context.mjs",
+    "test": "node scripts/check-suites.mjs && node scripts/check-type-scale.mjs && node scripts/check-tokens.mjs && node scripts/check-progress.mjs && pnpm -r --if-present run test && node scripts/check-context.mjs",
+    "// check:suites": "Every plugin must declare a test script that runs. `pnpm -r --if-present run test` SKIPS a package with no test script and still reports green, which is how dsh-skills shipped eleven releases with zero tests and nothing could tell you. Runs FIRST because it is the cheapest gate and a structurally missing suite makes every later result partial.",
+    "check:suites": "node scripts/check-suites.mjs",
     "// check:type-scale": "Every plugin's UI text must sit on the harness's 11/12/13/14/16/20/24 ladder. Each plugin ships its own inline CSS, so nothing structural keeps them together.",
     "check:type-scale": "node scripts/check-type-scale.mjs",
     "// check:tokens": "Every var(--dsw-*) a plugin uses must be a token the harness defines. A misspelt name silently uses its fallback forever and stops following the theme.",
