@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-weather",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Weather bar for DeepSeek Harness (dsh) — current conditions at the bottom of the web UI via Open-Meteo, rendered into shell.overlay",
   "type": "module",
   "license": "MIT",
