@@ -598,6 +598,43 @@ therefore uses only public paths the plugin already depends on: `sessions.create
   digest stage there is no session at all, so the button is absent rather than present and
   broken. Null means no button; nothing here un-archives anything, because adoption is what
   prevents the archive in the first place.
+- **…and holding an id is NOT sufficient: the button is hidden ON the scan session itself.**
+  Holding a session id means the button *can* work, not that it *has work to do*. The
+  registry is keyed by **workspace** while `conversation.view` is a **per-session ring**, so
+  one in-flight scan renders its modal on every session's Todo tab in that workspace —
+  including the scan session's own. There `launch.sessions.open(scanSessionId)` asks the
+  shell to navigate to the session it is already showing: there is nothing to do and the
+  click is **inert**. Reported as a bug, and reproducibly so, because the second click is
+  the ordinary case — the user opens the scan, comes back to the Todo tab, and the modal
+  correctly reappears *on session B*. The button was never broken; it was being OFFERED in a
+  state where it had no work, which is the defect. So the gate is
+  `currentSessionId !== scanSessionId`, and a short caption —
+  *You're viewing the scan session* — takes its place on the existing 12px tertiary rung,
+  because a control that simply vanishes reads as broken.
+  Three properties are load-bearing:
+  - **`currentSessionId` is threaded from the slot, NEVER read from a service.** The
+    `conversation.view` `inject` callback already receives the session id as its argument
+    and already uses it for `workspaceIdForSession`; it flows slot → `TodoView` →
+    `SuggestDialog` as an optional prop. A guarded service read to rediscover a value
+    already in hand is how this package lost three outages, and there is nothing here to
+    discover.
+  - **An ABSENT current session id must show the button**, hence `!==` rather than a
+    truthiness test. Absent means "not the scan session" and degrades to the previous
+    behaviour exactly; degrading to a *hidden* button would ship the very failure the change
+    removes, on every deployment whose projection omits the id.
+  - **No "go back" button, deliberately.** The modal has no claim on the session the user
+    came from — the scan may have been opened from any session in the workspace, and that
+    one may since have been closed or archived — so a control guessing where to send someone
+    is worse than none. The tooltip also stays on the button rather than becoming visible
+    copy: the modal is deliberately sparse.
+  Pinned in `suggest-lifecycle.mjs` by **executing the gate expression extracted from the
+  source** over all three cases (same session, different session, absent id), with the
+  threading asserted separately at each hop. That split is the lesson this file already
+  records three times: a check that `currentSessionId` merely *appears* in the source stays
+  green when the one call site that matters is deleted. Verified by sabotage — removing the
+  guard, inverting it, making an absent id hide the button, dropping the forward in
+  `TodoView`, dropping the slot's supply, and deleting the caption each fail their own
+  assertion, and each mutation was confirmed to apply before its red was believed.
 - **The scan session is NAMED, through the same borrowed face `launchSession` uses.**
   `binding.session.rename(scanSessionTitle(workspaceName))` — `Scan: <workspace>` — after the
   prompt, for the same reason step 5 is late in a launch. Unnamed, the session is titled by

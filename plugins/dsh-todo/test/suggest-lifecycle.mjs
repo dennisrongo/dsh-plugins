@@ -188,6 +188,182 @@ const dialogSrc = dialog[0]
   )
 }
 
+// --- 3b. the open button is HIDDEN on the scan session itself ---------------
+//
+// The button navigates to the scan session. Returning to the Todo tab leaves
+// the user ON that session — the scan registry is keyed by WORKSPACE while
+// `conversation.view` is a per-session ring, so the same in-flight scan renders
+// its modal on the scan session's own Todo tab. There `sessions.open(id)` asks
+// the shell to navigate to the session it is already showing: nothing happens,
+// and the click is inert. The button is not broken; it is being OFFERED in a
+// state where it has no work, which is the defect.
+//
+// Three cases, and the third is the one that must not regress: an ABSENT
+// current session id has to degrade to today's behaviour (button shown), never
+// to a hidden button — a hidden button is the failure being fixed.
+//
+// Asserted as a BEHAVIOUR first and a WIRING second, deliberately. AGENTS.md
+// records three sabotages in this suite that passed because they asserted a
+// NAME: a check that `currentSessionId` appears somewhere in the source stays
+// true when the one comparison that matters is deleted. So the gate expression
+// is EXTRACTED FROM THE SOURCE AND EXECUTED over all three cases, and the
+// threading is pinned separately at each hop it must survive.
+{
+  // -- behavioural: execute the real gate over all three cases --------------
+  //
+  // The render condition is lifted out of the JSX and evaluated, so a mutation
+  // that inverts, drops or short-circuits the comparison changes the answer
+  // here rather than merely changing a string the regex still matches.
+  const gate = /\{scanSessionId !== null &&([\s\S]*?)\? \(/.exec(dialogSrc)
+  assert.ok(
+    gate,
+    'the open button must be gated by an inline conditional this check can extract and execute',
+  )
+  const gateSrc = gate[1].replace(/\/\*[\s\S]*?\*\//g, ' ').trim()
+  assert.ok(
+    gateSrc.length > 0,
+    'the extracted gate must not be empty — an empty capture passes vacuously',
+  )
+
+  /**
+   * Evaluate the REAL gate expression from source over one scenario.
+   *
+   * `scanSessionId !== null` is already consumed by the regex, so the caller
+   * supplies only the remaining operands; a non-null scan session is implied,
+   * which is the only state in which the button could render at all.
+   */
+  const renders = (phase, currentSessionId, scanSessionId = 'scan-1') =>
+    // eslint-disable-next-line no-new-func
+    Function(
+      'phase',
+      'currentSessionId',
+      'scanSessionId',
+      `return Boolean(${gateSrc})`,
+    )(phase, currentSessionId, scanSessionId)
+
+  // Sanity row: the extracted expression must still be the ordinary gate, or
+  // every row below is measuring something that never renders a button.
+  assert.equal(
+    renders('scanning', 'other-session'),
+    true,
+    'sanity: a scanning phase on a DIFFERENT session must still render the button',
+  )
+
+  // 1. the current session IS the scan session -> ABSENT.
+  assert.equal(
+    renders('scanning', 'scan-1', 'scan-1'),
+    false,
+    'the open button must be ABSENT when the modal is already rendering on the scan session — ' +
+      'sessions.open would navigate to the session already shown, so the click is inert',
+  )
+  assert.equal(
+    renders('error', 'scan-1', 'scan-1'),
+    false,
+    'the button must be absent on the scan session in the error phase too — same inert click',
+  )
+
+  // 2. they DIFFER -> PRESENT, exactly as today.
+  assert.equal(
+    renders('scanning', 'session-A', 'scan-1'),
+    true,
+    'the open button must be PRESENT when the current session differs from the scan session',
+  )
+  assert.equal(
+    renders('error', 'session-A', 'scan-1'),
+    true,
+    'the button must survive the error phase when the sessions differ — that is when the user ' +
+      'most needs to see what the session did',
+  )
+
+  // 3. ABSENT current session id -> PRESENT. Degrading to a hidden button here
+  //    would ship the exact failure this change exists to remove, on every
+  //    deployment whose projection carries no session id.
+  for (const missing of [undefined, null]) {
+    assert.equal(
+      renders('scanning', missing, 'scan-1'),
+      true,
+      `an absent current session id (${String(missing)}) must degrade to TODAY'S behaviour — ` +
+        'the button shows; a hidden button is the failure being fixed',
+    )
+  }
+
+  // The gate must actually consult the current session. A gate that ignores it
+  // answers every row above by accident.
+  assert.ok(
+    /currentSessionId/.test(gateSrc),
+    'the render gate must consult the current session id, not merely the phase',
+  )
+
+  // -- wiring: the value must REACH the gate, at every hop ------------------
+  //
+  // The behavioural rows above run on a synthetic scope, so they stay green if
+  // the prop is never threaded. Each hop is therefore pinned on its own.
+
+  // (a) SuggestDialog must DECLARE it as a prop, and it must be optional —
+  //     absent is a supported state, not a crash.
+  const props = /export function SuggestDialog\(\{[\s\S]*?\n\}: \{[\s\S]*?\n\}\)/.exec(dialogSrc)
+  assert.ok(props, 'SuggestDialog must have an extractable prop signature')
+  assert.ok(
+    /currentSessionId\?: string/.test(props[0]),
+    'SuggestDialog must take currentSessionId as an OPTIONAL prop — absent must be supported',
+  )
+  assert.ok(
+    /\n  currentSessionId,/.test(props[0]),
+    'currentSessionId must be destructured, or the gate reads an undefined binding forever',
+  )
+
+  // (b) TodoView must accept it and PASS IT DOWN. Pinned at the JSX call site,
+  //     because declaring the prop and forgetting to forward it is the failure
+  //     mode that leaves the gate reading `undefined` on every render.
+  const view = /export function TodoView\(\{[\s\S]*?\n\}\n/.exec(source)
+  assert.ok(view, 'TodoView must exist and be delimitable')
+  assert.ok(
+    /currentSessionId\?: string/.test(view[0]),
+    'TodoView must accept currentSessionId so it can forward it to the modal',
+  )
+  const callSite = /<SuggestDialog[\s\S]*?\/>/.exec(view[0])
+  assert.ok(callSite, 'TodoView must render SuggestDialog')
+  assert.ok(
+    /currentSessionId=\{currentSessionId\}/.test(callSite[0]),
+    'TodoView must FORWARD currentSessionId to SuggestDialog — declaring it and not passing it ' +
+      'leaves the gate reading undefined and the button always visible',
+  )
+
+  // (c) The slot must supply it from the sessionId it ALREADY receives. No new
+  //     service read: this package has lost three outages to borrowed and
+  //     undeclared services, and the value is already in hand.
+  const inject = /inject: \(sessionId: string\) => \{[\s\S]*?\n            \},/.exec(source)
+  assert.ok(inject, "the conversation.view slot's inject callback must be delimitable")
+  assert.ok(
+    /currentSessionId: sessionId/.test(inject[0]),
+    'the slot must pass its OWN sessionId through as currentSessionId — that is the value the ' +
+      'gate needs, and it is already an argument',
+  )
+  // The value is already an argument, so nothing here may reach for a service
+  // to rediscover it. `ctx.remote?.foo` THROWS, and a borrowed handle that
+  // resolves is still one that can throw on call.
+  assert.ok(
+    !/currentSessionId[^\n]*ctx\.(get\(|remote|sessions)/.test(inject[0]),
+    'currentSessionId must come from the inject argument, never from a new service read',
+  )
+
+  // (d) The hidden button must be EXPLAINED, not silently dead. A caption takes
+  //     its place, on the existing caption rung.
+  // The apostrophe may be a literal or an HTML entity — the copy is what is
+  // pinned, not its escaping.
+  assert.ok(
+    /(?:You(?:'|&rsquo;|&#39;)?re|You are) viewing the scan session/.test(dialogSrc),
+    'a caption must explain the absent button, or the state reads as silently broken',
+  )
+  const caption = /<span className="dshtd-sug-(?:status|here)"[\s\S]{0,400}?viewing the scan session/.exec(
+    dialogSrc,
+  )
+  assert.ok(
+    caption,
+    'the caption must use an existing caption class, so it inherits the 12px tertiary rung',
+  )
+}
+
 // --- 4. the scan session is NAMED, and the rename cannot fail a scan --------
 {
   assert.ok(

@@ -2037,6 +2037,7 @@ export function SuggestDialog({
   store,
   items,
   workspaceName,
+  currentSessionId,
   onClose,
 }: {
   launch: LaunchContext & { workspaceId: string }
@@ -2051,6 +2052,22 @@ export function SuggestDialog({
    * where the session gets a fixed label instead.
    */
   workspaceName?: string
+  /**
+   * OPTIONAL. The session this modal is CURRENTLY rendering on.
+   *
+   * Supplied by the `conversation.view` slot from the `sessionId` it already
+   * receives — not a new service read. This package has lost three outages to
+   * borrowed and undeclared services, and the value is already an argument.
+   *
+   * It exists for one comparison: the scan registry is keyed by WORKSPACE while
+   * this view lives in a PER-SESSION ring, so an in-flight scan renders its
+   * modal on the scan session's own Todo tab too. There **Open scan session**
+   * would navigate to the session already on screen — nothing to do, so the
+   * click is inert. Absent means "not the scan session": an unknown current
+   * session must degrade to the button showing, exactly as before, because a
+   * hidden button is the failure this prop exists to remove.
+   */
+  currentSessionId?: string
   onClose: () => void
 }): React.JSX.Element {
   /**
@@ -2692,7 +2709,20 @@ export function SuggestDialog({
                 on the ERROR phase deliberately: that is exactly when the user
                 needs to see what the session did. Opening ADOPTS the session,
                 so cleanup will not archive what they are reading. */}
-            {scanSessionId !== null && (phase === 'scanning' || phase === 'error') ? (
+            {scanSessionId !== null &&
+            (phase === 'scanning' || phase === 'error') &&
+            /* ...but NOT when this modal is already rendering ON the scan
+               session. The scan registry is keyed by workspace while this view
+               lives in a per-session ring, so returning from the scan session
+               brings the modal back on the scan session's OWN Todo tab. There
+               `sessions.open(scanSessionId)` asks the shell to navigate to what
+               it is already showing: there is nothing to do and the click is
+               inert. The button is not broken — it is being offered in a state
+               where it has no work, so it is withdrawn and a caption explains
+               why. `!==` rather than a truthiness test on purpose: an ABSENT
+               current session id must mean "not the scan session" and keep the
+               button, because a hidden button is the very failure being fixed. */
+            currentSessionId !== scanSessionId ? (
               <button
                 className="dshtd-btn"
                 onClick={openScanSession}
@@ -2707,6 +2737,19 @@ export function SuggestDialog({
               >
                 Open scan session
               </button>
+            ) : scanSessionId !== null &&
+              (phase === 'scanning' || phase === 'error') &&
+              currentSessionId === scanSessionId ? (
+              /* The button's place, not a new row: a control that simply
+                 vanishes reads as broken, so the state says what it is. Kept to
+                 the same 12px tertiary caption rung as the status line beside
+                 it — this explains an absent affordance, it does not compete
+                 with the buttons for attention. Deliberately no "go back"
+                 control: the modal has no claim on the session the user came
+                 from — the scan may have been opened from any session in the
+                 workspace, and that one may since have been closed or archived
+                 — so a button guessing where to send them is worse than none. */
+              <span className="dshtd-sug-status">You&rsquo;re viewing the scan session</span>
             ) : null}
             {/* Disabled only WHILE a scan runs. An error must stay recoverable:
                 readSuggestions reports a transient errno as terminal, so a
@@ -3616,6 +3659,7 @@ export function TodoView({
   store,
   launch,
   workspaceName,
+  currentSessionId,
 }: {
   store: TodoStore | null
   /** The harness services a launch needs; absent when they did not resolve. */
@@ -3627,6 +3671,16 @@ export function TodoView({
    * field on a snapshot in hand, not a new service read.
    */
   workspaceName?: string
+  /**
+   * OPTIONAL. The session this view is rendering for, straight from the slot.
+   *
+   * Forwarded to `SuggestDialog`, which needs it for exactly one comparison:
+   * the scan modal must not offer **Open scan session** while it is already
+   * rendering on that very session, where the navigation has nothing to do.
+   * The slot's `inject` callback receives this id already, so it costs no new
+   * service read — the rule this package has three outages enforcing.
+   */
+  currentSessionId?: string
 }): React.JSX.Element {
   const [filter, setFilter] = React.useState<TodoFilter>('all')
   const [groupBy, setGroupBy] = React.useState<TodoGroupBy>('none')
@@ -4053,6 +4107,7 @@ export function TodoView({
           store={store}
           items={state.items}
           workspaceName={workspaceName}
+          currentSessionId={currentSessionId}
           onClose={() => setSuggesting(false)}
         />
       ) : null}
@@ -4437,6 +4492,15 @@ export function apply(ctx: ClientContext): void {
                 store,
                 launch: launchContext(ctx, workspaceId, modelFiberCtx),
                 workspaceName,
+                // The session this view is being rendered FOR — the callback's
+                // own argument, already used above to resolve the workspace.
+                // The scan modal needs it to tell "the user is elsewhere" from
+                // "the user is already on the scan session", where its Open
+                // button would navigate to the session on screen and do
+                // nothing. Passed through rather than rediscovered: a new
+                // service read is precisely what cost this package three
+                // outages, and there is nothing here to discover.
+                currentSessionId: sessionId,
               }
             },
           },
