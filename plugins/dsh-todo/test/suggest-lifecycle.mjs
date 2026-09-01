@@ -276,6 +276,415 @@ const dialogSrc = dialog[0]
   )
 }
 
+// --- 6. an in-flight scan SURVIVES navigation, because the view unmounts ----
+//
+// `TodoView` registers into `conversation.view`, a PER-SESSION view ring. The
+// modal's own **Open scan session** navigates to the scan, which swaps the ring
+// to that session's — so TodoView unmounts entirely and takes SuggestDialog,
+// every `useState` in it and the poll loop with it. Returning to the Todo tab
+// gave a fresh empty dialog and the running scan was orphaned: nothing was left
+// holding the runId, so its result file could never be collected.
+//
+// The fix keys the in-flight scan by workspaceId in MODULE scope — outside the
+// slot, following the same shape `stores` already uses for TodoStore — so a
+// remount can resume it.
+{
+  const registry = /const scans = new Map<string, ScanEntry>\(\)/.exec(source)
+  assert.ok(
+    registry,
+    'the in-flight scan must live in a module-scope Map — component state dies with the slot',
+  )
+  // Keyed by workspace, because the tab is per-workspace and two workspaces
+  // must never share one scan.
+  assert.ok(
+    /export function scanFor\(workspaceId: string\)/.test(source),
+    'the scan registry must be keyed by workspaceId, not global',
+  )
+
+  // It must live OUTSIDE the component, or it is exactly the state that just died.
+  const scansAt = source.indexOf('const scans = new Map<string, ScanEntry>()')
+  const dialogAt = source.indexOf('export function SuggestDialog({')
+  assert.ok(
+    scansAt !== -1 && scansAt < dialogAt,
+    'the registry must be declared at module scope, before the component that uses it',
+  )
+
+  // Exactly the five fields needed to resume, and NOT the suggestions: the user
+  // chose not to cache results, so a completed scan that was never collected
+  // must not resurface later dressed as fresh.
+  const entry = /interface ScanEntry \{[\s\S]*?\n\}/.exec(source)
+  assert.ok(entry, 'ScanEntry must be declared')
+  for (const field of ['runId', 'sessionId', 'startedAt', 'adopted', 'seen']) {
+    assert.ok(
+      new RegExp(`\\b${field}\\b`).test(entry[0]),
+      `a resumable scan must persist \`${field}\``,
+    )
+  }
+  assert.ok(
+    !/\bsuggestions\b/.test(entry[0]),
+    'suggestions must NOT be persisted — a stale completed scan must not resurface as fresh',
+  )
+}
+
+// --- 7. resuming picks up the in-flight scan, never starts a second ---------
+{
+  // A faithful re-enactment of the mount decision, over the same registry the
+  // component reads. The whole bug was that mounting could only ever START.
+  const simulate = (existing) => {
+    const created = []
+    const polledFrom = []
+    const scans = new Map()
+    if (existing) scans.set('w1', existing)
+
+    const mount = () => {
+      const found = scans.get('w1')
+      if (found !== undefined) {
+        // Resume: poll the persisted runId, create nothing.
+        polledFrom.push(found.runId)
+        return 'resumed'
+      }
+      const runId = 'run-new'
+      created.push('session')
+      scans.set('w1', { runId, sessionId: 's-new', startedAt: Date.now(), adopted: false, seen: [] })
+      polledFrom.push(runId)
+      return 'started'
+    }
+
+    return { verdict: mount(), created, polledFrom }
+  }
+
+  const cold = simulate(null)
+  assert.equal(cold.verdict, 'started', 'with no scan in flight, mounting must start one')
+  assert.deepEqual(cold.created, ['session'], 'a cold start must create its session')
+
+  const warm = simulate({
+    runId: 'run-abc',
+    sessionId: 's-scan',
+    startedAt: Date.now() - 5_000,
+    adopted: true,
+    seen: ['already proposed'],
+  })
+  assert.equal(warm.verdict, 'resumed', 'returning to the tab must RESUME the in-flight scan')
+  // The assertion the bug report asks for by name.
+  assert.deepEqual(
+    warm.created,
+    [],
+    'resuming must NOT call sessions.create a second time — the first scan is still running',
+  )
+  assert.deepEqual(
+    warm.polledFrom,
+    ['run-abc'],
+    'a resumed scan must poll the PERSISTED runId, or its result file can never be found',
+  )
+
+  // And the source must actually take that branch. Asserted on the MOUNT
+  // EFFECT and on the CALL, not on the vocabulary: an earlier version of this
+  // check tested that the words `resume` and `scanFor(` appeared anywhere in
+  // the dialog, which stayed true when the branch was deleted — `resumeScan`
+  // was still DEFINED, merely never called. A sabotage that replaced the whole
+  // branch with a bare `void runScan()` passed it. Naming a symbol is not
+  // calling it.
+  const mount = /const inFlight = resumedRef\.current[\s\S]*?\n  \}, \[\]\)/.exec(dialogSrc)
+  assert.ok(mount, 'the mount effect must read the registry before deciding what to do')
+  assert.ok(
+    /void resumeScan\(inFlight\)/.test(mount[0]),
+    'the mount effect must RESUME an in-flight scan, not merely define a way to',
+  )
+  assert.ok(
+    /else void runScan\(\)/.test(mount[0]),
+    'a cold mount must still start a scan — resuming must not replace starting',
+  )
+
+  // The registry is what the decision is made from, and it is read per workspace.
+  assert.ok(
+    /scanFor\(launch\.workspaceId\)/.test(dialogSrc),
+    'the dialog must consult the registry for THIS workspace',
+  )
+
+  // Resuming must reach the poll loop without passing through session creation.
+  const resumeFn = /const resumeScan = React\.useCallback\([\s\S]*?\n  \)/.exec(dialogSrc)
+  assert.ok(resumeFn, 'resumeScan must exist')
+  assert.ok(
+    !/sessions\.create\(/.test(resumeFn[0]),
+    'resuming must NOT create a session — the run it is rejoining already has one',
+  )
+  assert.ok(
+    !/scanDigest\(/.test(resumeFn[0]),
+    'resuming must NOT rebuild the digest — that work is already done and blocks the host',
+  )
+  assert.ok(
+    /pollUntilDone\(entry\.runId, entry\.startedAt\)/.test(resumeFn[0]),
+    'resuming must poll the PERSISTED runId on the PERSISTED clock',
+  )
+}
+
+// --- 8. the timeout is measured from startedAt, not from the remount --------
+//
+// The dishonest version restarts the 180s clock every time the user comes back,
+// so a scan that has already run 170s gets another full timeout — and a wedged
+// scan can be kept alive forever by navigating. The deadline belongs to the
+// RUN, so it must be derived from the persisted start.
+{
+  const SCAN_TIMEOUT_MS = 180_000
+
+  // The fix: deadline = startedAt + TIMEOUT.
+  const deadlineFrom = (startedAt) => startedAt + SCAN_TIMEOUT_MS
+  // The bug: deadline = now + TIMEOUT, recomputed on every mount.
+  const deadlineFromRemount = (now) => now + SCAN_TIMEOUT_MS
+
+  const now = 1_000_000
+  const startedAt = now - 170_000 // 170s of the 180s budget already spent
+
+  assert.equal(
+    deadlineFrom(startedAt) - now,
+    10_000,
+    'a scan resumed at 170s must have 10s left, not a fresh 180',
+  )
+  // The sanity row: the buggy form must NOT produce the same answer, or this
+  // test could pass against the defect it exists to catch.
+  assert.notEqual(
+    deadlineFromRemount(now) - now,
+    10_000,
+    'sanity: measuring from the remount would grant a full fresh timeout',
+  )
+
+  // ...and it must actually expire. A resumed scan past its deadline ends now.
+  assert.ok(
+    now > deadlineFrom(now - 190_000),
+    'a resumed scan already past its deadline must time out immediately, not poll on',
+  )
+
+  // The source must read the deadline off the persisted start.
+  assert.ok(
+    /startedAt \+ SCAN_TIMEOUT_MS/.test(dialogSrc),
+    'the deadline must be startedAt + SCAN_TIMEOUT_MS — anything off Date.now() restarts the clock',
+  )
+  assert.ok(
+    !/Date\.now\(\) \+ SCAN_TIMEOUT_MS/.test(dialogSrc),
+    'the deadline must NOT be recomputed from the current time, or navigating resets the timeout',
+  )
+
+  // The elapsed caption continues from the same instant, for the same reason:
+  // a counter that restarts at zero tells the user the scan is younger than it is.
+  const skeleton = /function SuggestSkeleton\(\{[\s\S]*?\n\}/.exec(source)
+  assert.ok(skeleton, 'SuggestSkeleton must stay delimitable — keep its signature on one line')
+
+  // BEHAVIOURAL, not textual. Lift the elapsed expression out of the source and
+  // RUN it: an earlier version matched the substring `Date.now() - startedAt`,
+  // which a sabotage satisfied while computing `Date.now() - Date.now()` and
+  // reporting 0s forever. A regex can confirm a token is present; only
+  // executing the arithmetic can confirm it MEANS anything.
+  // The capture tolerates NESTED parens, because the defect it is hunting has
+  // them: `Date.now() - Date.now()`. A `[^)]*` class stops at the first inner
+  // `)`, captures nothing, and an empty match set then vacuously satisfies a
+  // loop — which is exactly how the first version of this check passed the
+  // sabotage it exists to catch. Hence both the greedy body and the count
+  // guard below: a check that examines nothing must fail, not pass.
+  const exprs = [...skeleton[0].matchAll(/Math\.floor\(\((.+?)\) \/ 1000\)/g)].map((m) => m[1])
+  assert.equal(
+    exprs.length,
+    2,
+    'the skeleton must compute elapsed seconds in exactly two places (the seed and the tick)',
+  )
+  for (const expr of exprs) {
+    const elapsedOf = new Function('startedAt', 'Date', `return Math.floor((${expr}) / 1000)`)
+    const fixedNow = 1_000_000
+    const FakeDate = { now: () => fixedNow }
+    assert.equal(
+      elapsedOf(fixedNow - 42_000, FakeDate),
+      42,
+      `elapsed must be measured from startedAt (got a constant from \`${expr}\`)`,
+    )
+    // ...and it must MOVE with startedAt, which a Date.now()-Date.now() form
+    // cannot do however the tokens are arranged.
+    assert.equal(
+      elapsedOf(fixedNow - 170_000, FakeDate),
+      170,
+      `a scan resumed at 170s must report 170s, not restart (\`${expr}\`)`,
+    )
+  }
+  // The precise defect: seeding a local `started = Date.now()` inside the
+  // component is what restarted the counter on every remount.
+  assert.ok(
+    !/const started = Date\.now\(\)/.test(skeleton[0]),
+    'the skeleton must not mint its own start time — that is what reset the counter on return',
+  )
+  // ...and the run's start must reach it from the dialog, not be re-derived.
+  assert.ok(
+    /startedAt=\{startedAtRef\.current\}/.test(dialogSrc),
+    'the dialog must pass the RUN\'s start to the skeleton',
+  )
+}
+
+// --- 9. closing CLEARS the entry; navigating away PRESERVES it --------------
+//
+// The two look identical from inside the component — both unmount SuggestDialog
+// — so the difference has to be recorded by the deliberate act, not inferred
+// from the teardown. Getting this backwards strands a scan forever (close that
+// preserves) or loses the one being watched (navigate that clears).
+{
+  const simulate = (act) => {
+    const scans = new Map()
+    const archived = []
+    scans.set('w1', { runId: 'r1', sessionId: 's1', startedAt: 0, adopted: false, seen: [] })
+
+    // The deliberate close runs FIRST and is what discards.
+    const endScan = () => {
+      const found = scans.get('w1')
+      scans.delete('w1')
+      if (found !== undefined && !found.adopted) archived.push(found.sessionId)
+    }
+    // The unmount teardown is shared by both paths and must preserve.
+    const unmount = () => {}
+
+    if (act === 'close') endScan()
+    unmount()
+    return { kept: scans.has('w1'), archived }
+  }
+
+  const closed = simulate('close')
+  assert.equal(closed.kept, false, 'closing the modal must CLEAR the entry, or the scan is stranded')
+  assert.deepEqual(
+    closed.archived,
+    ['s1'],
+    'closing must still archive the scan session, exactly as today',
+  )
+
+  const navigated = simulate('navigate')
+  assert.equal(
+    navigated.kept,
+    true,
+    'navigating away must PRESERVE the entry — that is the whole point of resuming',
+  )
+  assert.deepEqual(
+    navigated.archived,
+    [],
+    'navigating away must NOT archive: the user is on their way to watch that very session',
+  )
+
+  // The source must route the deliberate close through its own named path,
+  // separate from the effect teardown that both paths share. Asserted on the
+  // CALL as well as the definition: a `dismiss` that forgot to call `endScan`
+  // left the entry behind on a real close, stranding the scan — and an earlier
+  // version of this check, testing only that `endScan` was defined, passed
+  // against exactly that.
+  assert.ok(
+    /const endScan = /.test(dialogSrc),
+    'the deliberate close must have its own named path, distinct from the unmount teardown',
+  )
+  const dismissFn = /const dismiss = \(\): void => \{[\s\S]*?\n  \}/.exec(dialogSrc)
+  assert.ok(dismissFn, 'SuggestDialog must define dismiss as the single deliberate-close door')
+  assert.ok(
+    /endScan\(\)/.test(dismissFn[0]),
+    'dismiss must END the scan — a close that only hides the modal strands the run forever',
+  )
+  assert.ok(
+    /onClose\(\)/.test(dismissFn[0]),
+    'dismiss must still close the dialog',
+  )
+  // Every user-driven exit goes through that one door, so none can skip the
+  // clear. Pinned the way smoke.mjs pins the single delete path.
+  for (const [handler, why] of [
+    ['onClick={dismiss}', 'the backdrop and the X must dismiss, not bare-close'],
+    ['dismiss()', 'Escape must dismiss'],
+  ]) {
+    assert.ok(dialogSrc.includes(handler), why)
+  }
+  assert.ok(
+    !/onClick=\{onClose\}/.test(dialogSrc),
+    'no close control may call onClose directly — it would bypass endScan and strand the scan',
+  )
+  // The unmount teardown must NOT clear the registry, or navigating loses the scan.
+  const teardown = /return \(\): void => \{[\s\S]*?\n    \}/.exec(dialogSrc)
+  assert.ok(teardown, 'the mount effect must have a teardown')
+  assert.ok(
+    !/clearScan\(/.test(teardown[0]),
+    'the unmount teardown must NOT clear the scan — it cannot tell navigation from a close',
+  )
+  // ...and cleanup() must not archive on a bare unmount either, for the same reason.
+  assert.ok(
+    !/cleanup\(\)/.test(teardown[0]),
+    'unmount must not archive the scan session — navigating away is not abandoning it',
+  )
+}
+
+// --- 9b. the modal itself must COME BACK ------------------------------------
+//
+// Persisting the scan is only half a fix. `suggesting` — the boolean that
+// renders SuggestDialog at all — is state on TodoView, which is the component
+// the navigation unmounts. Seeded `false`, the user returns to the Todo tab, no
+// dialog appears, and the resumed scan is unreachable however well the registry
+// remembered it. This is the assertion that ties the registry to something the
+// user can actually see.
+{
+  const view = /export function TodoView\(\{[\s\S]*?\n\}\n/.exec(source)
+  assert.ok(view, 'TodoView must exist and be delimitable')
+
+  const seed = /const \[suggesting, setSuggesting\] = React\.useState\(([\s\S]*?)\n  \)/.exec(
+    view[0],
+  )
+  assert.ok(
+    seed,
+    'suggesting must be seeded from a lazy initialiser — a bare false cannot reopen the modal',
+  )
+  assert.ok(
+    /scanFor\(launch\.workspaceId\)/.test(seed[1]),
+    'suggesting must be seeded from the scan registry, or returning to the tab shows no dialog',
+  )
+  // The precise defect being pinned.
+  assert.ok(
+    !/React\.useState\(false\)[\s\S]{0,40}suggesting/.test(view[0]),
+    'suggesting must not start unconditionally false — that is what left the user with no way back',
+  )
+  // It must be workspace-scoped here too: a global probe would pop the modal
+  // open on a workspace that has no scan running.
+  assert.ok(
+    /launch !== undefined/.test(seed[1]),
+    'the seed must tolerate an absent launch context, exactly as the button does',
+  )
+}
+
+// --- 10. two workspaces do not share scan state -----------------------------
+{
+  const scans = new Map()
+  scans.set('w1', { runId: 'r1', sessionId: 's1', startedAt: 1, adopted: false, seen: ['a'] })
+  scans.set('w2', { runId: 'r2', sessionId: 's2', startedAt: 2, adopted: true, seen: ['b'] })
+
+  assert.equal(scans.get('w1').runId, 'r1', 'each workspace keeps its own runId')
+  assert.equal(scans.get('w2').runId, 'r2', 'a second workspace must not see the first run')
+  assert.notDeepEqual(
+    scans.get('w1').seen,
+    scans.get('w2').seen,
+    'seen titles must not leak between workspaces',
+  )
+
+  // Clearing one must leave the other untouched.
+  scans.delete('w1')
+  assert.equal(scans.has('w2'), true, 'closing one workspace scan must not clear another workspace')
+
+  // And a scan must not outlive its workspace: the registry is pruned when the
+  // store cache is, so a closed workspace leaves nothing behind.
+  assert.ok(
+    /scans\.clear\(\)/.test(source),
+    'the scan registry must be cleared alongside the store cache, or a scan outlives its workspace',
+  )
+  const storesClear = source.indexOf('stores.clear()')
+  const scansClear = source.indexOf('scans.clear()')
+  assert.ok(
+    storesClear !== -1 && scansClear !== -1,
+    'the registry must be torn down with the same effect that clears the stores',
+  )
+
+  // Every registry read must name a workspace. A bare module-level `let` for
+  // the current scan is the shape that leaks across workspaces.
+  assert.ok(
+    !/^let (currentScan|activeScan)\b/m.test(source),
+    'there must be no single module-level current scan — that shape leaks between workspaces',
+  )
+}
+
 console.log(
-  'suggest-lifecycle OK (adopted scan kept, unadopted still archived, session named, captions honest)',
+  'suggest-lifecycle OK (adopted scan kept, unadopted still archived, session named, captions honest, ' +
+    'scan resumes across navigation, timeout honest from startedAt, close clears / navigate preserves, ' +
+    'workspaces isolated)',
 )

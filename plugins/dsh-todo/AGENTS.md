@@ -505,7 +505,70 @@ therefore uses only public paths the plugin already depends on: `sessions.create
   that session on the next poll, 1.5s later, would be the modal opening a door and then
   removing the room behind it. `adoptedRef` is set when they open it, and `cleanup()` skips
   `discardSession` while it is set.
-  Four properties are load-bearing, and three of them are the ways this goes wrong:
+  **On RETURN the modal reopens and the scan resumes — and it only does so because the
+  scan is persisted OUTSIDE the slot.** Adoption alone was not enough, and shipping it
+  that way was the fifth outage. `TodoView` registers into `conversation.view`, a
+  **per-session view ring**, so `sessions.open()` swaps to the scan session's ring and
+  unmounts `TodoView` entirely — this button's own navigation is a TEARDOWN, not a side
+  trip. It took `SuggestDialog` with it and every piece of state that WAS the scan:
+  `suggesting` (the boolean that renders the dialog at all), `suggestions`/`phase`/
+  `checked`/`addError`, and `seenRef`/`sessionRef`/`adoptedRef`/`cancelledRef` — plus the
+  poll loop, cancelled by the unmount cleanup. Returning to the Todo tab built a FRESH
+  EMPTY dialog: the in-flight scan was orphaned, its result file collected by nobody, and
+  the user had no way back to the run they had just been told to go and watch.
+  The fix is a module-scope `Map<workspaceId, ScanEntry>` (`scans`), following the shape
+  `stores` already uses for `TodoStore` in `apply()` — the same reasoning applies, that a
+  cache the slot's teardown must not take with it cannot live inside the slot. Keyed by
+  **workspace**, never one module-level `let`: the tab is per-workspace, and a single
+  current scan would let a run started in A be resumed, polled and adopted from B against
+  B's exclusion set. It is cleared alongside `stores.clear()` in the mount effect's
+  teardown, so a scan cannot outlive its workspace.
+  It persists exactly five fields, and **deliberately not `suggestions`**: results are not
+  cached, so a scan that completed unwatched must not resurface later dressed as fresh —
+  the same stale-answer failure the per-run rendezvous prevents one layer down.
+  `runId` is the poll address (without it the result file cannot be found at all),
+  `sessionId` keeps the Open button and adoption working after the remount, `startedAt`
+  keeps the deadline and the caption honest, `adopted` outlives the component that
+  recorded it, and `seen` keeps a post-return Refresh returning genuinely new ideas.
+  Three things are load-bearing:
+  - **The timeout is measured from `startedAt`, not from the remount.** `pollUntilDone`
+    takes `deadline = startedAt + SCAN_TIMEOUT_MS`, so a scan that has already run 170s
+    expires in 10s. Recomputing it off `Date.now()` would grant a fresh 180s per return
+    and let a wedged scan be kept alive indefinitely by navigating back and forth. The
+    elapsed caption counts from the same instant for the same reason — a counter
+    restarting at zero tells the user the run is younger than it is, while the deadline it
+    is racing did not reset. `SuggestSkeleton` therefore takes `startedAt` as a prop
+    instead of minting its own.
+  - **Closing is distinguished from navigating by the deliberate ACT, never by the
+    teardown.** Both unmount `SuggestDialog` and run the same cleanup, so the teardown
+    cannot tell them apart — it now only sets `cancelledRef`, and neither clears the entry
+    nor archives. Every user-driven exit (the X, Escape, the backdrop, a completed **Add
+    selected**) routes through ONE `dismiss()` → `endScan()`, which clears the entry and
+    archives exactly as before, and runs BEFORE the unmount. Getting this backwards fails
+    both ways: a close that preserves strands a scan forever, and a navigation that clears
+    loses the one being watched. `suggest-lifecycle.mjs` pins both directions from one
+    simulator and asserts no close control calls `onClose` directly.
+  - **Adoption is persisted before navigating, not just held in the ref.** The ref dies in
+    the very navigation the Open button causes, so `openScanSession` writes
+    `adopted: true` into the registry first — otherwise the scan would come back resumable
+    but archivable, which is the bug adoption exists to prevent.
+  Resuming takes the same `pollUntilDone` path a fresh scan does — one copy of the
+  ready/error/timeout handling, since that code decides whether a session gets archived —
+  and issues **no** `sessions.create` and **no** `scanDigest`. `suggesting` is seeded from
+  `scanFor(workspaceId)`, which is what actually brings the modal back on screen;
+  persisting the scan without that seed remembers a run the user still cannot see.
+  Verified by **sabotage before it was trusted**, twelve mutations, and three of them
+  initially passed — each one a check asserting a NAME rather than a BEHAVIOUR. Testing
+  that `resumeScan` was *defined* stayed green when the branch calling it was deleted;
+  testing that `endScan` existed stayed green when `dismiss` stopped calling it; and
+  matching the substring `Date.now() - startedAt` stayed green against
+  `Date.now() - Date.now()`, whose inner paren made a `[^)]*` capture match **nothing** so
+  the loop over it passed vacuously. The elapsed check now EXECUTES the extracted
+  expression and asserts it counts 170s from a 170s-old start, and pins that exactly two
+  such expressions exist — a check that examines nothing must fail, not pass.
+
+  Four further properties of the ADOPTION half are load-bearing, and three of them are the
+  ways it goes wrong:
   - **The blank is still unconditional.** `cleanup()` takes the id, nulls `sessionRef`, and
     only *then* consults `adoptedRef` — the adoption branch sits AFTER the blank. Skipping
     the blank for an adopted session would leave a live id for the next of the five callers

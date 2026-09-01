@@ -1908,6 +1908,86 @@ const SCAN_POLL_MS = 1_500
 type ScanStage = 'digest' | 'polling'
 
 /**
+ * One workspace's in-flight scan, held OUTSIDE the component that renders it.
+ *
+ * `TodoView` registers into `conversation.view`, which is a PER-SESSION view
+ * ring: navigating to another session swaps the ring, so the view unmounts
+ * entirely. That is not a side trip, it is a teardown — and the modal's own
+ * **Open scan session** button causes it. Every `useState` in `SuggestDialog`
+ * (`suggestions`, `phase`, `checked`, `addError`), every ref (`seenRef`,
+ * `sessionRef`, `adoptedRef`, `cancelledRef`), the `suggesting` boolean that
+ * renders the dialog at all, and the poll loop itself all died with it. The
+ * user had no way back: returning to the Todo tab built a fresh empty dialog
+ * while the real scan ran on unwatched, and its result file was collected by
+ * nobody.
+ *
+ * These are the ONLY fields a resume needs, and each earns its place:
+ *
+ * - `runId` — the poll address. Without it the result file cannot be found at
+ *   all, since `readSuggestions` reads only the named run's path.
+ * - `sessionId` — so **Open scan session** and adoption still work after the
+ *   remount, rather than the button vanishing mid-scan.
+ * - `startedAt` — so the timeout and the elapsed caption stay honest across
+ *   the round trip. The deadline belongs to the RUN, not to the mount.
+ * - `adopted` — a session the user opened must never be archived, and that
+ *   claim has to outlive the component that recorded it.
+ * - `seen` — so Refresh after a return still excludes what was already
+ *   proposed and returns genuinely new ideas.
+ *
+ * **`suggestions` are deliberately NOT here.** Results are not cached: a scan
+ * that completed while the user was away and was never collected must not
+ * resurface later dressed as fresh, which is the same stale-answer failure the
+ * per-run rendezvous path exists to prevent one layer down.
+ */
+interface ScanEntry {
+  /** This run's rendezvous token; the only way back to its result file. */
+  runId: string
+  /** The scan session, so the Open button survives a remount. */
+  sessionId: string | null
+  /** When the run began, so the deadline and the caption do not restart. */
+  startedAt: number
+  /** True once the user opened the session; suppresses the archive forever. */
+  adopted: boolean
+  /** Titles already proposed, so a post-return Refresh still returns new ideas. */
+  seen: string[]
+}
+
+/**
+ * In-flight scans, keyed by workspace.
+ *
+ * Module scope on purpose, following the same shape `stores` uses for
+ * `TodoStore` in `apply()`: the slot's component tree is torn down on every
+ * navigation, so anything that must survive one cannot live inside it.
+ *
+ * KEYED BY WORKSPACE, never a single module-level `let`. The tab is
+ * per-workspace and two workspaces must not share a scan — one bare current
+ * scan would let a run started in workspace A be resumed, polled and adopted
+ * from workspace B, against B's exclusion set.
+ */
+const scans = new Map<string, ScanEntry>()
+
+/** The in-flight scan for one workspace, or undefined when none is running. */
+export function scanFor(workspaceId: string): ScanEntry | undefined {
+  return scans.get(workspaceId)
+}
+
+/** Record or replace a workspace's in-flight scan. */
+function putScan(workspaceId: string, entry: ScanEntry): void {
+  scans.set(workspaceId, entry)
+}
+
+/**
+ * Forget a workspace's in-flight scan.
+ *
+ * Called only when the scan genuinely ENDS — ready, error, timeout — or when
+ * the user closes the modal deliberately. Never from the unmount teardown,
+ * which cannot tell a close from a navigation.
+ */
+function clearScan(workspaceId: string): void {
+  scans.delete(workspaceId)
+}
+
+/**
  * Name a scan session so it is identifiable once the user opens it.
  *
  * A scan session is created, prompted and never navigated to, so without a name
@@ -1973,6 +2053,18 @@ export function SuggestDialog({
   workspaceName?: string
   onClose: () => void
 }): React.JSX.Element {
+  /**
+   * The scan already running for this workspace, read ONCE at mount.
+   *
+   * Read during the first render rather than in an effect, because the initial
+   * state below depends on it: a resumed scan must come back on screen already
+   * showing the session it holds and counting from when it truly began, not
+   * flash an empty dialog for a frame first.
+   */
+  const resumedRef = React.useRef<ScanEntry | undefined>(undefined)
+  if (resumedRef.current === undefined) resumedRef.current = scanFor(launch.workspaceId)
+  const resumed = resumedRef.current
+
   const [phase, setPhase] = React.useState<'scanning' | 'ready' | 'error'>('scanning')
   /**
    * Which half of `scanning` is running, for an honest caption.
@@ -1982,7 +2074,13 @@ export function SuggestDialog({
    * session and is polling for the result file. Everything finer would mean
    * reading the session's own conversation, which is unpublished internals.
    */
-  const [stage, setStage] = React.useState<ScanStage>('digest')
+  const [stage, setStage] = React.useState<ScanStage>(
+    // A resumed scan is past the digest by definition — the digest is a single
+    // synchronous RPC with no session behind it, so a run that reached the
+    // registry with a session is already polling. Saying "Reading the
+    // workspace…" here would be the caption claiming a wait that finished.
+    resumed !== undefined && resumed.sessionId !== null ? 'polling' : 'digest',
+  )
   const [suggestions, setSuggestions] = React.useState<Suggestion[]>([])
   const [checked, setChecked] = React.useState<Set<string>>(new Set())
   const [error, setError] = React.useState<string | null>(null)
@@ -1996,8 +2094,13 @@ export function SuggestDialog({
    * rather than reusing the first.
    */
   const [addError, setAddError] = React.useState<string | null>(null)
-  /** Titles already proposed this session, so Refresh returns new ideas. */
-  const seenRef = React.useRef<string[]>([])
+  /**
+   * Titles already proposed, so Refresh returns new ideas.
+   *
+   * Seeded from the resumed entry: a Refresh after returning to the tab must
+   * still exclude what the earlier run proposed, or the same ideas come back.
+   */
+  const seenRef = React.useRef<string[]>(resumed?.seen ?? [])
   /**
    * The scan session, held in a REF and blanked in the same step it is read.
    *
@@ -2005,7 +2108,7 @@ export function SuggestDialog({
    * just-prompted session in the launch flow; blanking on read is what makes
    * cleanup idempotent when two paths both try to clean up.
    */
-  const sessionRef = React.useRef<string | null>(null)
+  const sessionRef = React.useRef<string | null>(resumed?.sessionId ?? null)
   /**
    * True once the user has OPENED the scan session, which hands it to them.
    *
@@ -2025,7 +2128,7 @@ export function SuggestDialog({
    * session outlives the poll loop that created it. `runScan` clears it when a
    * NEW scan starts, because that run owns a different session entirely.
    */
-  const adoptedRef = React.useRef(false)
+  const adoptedRef = React.useRef(resumed?.adopted ?? false)
   /**
    * The scan session id AS RENDERED, which is deliberately not `sessionRef`.
    *
@@ -2041,7 +2144,18 @@ export function SuggestDialog({
    * archive in the first place, so an id offered here is one the modal has not
    * discarded.
    */
-  const [scanSessionId, setScanSessionId] = React.useState<string | null>(null)
+  const [scanSessionId, setScanSessionId] = React.useState<string | null>(
+    resumed?.sessionId ?? null,
+  )
+  /**
+   * When THIS run began, for a deadline and a caption that survive a remount.
+   *
+   * Seeded from the resumed entry, so a scan that has already burnt 170s of
+   * `SCAN_TIMEOUT_MS` times out in 10s rather than being granted a fresh 180
+   * every time the user navigates back. Measuring from the mount would also
+   * mean a wedged scan could be kept alive indefinitely by returning to the tab.
+   */
+  const startedAtRef = React.useRef(resumed?.startedAt ?? Date.now())
   const cancelledRef = React.useRef(false)
   /**
    * The live items, for a Refresh that must exclude what the backlog holds NOW.
@@ -2090,8 +2204,94 @@ export function SuggestDialog({
   const openScanSession = (): void => {
     if (scanSessionId === null) return
     adoptedRef.current = true
+    // Adoption must survive the very navigation this call causes. Opening the
+    // session swaps the conversation.view ring and unmounts this dialog, so a
+    // claim recorded only in the ref would die on the way — and the scan would
+    // come back resumable but archivable, which is the bug adoption exists to
+    // stop. Persisted BEFORE navigating, for the same reason the ref is.
+    const entry = scanFor(launch.workspaceId)
+    if (entry !== undefined) putScan(launch.workspaceId, { ...entry, adopted: true })
     launch.sessions.open(scanSessionId)
   }
+
+  /**
+   * End the scan DELIBERATELY: forget it, and archive as today.
+   *
+   * This is the half that distinguishes closing from navigating, and the two
+   * are otherwise indistinguishable from inside the component — both unmount
+   * `SuggestDialog` and run the same teardown. So the difference is recorded by
+   * the deliberate ACT rather than inferred from the teardown: every user-driven
+   * close (the X, Escape, the backdrop, a successful "Add selected") routes
+   * through here BEFORE the unmount, while navigation reaches the teardown
+   * alone and leaves the entry standing.
+   *
+   * Getting this the other way round fails in both directions: a close that
+   * preserves strands a scan that is never collected, and a navigation that
+   * clears loses the one the user just left to watch.
+   */
+  const endScan = React.useCallback((): void => {
+    clearScan(launch.workspaceId)
+    cancelledRef.current = true
+    cleanup()
+  }, [cleanup, launch])
+
+  /**
+   * Poll one run's rendezvous file until it lands, fails, or runs out of time.
+   *
+   * Extracted so a RESUMED scan takes exactly the same path as a fresh one:
+   * the alternative — a second loop for the resume case — is two copies of the
+   * ready/error/timeout handling that can drift, and this is the code that
+   * decides whether a scan session gets archived.
+   *
+   * **The deadline is derived from `startedAt`, not from now.** A scan that has
+   * already burnt 170s of `SCAN_TIMEOUT_MS` must expire in 10s; recomputing the
+   * budget here would hand every remount a fresh 180s and let a wedged scan be
+   * kept alive indefinitely by navigating back and forth. On every terminal
+   * outcome the registry entry is dropped, because the run is genuinely over.
+   *
+   * @param runId - the run whose file to read; only ever this run's path.
+   * @param startedAt - when the run began, which owns the deadline.
+   */
+  const pollUntilDone = React.useCallback(
+    async (runId: string, startedAt: number): Promise<void> => {
+      const deadline = startedAt + SCAN_TIMEOUT_MS
+      for (;;) {
+        if (cancelledRef.current) return
+        await new Promise((r) => setTimeout(r, SCAN_POLL_MS))
+        if (cancelledRef.current) return
+        // Only THIS run's file. A previous scan that timed out is archived but
+        // still running, and its late write must never be read as this one's.
+        const reply = await remote.readSuggestions({ workspaceId: launch.workspaceId, runId })
+        if (!reply.ok) throw new Error(reply.error.message)
+        const result = reply.value
+        if (result.status === 'ready') {
+          const found = result.suggestions ?? []
+          seenRef.current = [...seenRef.current, ...found.map((s) => s.title)]
+          setSuggestions(found)
+          setPhase('ready')
+          // Genuinely finished: nothing left to resume, and the file is gone.
+          clearScan(launch.workspaceId)
+          cleanup()
+          return
+        }
+        if (result.status === 'error') {
+          setError(result.error ?? 'the scan produced unusable output')
+          setPhase('error')
+          clearScan(launch.workspaceId)
+          cleanup()
+          return
+        }
+        if (Date.now() > deadline) {
+          setError('the scan did not finish in time')
+          setPhase('error')
+          clearScan(launch.workspaceId)
+          cleanup()
+          return
+        }
+      }
+    },
+    [cleanup, launch, remote],
+  )
 
   const runScan = React.useCallback(async (): Promise<void> => {
     cleanup()
@@ -2107,6 +2307,22 @@ export function SuggestDialog({
     // superseded run must keep polling its OWN path until its loop exits, and
     // a ref would repoint it at the new run's file mid-flight.
     const runId = makeRunId()
+    // This run's clock, which owns its deadline from here on. Recorded before
+    // the digest so the 180s budget covers the whole run the user is waiting
+    // through, not just the polling half.
+    const startedAt = Date.now()
+    startedAtRef.current = startedAt
+    // A fresh run supersedes whatever the registry held: this workspace now has
+    // exactly one scan in flight, and it is this one. Registered with no
+    // session yet — the digest stage has none — so a remount during the digest
+    // resumes correctly rather than offering a button that fails on click.
+    putScan(launch.workspaceId, {
+      runId,
+      sessionId: null,
+      startedAt,
+      adopted: false,
+      seen: seenRef.current,
+    })
     // `suggestions` and `checked` deliberately survive a Refresh, so the old
     // rows stay put until the new set lands rather than blanking the pane. The
     // consequence is that a title in BOTH sets arrives pre-checked — harmless:
@@ -2158,6 +2374,10 @@ export function SuggestDialog({
       if (digest.trim() === '') {
         setError('this workspace has no scannable files — it may have been moved or is empty')
         setPhase('error')
+        // No session was ever spent and no file will ever land, so there is
+        // nothing to resume: leaving the entry behind would make a remount poll
+        // a path that cannot appear.
+        clearScan(launch.workspaceId)
         return
       }
 
@@ -2176,6 +2396,17 @@ export function SuggestDialog({
         return
       }
       sessionRef.current = sessionId
+      // The session reaches the registry as soon as it reaches the ref, so a
+      // remount can offer the Open button and honour an adoption made against
+      // it. `seen` is re-read rather than reused: the entry above was written
+      // before this await.
+      putScan(launch.workspaceId, {
+        runId,
+        sessionId,
+        startedAt,
+        adopted: adoptedRef.current,
+        seen: seenRef.current,
+      })
 
       const binding = launch.sessions.binding(sessionId)
       if (binding === undefined) throw new Error('the scan session is not addressable yet')
@@ -2210,55 +2441,83 @@ export function SuggestDialog({
       setStage('polling')
       setScanSessionId(sessionId)
 
-      const deadline = Date.now() + SCAN_TIMEOUT_MS
-      for (;;) {
-        if (cancelledRef.current) return
-        await new Promise((r) => setTimeout(r, SCAN_POLL_MS))
-        if (cancelledRef.current) return
-        // Only THIS run's file. A previous scan that timed out is archived but
-        // still running, and its late write must never be read as this one's.
-        const reply = await remote.readSuggestions({ workspaceId: launch.workspaceId, runId })
-        if (!reply.ok) throw new Error(reply.error.message)
-        const result = reply.value
-        if (result.status === 'ready') {
-          const found = result.suggestions ?? []
-          seenRef.current = [...seenRef.current, ...found.map((s) => s.title)]
-          setSuggestions(found)
-          setPhase('ready')
-          cleanup()
-          return
-        }
-        if (result.status === 'error') {
-          setError(result.error ?? 'the scan produced unusable output')
-          setPhase('error')
-          cleanup()
-          return
-        }
-        if (Date.now() > deadline) {
-          setError('the scan did not finish in time')
-          setPhase('error')
-          cleanup()
-          return
-        }
-      }
+      await pollUntilDone(runId, startedAt)
     } catch (cause) {
       if (cancelledRef.current) return
       setError(describe(cause))
       setPhase('error')
+      clearScan(launch.workspaceId)
       cleanup()
     }
-  }, [cleanup, launch, remote, workspaceName])
+  }, [cleanup, launch, pollUntilDone, remote, workspaceName])
+
+  /**
+   * Rejoin a scan that was already running when this dialog mounted.
+   *
+   * Starts NO session and issues NO digest: the run it is resuming already has
+   * both, and creating a second would spend another session and leave the first
+   * orphaned — the exact waste this whole fix exists to remove. It only picks up
+   * the poll loop at the persisted `runId`, on that run's original deadline.
+   */
+  const resumeScan = React.useCallback(
+    async (entry: ScanEntry): Promise<void> => {
+      cancelledRef.current = false
+      setPhase('scanning')
+      setError(null)
+      setAddError(null)
+      try {
+        await pollUntilDone(entry.runId, entry.startedAt)
+      } catch (cause) {
+        if (cancelledRef.current) return
+        setError(describe(cause))
+        setPhase('error')
+        clearScan(launch.workspaceId)
+        cleanup()
+      }
+    },
+    [cleanup, launch, pollUntilDone],
+  )
 
   React.useEffect(() => {
-    void runScan()
-    return () => {
+    // RESUME, never restart. Returning to the tab after navigating to the scan
+    // session must rejoin the run in flight — starting a fresh one would spend
+    // a second session, orphan the first, and hand the user results computed
+    // against a stale exclusion set.
+    const inFlight = resumedRef.current
+    if (inFlight !== undefined) void resumeScan(inFlight)
+    else void runScan()
+    return (): void => {
+      // Stop THIS component's poll loop, and nothing more.
+      //
+      // Deliberately NOT `clearScan` and NOT `cleanup`. This teardown runs on
+      // both a deliberate close and a navigation, and it cannot tell them
+      // apart — that is precisely the bug being fixed. Clearing here would
+      // discard the scan the user navigated away to watch, and archiving here
+      // would remove the session under them. The deliberate close routes
+      // through `endScan()` BEFORE unmounting, which is where both belong.
       cancelledRef.current = true
-      cleanup()
     }
     // Deliberately once: a scan is started by opening the dialog or by
     // Refresh, never by a re-render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  /**
+   * The DELIBERATE close: the X, Escape, the backdrop, and a completed add.
+   *
+   * The single door every user-driven exit goes through, so "the user closed
+   * it" is recorded exactly once and in one place. It ends the scan — forgetting
+   * the entry and archiving an unadopted session — and only then closes.
+   *
+   * Navigation reaches none of this. It unmounts the dialog directly, so the
+   * entry survives and the modal reopens on return. That asymmetry IS the fix,
+   * and it is why the archive lives here rather than in the effect teardown
+   * that both paths share.
+   */
+  const dismiss = (): void => {
+    endScan()
+    onClose()
+  }
 
   const toggle = (title: string): void => {
     setChecked((prev) => {
@@ -2310,21 +2569,24 @@ export function SuggestDialog({
       setAddError('the task list is not loaded — reopen the tab and try again')
       return
     }
-    onClose()
+    // The picks are safely in the list, so this is a deliberate finish: the run
+    // is over and its session must not be left in the sidebar.
+    dismiss()
   }
 
   // Dismissing is always allowed, matching every other dialog here: a modal you
-  // cannot leave because a scan is still running is a trap.
+  // cannot leave because a scan is still running is a trap. Every one of these
+  // is a DELIBERATE close, so all three route through `dismiss`.
   const onKeyDown = (e: React.KeyboardEvent): void => {
     e.stopPropagation()
     if (e.key === 'Escape') {
       e.preventDefault()
-      onClose()
+      dismiss()
     }
   }
 
   return createPortal(
-    <div className="dshtd-modal-backdrop" onClick={onClose} onKeyDown={onKeyDown}>
+    <div className="dshtd-modal-backdrop" onClick={dismiss} onKeyDown={onKeyDown}>
       <div
         className="dshtd-modal"
         role="dialog"
@@ -2335,13 +2597,15 @@ export function SuggestDialog({
       >
         <div className="dshtd-modal-head">
           <strong className="dshtd-launch-title">Suggested work</strong>
-          <button className="dshtd-icon" onClick={onClose} aria-label="Close">
+          <button className="dshtd-icon" onClick={dismiss} aria-label="Close">
             <Icon path={ICON.close} />
           </button>
         </div>
 
         <div className="dshtd-modal-body">
-          {phase === 'scanning' ? <SuggestSkeleton stage={stage} /> : null}
+          {phase === 'scanning' ? (
+            <SuggestSkeleton stage={stage} startedAt={startedAtRef.current} />
+          ) : null}
 
           {phase === 'error' ? (
             <p className="dshtd-sug-empty">{error ?? 'the scan failed'}</p>
@@ -2407,7 +2671,14 @@ export function SuggestDialog({
               <button
                 className="dshtd-btn"
                 onClick={openScanSession}
-                title="Watch the scan session's conversation"
+                /* The tooltip says the return trip is safe, because the button
+                   navigates AWAY from this tab and the modal disappears with
+                   it. Before the scan was persisted that really was one-way —
+                   the run was orphaned and its result collected by nobody — so
+                   a user who had been bitten once would not click it twice.
+                   Kept to one line: the reassurance is worth more than the
+                   detail. */
+                title="Watch the scan session — come back to this tab to collect the results"
               >
                 Open scan session
               </button>
@@ -2794,6 +3065,26 @@ function TodoSkeleton(): React.JSX.Element {
 const SUG_SKELETON_WIDTHS = [72, 88, 61, 79, 68]
 
 /**
+ * What the suggestion skeleton needs to describe the wait honestly.
+ *
+ * Declared as a named interface rather than inline, so `SuggestSkeleton`'s
+ * signature stays on ONE line. Several checks in `smoke.mjs` and
+ * `suggest-lifecycle.mjs` delimit this component by matching from its `({` to
+ * the next line-start `}`, and a multi-line destructured signature ends that
+ * match at the props brace — silently capturing nothing and passing vacuously.
+ */
+interface SuggestSkeletonProps {
+  /** Which half of the wait is running, for an honest caption. */
+  stage: ScanStage
+  /**
+   * When the RUN began — not when this component mounted. A scan resumed after
+   * the user navigated away has been running the whole time, and the caption
+   * must agree with the deadline about that.
+   */
+  startedAt: number
+}
+
+/**
  * Loading state for the suggestion list.
  *
  * A skeleton rather than a spinner because this is a large content pane — the
@@ -2834,20 +3125,24 @@ const SUG_SKELETON_WIDTHS = [72, 88, 61, 79, 68]
  * @param stage - which half of the wait is running, for an honest caption.
  * @returns the loading placeholder for the suggestion pane.
  */
-function SuggestSkeleton({ stage }: { stage: ScanStage }): React.JSX.Element {
-  const [elapsed, setElapsed] = React.useState(0)
+function SuggestSkeleton({ stage, startedAt }: SuggestSkeletonProps): React.JSX.Element {
+  const [elapsed, setElapsed] = React.useState(() => Math.floor((Date.now() - startedAt) / 1000))
   React.useEffect(() => {
-    // Off the mount time rather than by incrementing a counter: a throttled
-    // background tab fires intervals late and irregularly, so counting ticks
-    // would under-report exactly when the wait is longest.
-    const started = Date.now()
+    // Off the RUN's start rather than this component's mount, and rather than
+    // by incrementing a counter. Two separate reasons, both about not
+    // under-reporting the wait: a throttled background tab fires intervals late
+    // and irregularly, so counting ticks lies exactly when the wait is longest;
+    // and a scan resumed after the user navigated away has genuinely been
+    // running the whole time, so restarting at zero would tell them it is
+    // younger than it is — while the deadline it is measured against did not
+    // reset. The caption and the timeout must agree about when the run began.
     const timer = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - started) / 1000))
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000))
     }, 1000)
     return () => {
       clearInterval(timer)
     }
-  }, [])
+  }, [startedAt])
 
   // Two captions, one per thing the client genuinely knows. The digest half
   // never shows a session button because there is no session yet, so the copy
@@ -3320,9 +3615,17 @@ export function TodoView({
   // a boolean per call site, so every delete path routes through the same
   // dialog and none can quietly skip the guard.
   const [pending, setPending] = React.useState<PendingConfirm | null>(null)
-  // Whether the suggest dialog is open. Its scan lifecycle lives entirely
-  // inside SuggestDialog, so this is a plain boolean rather than a slot.
-  const [suggesting, setSuggesting] = React.useState(false)
+  // Whether the suggest dialog is open.
+  //
+  // SEEDED FROM THE SCAN REGISTRY, which is what makes returning to the tab
+  // reopen the modal. This view lives in the per-session `conversation.view`
+  // ring, so navigating to the scan session unmounts it and this boolean with
+  // it; initialising from `false` is what left the user with no way back to a
+  // scan they had opened. An in-flight scan for this workspace means the dialog
+  // was open when they left, so it comes back open and resumes polling.
+  const [suggesting, setSuggesting] = React.useState(
+    () => launch !== undefined && scanFor(launch.workspaceId) !== undefined,
+  )
   // The task being launched, plus the blank session created to receive it. The
   // session is made when the dialog OPENS so the model picker can bind to it,
   // which is why cancelling has to discard it again.
@@ -3995,6 +4298,12 @@ export function apply(ctx: ClientContext): void {
     return () => {
       disposed = true
       stores.clear()
+      // The scan registry is torn down with the stores, and for the same
+      // reason: both are module-scope caches keyed by workspace, and neither
+      // may outlive the plugin that owns them. Without this a scan would
+      // survive its workspace closing and be resumed against a store that no
+      // longer exists.
+      scans.clear()
       void unmount?.()
     }
   }, 'dsh-todo: mount host remote')
