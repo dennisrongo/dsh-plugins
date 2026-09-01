@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-git",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Git source-control tab for DeepSeek Harness (dsh) — changes, history, branches, merge, stash and worktrees for a workspace's repository",
   "type": "module",
   "license": "MIT",

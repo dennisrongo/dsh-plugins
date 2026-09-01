@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-memory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Memory capture and inspection for DeepSeek Harness (dsh) — a /remember command that writes into the AGENTS.md hierarchy, and a tab showing which instruction files the loader actually kept",
   "type": "module",
   "license": "MIT",
