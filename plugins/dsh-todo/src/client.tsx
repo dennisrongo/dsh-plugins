@@ -1341,6 +1341,15 @@ body[data-ds-dark-theme] .dshtd-status option {
   padding: 24px 12px; text-align: center;
 }
 .dshtd-sug-status { font-size: 12px; line-height: 18px; color: var(--td-caption); }
+/* The scan's elapsed-time caption. Same rung as .dshtd-sug-status above — the
+   small-surface caption rule, 12px on an 18px line in the tertiary tone — so
+   the pane gains a sign of life without gaining a second visual weight.
+   Indented to the skeleton's own 12px gutter so it hangs under the bars rather
+   than under the pane edge. */
+.dshtd-sug-elapsed {
+  display: block; font-size: 12px; line-height: 18px; color: var(--td-caption);
+  padding: 6px 12px 0;
+}
 /* The suggestion checkbox rides the 20px title line the way .dshtd-check rides
    the row's, so a long title cannot drag it off the first line. */
 .dshtd-sug-row > input[type="checkbox"] {
@@ -1921,7 +1930,18 @@ export function SuggestDialog({
 
   const runScan = React.useCallback(async (): Promise<void> => {
     cleanup()
+    // Safe to un-cancel only because no earlier loop can still be live: the
+    // sole re-entry point is the Refresh button, which carries
+    // `disabled={phase === 'scanning'}`. That invariant is ENFORCED IN THE JSX
+    // and consumed here, with nothing in between linking the two — dropping
+    // that `disabled` would let a second scan clear the flag the first is
+    // polling on, leaving both loops writing into the same state.
     cancelledRef.current = false
+    // `suggestions` and `checked` deliberately survive a Refresh, so the old
+    // rows stay put until the new set lands rather than blanking the pane. The
+    // consequence is that a title in BOTH sets arrives pre-checked — harmless:
+    // it is the same suggestion the user already chose, and it is one row and
+    // one Set member either way now that parseSuggestions dedupes titles.
     setPhase('scanning')
     setError(null)
 
@@ -2499,6 +2519,22 @@ const SUG_SKELETON_WIDTHS = [72, 88, 61, 79, 68]
  * are decorative and hidden from assistive tech, or a screen reader narrates
  * five empty rows instead of one status line.
  *
+ * It also carries an ELAPSED-TIME caption, because `SCAN_TIMEOUT_MS` is 180s
+ * and five motionless bars for three minutes claim "hung" rather than
+ * "working" — the loading rule's purpose is that the state must not make a
+ * false claim, and the shimmer alone cannot distinguish a running scan from a
+ * wedged one. Three properties of that caption are load-bearing:
+ *
+ * - It sits INSIDE the existing `role="status"` region. A second live region
+ *   would compete with the first for the same announcement.
+ * - The ticking number is `aria-hidden`, so the announced text stays the one
+ *   static sentence while only the visual number moves. Left exposed, a
+ *   per-second update would queue 180 announcements at a screen reader.
+ * - The interval is owned by THIS component, which is mounted only while
+ *   `phase === 'scanning'`. That is what makes "the ticker must not run in any
+ *   other phase" structural rather than a condition someone has to remember:
+ *   leaving the phase unmounts the component and the cleanup clears it.
+ *
  * NOTE it is rendered BEFORE the scan is issued, not after. `scanDigest` runs
  * a fully synchronous digest on the single-threaded host, so the first call
  * blocks every other RPC for seconds — with no placeholder up first, the tab
@@ -2506,6 +2542,20 @@ const SUG_SKELETON_WIDTHS = [72, 88, 61, 79, 68]
  * @returns the loading placeholder for the suggestion pane.
  */
 function SuggestSkeleton(): React.JSX.Element {
+  const [elapsed, setElapsed] = React.useState(0)
+  React.useEffect(() => {
+    // Off the mount time rather than by incrementing a counter: a throttled
+    // background tab fires intervals late and irregularly, so counting ticks
+    // would under-report exactly when the wait is longest.
+    const started = Date.now()
+    const timer = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - started) / 1000))
+    }, 1000)
+    return () => {
+      clearInterval(timer)
+    }
+  }, [])
+
   return (
     <div role="status" aria-live="polite" aria-busy="true">
       <span className="dshtd-sronly">Scanning the workspace for suggestions…</span>
@@ -2526,6 +2576,12 @@ function SuggestSkeleton(): React.JSX.Element {
           </div>
         </div>
       ))}
+      {/* aria-hidden covers the WHOLE caption, not just the number: the
+          sr-only line above already says what is happening, so re-announcing
+          the same sentence every second adds nothing but noise. */}
+      <span className="dshtd-sug-elapsed" aria-hidden="true">
+        Scanning the workspace… {elapsed}s
+      </span>
     </div>
   )
 }

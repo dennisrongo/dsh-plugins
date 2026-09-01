@@ -109,6 +109,19 @@ function unfence(raw: string): string {
  * a result rather than throwing, so the modal can offer Refresh instead of
  * crashing the tab.
  *
+ * Titles are DEDUPED, case-insensitively after trimming, and models do repeat
+ * themselves. That is not cosmetic: downstream the title is the suggestion's
+ * identity — the modal keys each row by it and holds its checked set as a
+ * `Set<string>` of titles — so two rows sharing one title collide twice over.
+ * One checkbox toggles both, and "Add selected" writes the same task into the
+ * backlog twice from a single click. Keying rows by index would silence the
+ * React warning and fix neither. `Add retry` and `add retry  ` are the same
+ * suggestion to a user, hence the fold; the FIRST occurrence is kept.
+ *
+ * The dedupe runs BEFORE `MAX_SUGGESTIONS` counts an entry, so a response full
+ * of repeats still yields up to 12 DISTINCT ideas rather than 12 minus however
+ * often the model repeated itself.
+ *
  * @param raw - the file contents as written by the scan session.
  * @returns the validated suggestions, or a human-readable reason it failed.
  */
@@ -134,6 +147,7 @@ export function parseSuggestions(
   }
 
   const suggestions: Suggestion[] = []
+  const seen = new Set<string>()
   for (const entry of list) {
     if (entry === null || typeof entry !== 'object') continue
     const row = entry as Record<string, unknown>
@@ -141,13 +155,20 @@ export function parseSuggestions(
     // A titleless suggestion has nothing to show in a row, and inventing a
     // title would put a blank task in the backlog. Drop it.
     if (title.length === 0) continue
+    // Clamped for the same reason every sibling boundary clamps (index.ts,
+    // client.tsx, cli.ts): a suggestion is accepted into the backlog, where
+    // the stored caps are MAX_TEXT/MAX_DESC. This is the only boundary whose
+    // input is MODEL-generated, so it is the one most likely to run long.
+    const stored = title.slice(0, MAX_TEXT)
+    // Keyed off the STORED title, not the raw one: the clamp is what the modal
+    // renders and keys rows by, so two titles differing only past MAX_TEXT are
+    // one row on screen and must be one row here.
+    const key = stored.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
     const evidence = typeof row.evidence === 'string' ? row.evidence.trim().slice(0, MAX_LABEL) : ''
     suggestions.push({
-      // Clamped for the same reason every sibling boundary clamps (index.ts,
-      // client.tsx, cli.ts): a suggestion is accepted into the backlog, where
-      // the stored caps are MAX_TEXT/MAX_DESC. This is the only boundary whose
-      // input is MODEL-generated, so it is the one most likely to run long.
-      title: title.slice(0, MAX_TEXT),
+      title: stored,
       rationale: typeof row.rationale === 'string' ? row.rationale.trim().slice(0, MAX_DESC) : '',
       priority: toPriority(row.priority),
       // Absent optional fields are ABSENT KEYS, never '', matching TodoItem.

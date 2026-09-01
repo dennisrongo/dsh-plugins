@@ -1273,6 +1273,48 @@ assert.equal(m.isDone(m.parseItems('[{"id":"a","title":"hi"}]')[0]), false, 'a m
   assert.ok(skel[0].includes('aria-hidden="true"'),
     'the decorative skeleton rows must be hidden from assistive tech')
 
+  // 6b. The skeleton carries an ELAPSED-TIME caption. SCAN_TIMEOUT_MS is 180s,
+  //     and five motionless bars for three minutes claim "hung", not "working"
+  //     — a loading state making a false claim about state, which is the thing
+  //     the repo's loading rule exists to prevent. The ticker must therefore
+  //     exist and be visible in the pane.
+  assert.ok(/Scanning the workspace/.test(skel[0]),
+    'the skeleton must caption what it is waiting for')
+  assert.ok(/\{elapsed\}s|\$\{elapsed\}s/.test(skel[0]),
+    'the skeleton must show elapsed seconds, or a 180s wait reads as hung')
+
+  //     It lives INSIDE the existing role="status" region — a second live
+  //     region would compete with the first — and the ticking number is
+  //     aria-hidden, or a per-second update spams a screen reader with 180
+  //     announcements. The announced text stays static; only the visual number
+  //     moves.
+  const statusOpen = skel[0].indexOf('role="status"')
+  const captionAt = skel[0].search(/className="dshtd-sug-elapsed"/)
+  assert.ok(captionAt !== -1, 'the elapsed caption must ship with its own class')
+  assert.ok(statusOpen !== -1 && statusOpen < captionAt,
+    'the elapsed caption must sit INSIDE the existing status region, not in a second one')
+  assert.equal((skel[0].match(/role="status"/g) ?? []).length, 1,
+    'exactly one live region — a second would compete with the first')
+  assert.ok(/className="dshtd-sug-elapsed"[^>]*aria-hidden="true"/.test(skel[0]),
+    'the ticking caption must be aria-hidden — 180 announcements is not a status')
+
+  //     Caption row styling follows the small-surface rule and the package's
+  //     own convention: 12px on an 18px line, tertiary tone, exactly as
+  //     .dshtd-sug-status is declared. Pinned as a real RULE for the same
+  //     reason as check 1 — the class literal ships either way.
+  assert.ok(/\.dshtd-sug-elapsed \{[^}]*font-size: 12px[^}]*line-height: 18px/.test(flat),
+    'the elapsed caption must be 12px on an 18px line, like every caption here')
+  assert.ok(/\.dshtd-sug-elapsed \{[^}]*color: var\(--td-caption\)/.test(flat),
+    'the elapsed caption must use the tertiary caption tone')
+
+  // 6c. The ticker must be cleaned up on unmount and must not run outside the
+  //     scanning phase. SuggestSkeleton renders ONLY while scanning, so
+  //     unmount-cleanup is what enforces both — an interval without a returned
+  //     disposer keeps firing setState on a dead component for three minutes.
+  assert.ok(/setInterval\(/.test(skel[0]), 'the elapsed caption needs a ticker')
+  assert.ok(/return \(\) => \{?\s*(window\.)?clearInterval\(/.test(skel[0]),
+    'the elapsed ticker must be cleared on unmount, or it outlives the scan')
+
   // 7. The skeleton is rendered BEFORE the blocking call is issued. scanDigest
   //    runs a fully synchronous digest on the single-threaded host, so with the
   //    placeholder armed after the await the tab freezes rather than showing

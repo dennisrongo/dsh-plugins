@@ -223,5 +223,67 @@ test('the list is capped', () => {
   assert.equal(out.suggestions.length, 12)
 })
 
+// --- duplicate titles ------------------------------------------------------
+// A title is the IDENTITY of a suggestion downstream: client.tsx keys each row
+// by it and holds the checked set as a Set<string> of titles. Two rows sharing
+// a title therefore collide twice over — one checkbox toggles both, and "Add
+// selected" writes the same task twice from one click. Dropping the duplicate
+// here is what fixes both at once, and stops it reaching the backlog at all.
+
+test('an exactly duplicated title is dropped', () => {
+  const raw = JSON.stringify([
+    { title: 'Add retry logic', rationale: 'first', priority: 'p1' },
+    { title: 'Add retry logic', rationale: 'second', priority: 'p3' },
+    { title: 'Other', rationale: 'r', priority: 'p2' },
+  ])
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 2)
+  // The FIRST occurrence is kept, so the earliest-ranked suggestion survives.
+  assert.equal(out.suggestions[0].title, 'Add retry logic')
+  assert.equal(out.suggestions[0].rationale, 'first')
+  assert.equal(out.suggestions[1].title, 'Other')
+})
+
+test('case and whitespace variants of a title collapse to one', () => {
+  // `Add retry` and `add retry  ` are the same suggestion to a user, and the
+  // title is already trimmed before it is stored — so matching must be
+  // case-insensitive on the trimmed text or the collision survives the fix.
+  const raw = JSON.stringify([
+    { title: 'Add retry', rationale: 'r', priority: 'p2' },
+    { title: '  add retry  ', rationale: 'r', priority: 'p2' },
+    { title: 'ADD RETRY', rationale: 'r', priority: 'p2' },
+  ])
+  const out = parseSuggestions(raw)
+  assert.equal(out.ok, true)
+  assert.equal(out.suggestions.length, 1)
+  assert.equal(out.suggestions[0].title, 'Add retry')
+})
+
+test('distinct titles are all preserved', () => {
+  // The guard against over-collapsing: a dedupe that fused near-neighbours
+  // would silently throw away suggestions the scan paid for.
+  const raw = JSON.stringify([
+    { title: 'Add retry', rationale: 'r', priority: 'p2' },
+    { title: 'Add retry logic', rationale: 'r', priority: 'p2' },
+    { title: 'Add retries', rationale: 'r', priority: 'p2' },
+    { title: 'Retry', rationale: 'r', priority: 'p2' },
+  ])
+  const out = parseSuggestions(raw)
+  assert.equal(out.suggestions.length, 4)
+})
+
+test('the cap still fills to 12 DISTINCT entries when duplicates are present', () => {
+  // Dedupe must happen BEFORE the cap counts an entry. Counting first would
+  // spend cap slots on rows that are then discarded, so a duplicate-heavy
+  // response would yield 12-minus-the-duplicates instead of 12 usable ideas.
+  const dupes = Array.from({ length: 20 }, () => ({ title: 'same', rationale: 'r', priority: 'p2' }))
+  const distinct = Array.from({ length: 20 }, (_, i) => ({ title: 'u' + i, rationale: 'r', priority: 'p2' }))
+  const out = parseSuggestions(JSON.stringify([...dupes, ...distinct]))
+  assert.equal(out.suggestions.length, 12)
+  const titles = out.suggestions.map((s) => s.title.toLowerCase())
+  assert.equal(new Set(titles).size, 12, 'every capped entry must be distinct')
+})
+
 process.exitCode = failures === 0 ? 0 : 1
 console.log(failures === 0 ? 'suggest: all passed' : `suggest: ${failures} failed`)
