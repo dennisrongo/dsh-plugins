@@ -10,16 +10,38 @@
 
 Injects the [Superpowers](https://github.com/obra/superpowers) methodology bootstrap
 (`skills/using-superpowers/SKILL.md`) into every dsh agent's system prompt as an ordered,
-persistent section.
+persistent section — **and serves the 14 Superpowers skills to dsh's skill catalog**, so
+they work on a machine that has never cloned anything.
 
-Upstream harnesses deliver this via a SessionStart hook that must re-fire on
+Upstream harnesses deliver the bootstrap via a SessionStart hook that must re-fire on
 `startup|clear|compact`. dsh has no hook shell, but its system prompt is a layered, ordered
 section registry that is **reassembled after compaction** — so a single registered section
 covers all three upstream trigger points for the life of the session, with no gap between
 session start and the first compaction.
 
-**Nothing from upstream is vendored here.** This package is a thin adapter; the section body
-is read from your own clone at startup.
+Both halves are independent: neither a missing clone nor a profile without a skills service
+can take the other down, and neither stops dsh booting.
+
+### Where the skills come from
+
+The plugin serves whichever it finds first — your clone if you have one, otherwise a pinned
+snapshot bundled with the package:
+
+```
+superpowersRoot config → SUPERPOWERS_ROOT → probe of ~/… → bundled vendor/ snapshot
+```
+
+**A real clone always wins**, so `git pull` keeps working exactly as before. The snapshot is
+only the floor that makes a fresh install work — without it, a machine with no clone gets a
+silently empty catalog, since dsh reports a missing skills root as an empty list rather than
+an error.
+
+The bootstrap prose is vendored only in that snapshot
+(`obra/superpowers@b36e082`, MIT © 2025 Jesse Vincent — see `vendor/PROVENANCE`). When the
+plugin resolves your clone instead, nothing from upstream is vendored at all.
+
+> **Already using `link-superpowers-skills.mjs`?** Set `skillProvider: false`, or the same 14
+> skills are listed twice — once by the junctions, once by this provider.
 
 ## Updating the plugin
 
@@ -68,11 +90,15 @@ Resolution order, first hit wins:
 3. a probe of common clone locations under your home directory — `~/superpowers`,
    `~/src`, `~/code`, `~/dev`, `~/git`, `~/repos`, `~/Projects`, `~/Documents`,
    `~/Documents/GitHub`, all derived from `homedir()` so they work on any platform
+4. the **bundled `vendor/` snapshot**, which is always present
 
-If none contains `skills/using-superpowers/SKILL.md`, the plugin warns and registers
-nothing — dsh still boots and the skills still work as catalog entries; only the
-mandatory-first bootstrap is missing. Setting `superpowersRoot` explicitly is the reliable
-option; the probe list is a guess about where you keep clones.
+Because step 4 always succeeds, you get the bootstrap *and* the skills with no
+configuration at all. Set `superpowersRoot` when you want your own clone to be authoritative
+— it takes precedence, and then `git pull` (plus a profile restart) is the whole update
+path. The probe list is only a guess about where you keep clones.
+
+The old "no superpowers clone found" warning is now reachable only when a root you
+configured explicitly is wrong.
 
 ## Install (profile-level)
 
@@ -101,9 +127,10 @@ an unrelated plugin by another author, so `add dsh-superpowers` fetches theirs, 
 |---|---|---|
 | `superpowersRoot` | `""` → resolved (see above) | repo root containing `skills/using-superpowers/SKILL.md` |
 | `order` | `-50` | prompt section order (persona is 0; we sit before it) |
-| `enabled` | `true` | master switch; false silences both sections |
+| `enabled` | `true` | master switch; false silences every section and the skill provider |
 | `askWithOptions` | `true` | register the "offer choices as choices" section (below) |
 | `askWithOptionsOrder` | `-45` | order for that section |
+| `skillProvider` | `true` | serve the skills to dsh's catalog; set `false` if you deliver them another way |
 
 ## Also: "offer choices as choices"
 
@@ -132,11 +159,18 @@ Set `askWithOptions: false` to drop it without touching the bootstrap.
 pnpm test    # offline, no harness, no clone needed
 ```
 
-Every failure mode in this plugin is **silent by design** — a missing clone, a bad root and
-`enabled: false` all register nothing and let dsh boot normally. So a regression breaks
-nothing visibly; the bootstrap just stops reaching the model. The suite pins section
-identity and order, frontmatter stripping, the resolution precedence (config > env >
-probe), the non-fatal warning path, and that registration goes through `ctx.effect`.
+Every failure mode in this plugin is **silent by design** — a missing clone, a bad root,
+`enabled: false`, an absent skills service and a malformed skill bundle all register nothing
+and let dsh boot normally. So a regression breaks nothing visibly; the bootstrap and the
+catalog just stop reaching the model.
+
+35 checks pin section identity and order, frontmatter stripping, the resolution precedence
+(config > env > probe > vendored snapshot), the non-fatal warning path, the skill-provider
+contract, and that registration goes through `ctx.effect`.
+
+`test/sabotage.mjs` then breaks `lib/index.js` 16 different ways and requires the suite to go
+red each time — a check that has never failed is decoration. Two checks escaped the first
+run and were rewritten; see `AGENTS.md`.
 
 ## Notes
 

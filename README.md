@@ -20,7 +20,7 @@ The desktop keeps its own `DSH_HOME` (`%APPDATA%\dsh-desktop\harness` on Windows
 | [`dsh-git`](plugins/dsh-git) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-git) | source-control tab — changes, history, branches, stash, worktrees | host + client | `dshGit/status`, `diff`, `commitFiles`, `commitDiff`, `stage`, `commit`, `init`, `sync`, `suggestMessage`, `changeToken`, `refs`, `branch`, `merge`, `stash`, `worktree`, `suggestBranch`, `stashFiles`, `stashDiff` |
 | [`dsh-weather`](plugins/dsh-weather) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-weather) | weather bar in the shell overlay | client only | — |
 | [`dsh-headless-plus`](plugins/dsh-headless-plus) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-headless-plus) | `--model` / `--resume` / `--continue` for the headless app | CLI app | — |
-| [`dsh-superpowers`](plugins/dsh-superpowers) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) | Superpowers methodology as a system-prompt section, plus a nudge to ask via `ask_user_question` instead of prose | host | — |
+| [`dsh-superpowers`](plugins/dsh-superpowers) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-superpowers) | Superpowers methodology as a system-prompt section **and a skill provider** (bundled, no clone needed), plus a nudge to ask via `ask_user_question` instead of prose | host | — |
 | [`dsh-skills`](plugins/dsh-skills) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-skills) | the [`@dennisrongo/skills`](https://www.npmjs.com/package/@dennisrongo/skills) library as an installable skill catalog | host | — |
 | [`dsh-mission-control`](plugins/dsh-mission-control) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-mission-control) | fleet dashboard overlay — sessions, swarm tree, token burn, permission inbox, pomodoro timer | host + client | `dshMissionControl/load`, `save` |
 | [`dsh-theme`](plugins/dsh-theme) | [npm](https://www.npmjs.com/package/@dennisrongo/dsh-theme) | twelve themes, eight accents, contrast and scale sliders, and three fonts with two bundled, live preview | client + tiny host | — |
@@ -151,7 +151,11 @@ Makes the [Superpowers](https://github.com/obra/superpowers) methodology mandato
 
 **A second, unrelated section: "offer choices as choices".** dsh can already render a real picker — `ask_user_question` takes `options[]` with a label and a one-line description, plus `multi_select`, and the shipped question UI turns that into a radiogroup or a checkbox group. What it cannot do is turn prose into controls: a structured surface exists only for an actual `question/requested` frame, and a tool call can only happen *during* a turn. So an answer that ends "A or B?" in markdown stays markdown forever, and you pay for it by typing a reply the model then has to interpret. This section asks for the tool in exactly that moment, recommended option first. It stands down in plan mode, where dsh's own rules make `exit_plan_mode` the single interaction and say so in terms that override later guidance. It is hand-written rather than read from the clone, and registered whether or not that clone exists — `askWithOptions: false` drops it.
 
-**Nothing is vendored.** The section body is read from your own clone of the upstream repo at profile start, located via `superpowersRoot`, then `SUPERPOWERS_ROOT`, then a probe of common clone paths under `$HOME`. So `git pull` + a profile restart is the entire update path. To have the clone's *skills catalog* follow a pull too, instead of drifting as copies:
+**It also serves the skills themselves.** The prompt section tells the model to invoke skills before responding; the catalog is what makes them nameable, and the two used to fail independently. A machine with the section but no catalog is the worst state of the three — the model is told to use skills, has no list of what exists, guesses a name, and reports that skills are missing, while loading by exact name works the whole time. So the plugin registers a skill provider as well, at rank 550 (below `dsh-skills`' 600, so the curated library wins a name collision).
+
+**Resolution, first hit wins:** `superpowersRoot` → `SUPERPOWERS_ROOT` → a probe of common clone paths under `$HOME` → a **bundled snapshot** of the 14 upstream skills (`obra/superpowers@b36e082`, MIT). A real clone always wins, so `git pull` + a profile restart remains the update path when you have one; the snapshot is only the floor that makes a fresh machine work, because dsh reports a missing skills root as an empty list rather than an error. Refresh it with `node scripts/vendor-superpowers.mjs`, which refuses a dirty clone so the recorded provenance cannot become a lie.
+
+Already junctioning the skills into `<agentsHome>/skills`? Set `skillProvider: false`, or they are listed twice:
 
 ```bash
 node scripts/link-superpowers-skills.mjs     # --dry-run to preview, --restore to undo
@@ -505,9 +509,13 @@ You still edit `cordis.patch.yml` to **configure** a row, which is what a bare `
     superpowersRoot: /absolute/path/to/superpowers
 ```
 
-`dsh-superpowers` needs a clone of [obra/superpowers](https://github.com/obra/superpowers) on
-disk. To keep its skills catalog current on a `git pull` rather than drifting as copies, also run
-`node scripts/link-superpowers-skills.mjs` (cross-platform).
+`dsh-superpowers` **no longer needs a clone** — it ships a pinned snapshot of the 14
+[obra/superpowers](https://github.com/obra/superpowers) skills and serves them itself, so the
+config row above is optional. Point `superpowersRoot` at a clone when you want that clone to be
+authoritative; it takes precedence over the snapshot, and `git pull` + a profile restart is then
+the update path. Only if you prefer delivering the skills as junctions under `<agentsHome>/skills`
+do you need `node scripts/link-superpowers-skills.mjs` — and in that case set
+`skillProvider: false`, or the same skills appear twice.
 
 `dsh-headless-plus` replaces the stock headless app, so its bundle disables the two stock rows
 for you — it needs a profile built on `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless`.

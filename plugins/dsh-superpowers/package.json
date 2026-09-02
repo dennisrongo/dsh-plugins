@@ -1,7 +1,7 @@
 {
   "name": "@dennisrongo/dsh-superpowers",
-  "version": "0.3.0",
-  "description": "Superpowers methodology bootstrap for dsh: injects the using-superpowers skill as a persistent system-prompt section (session start + compaction-safe)",
+  "version": "0.4.0",
+  "description": "Superpowers for dsh: injects the using-superpowers bootstrap as a persistent system-prompt section (session start + compaction-safe) and serves the Superpowers skills to the skill catalog, bundled so a machine with no clone still gets them",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
@@ -13,16 +13,20 @@
     "lib",
     "!lib/client.body.cjs",
     "!lib/*.test.mjs",
+    "vendor",
     "README.md",
     "cordis.patch.yml"
   ],
   "scripts": {
-    "test": "node test/smoke.mjs"
+    "test": "node test/smoke.mjs && node test/sabotage.mjs"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dennisrongo/dsh-plugins.git",
     "directory": "plugins/dsh-superpowers"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
