@@ -1,0 +1,49 @@
+Vendored snapshot of the Superpowers skill catalog.
+
+    source   https://github.com/obra/superpowers
+    commit   b36e0829c6d0140e93cfef2ca599b1b07d4a7797
+    date     2026-08-12T09:53:21-07:00
+    skills   14
+    files    51 under skills/ (plus LICENSE and this file)
+    bytes    370875 under skills/, as copied from the clone
+    licence  MIT, Copyright (c) 2025 Jesse Vincent (see ./LICENSE)
+
+LINE ENDINGS
+
+This repo pins `* text=auto eol=lf`, so files that arrived from the clone with
+CRLF are stored and checked out as LF. The CONTENT matches the commit above; the
+line endings may not, and the byte count above is the pre-normalisation figure.
+That is harmless here — these are markdown and helper scripts read by the
+plugin, not bytes served verbatim to a browser the way lib/client.js is.
+
+WHY THIS EXISTS
+
+The plugin's system-prompt half is an adapter over YOUR clone and vendors
+nothing. This snapshot serves the other half: the skill catalog, on a machine
+that has no clone.
+
+There is no npm package to depend on. `@obra/superpowers` does not exist, and
+the bare `superpowers` name on npm (0.0.2) is an unrelated package — the same
+scope trap documented twice in this repo's AGENTS.md files. So the bodies ship
+here, inside the plugin, or fresh installs get a silently empty catalog.
+
+RESOLUTION ORDER
+
+This snapshot is tried LAST:
+
+    superpowersRoot config -> SUPERPOWERS_ROOT env -> homedir probe -> vendor/
+
+That is deliberately the mirror image of dsh-skills, which tries its bundled
+dependency BEFORE its probe. There the dependency is the intended path; here a
+real clone is, and this is the fallback that makes a fresh install work. A live
+clone always wins, so `git pull` keeps behaving the way it always has.
+
+REFRESHING
+
+    node scripts/vendor-superpowers.mjs                 # from the repo root
+    node scripts/vendor-superpowers.mjs --dry-run
+    node scripts/vendor-superpowers.mjs --root=<path>
+
+The script refuses a dirty working tree: vendoring uncommitted edits would ship
+them as though they were upstream, and the provenance above would be a lie.
+Rewrite this file only through that script.
