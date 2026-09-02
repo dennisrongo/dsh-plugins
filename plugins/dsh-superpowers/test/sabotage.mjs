@@ -65,6 +65,22 @@ const original = readFileSync(TARGET, 'utf8')
 let caught = 0
 const escaped = []
 
+// The suite must be GREEN before any mutation, or every "caught" below is
+// meaningless: this harness reads a non-zero exit as proof the check fired, and
+// a suite that cannot even start — a missing dependency in a fresh clone, say —
+// exits non-zero for every mutation and fakes a perfect score. Observed exactly
+// that in a bare `git clone` with no `pnpm install`: 16/16 "caught" while the
+// real failure was `Cannot find package 'yaml'`.
+try {
+  execFileSync(process.execPath, [SUITE], { stdio: 'pipe', encoding: 'utf8' })
+} catch (error) {
+  console.error('sabotage: the suite is not green BEFORE mutating anything.')
+  console.error('          Every "caught" would be an artefact of that failure.')
+  console.error(String(error.stdout ?? '').trim().split('\n').slice(-3).join('\n'))
+  console.error(String(error.stderr ?? '').trim().split('\n').slice(-3).join('\n'))
+  process.exit(1)
+}
+
 try {
   for (const [label, find, replace] of SABOTAGES) {
     if (!original.includes(find)) {
