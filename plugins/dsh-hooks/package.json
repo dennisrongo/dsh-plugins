@@ -1,6 +1,6 @@
 {
   "name": "@dennisrongo/dsh-hooks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Code-compatible hook lifecycle for DeepSeek Harness (dsh) — run shell commands at PreToolUse, PostToolUse, UserPromptSubmit, SessionStart/End, Stop, SubagentStop and Notification",
   "type": "module",
   "license": "MIT",
