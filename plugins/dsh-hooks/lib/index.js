@@ -51,7 +51,6 @@ var __privateMethod = (obj, member, method) => (__accessCheck(obj, member, "acce
 import { Service } from "@deepseek-ai/cordis";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 
 // src/config.ts
 import { readFileSync, statSync } from "node:fs";
@@ -424,6 +423,13 @@ __name(runHooks, "runHooks");
 // src/index.ts
 var MAX_STOP_CONTINUATIONS = 5;
 var NAMESPACE = "dsh-hooks";
+function settingsNamespace(value) {
+  if (!/^[a-z][a-z0-9-]*$/.test(value)) {
+    throw new TypeError(`settings namespace "${value}" must match /^[a-z][a-z0-9-]*$/`);
+  }
+  return value;
+}
+__name(settingsNamespace, "settingsNamespace");
 var EMPTY_SETTINGS = {
   enabled: true,
   shell: [],

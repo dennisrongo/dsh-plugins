@@ -35,7 +35,10 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+// Type-only: keeps dsh-settings' `Context.settings` augmentation and the
+// `SettingsNamespace` brand in the program without a named value import
+// (the value export does not exist on all host versions — see below).
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { PreToolDecision, PostToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
@@ -88,6 +91,25 @@ const MAX_STOP_CONTINUATIONS = 5
 
 /** The settings namespace this plugin owns; also its config file section name. */
 const NAMESPACE = 'dsh-hooks'
+
+/**
+ * Validate a settings-namespace name.
+ *
+ * Upstream moved this check around between releases: some versions export a
+ * `settingsNamespace()` brand helper from `@deepseek-ai/dsh-settings`, others
+ * (0.1.2-rc.1) validate inside `register()` instead and dropped the export —
+ * importing it there is a boot-fatal named-import error. Both versions apply
+ * the identical pattern (`/^[a-z][a-z0-9-]*$/`), so validating here with that
+ * pattern keeps the call sites identical and the plugin loadable on either
+ * host. Declared peers stay unchanged: `@deepseek-ai/dsh-settings` remains a
+ * runtime dependency via `settings.register`, just no longer a named import.
+ */
+function settingsNamespace(value: string): SettingsNamespace {
+  if (!/^[a-z][a-z0-9-]*$/.test(value)) {
+    throw new TypeError(`settings namespace "${value}" must match /^[a-z][a-z0-9-]*$/`)
+  }
+  return value as SettingsNamespace
+}
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
