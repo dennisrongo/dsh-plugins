@@ -4,7 +4,10 @@
   "description": "Git source-control tab for DeepSeek Harness (dsh) — changes, history, branches, merge, stash and worktrees for a workspace's repository",
   "type": "module",
   "license": "MIT",
-  "author": "Dennis Rongo",
+  "author": {
+    "name": "Dennis Rongo",
+    "url": "https://www.youtube.com/@codingmenace"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": {
@@ -92,5 +95,12 @@
   "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-git#readme",
   "bugs": {
     "url": "https://github.com/dennisrongo/dsh-plugins/issues"
-  }
+  },
+  "keywords": [
+    "ai-coding-agent",
+    "claude-code-alternative",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin"
+  ]
 }

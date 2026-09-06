@@ -39,5 +39,16 @@
   "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-skills#readme",
   "bugs": {
     "url": "https://github.com/dennisrongo/dsh-plugins/issues"
-  }
+  },
+  "author": {
+    "name": "Dennis Rongo",
+    "url": "https://www.youtube.com/@codingmenace"
+  },
+  "keywords": [
+    "ai-coding-agent",
+    "claude-code-alternative",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin"
+  ]
 }

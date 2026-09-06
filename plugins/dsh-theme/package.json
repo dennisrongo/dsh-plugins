@@ -4,7 +4,10 @@
   "description": "Themes, accents and font pairings for DeepSeek Harness (dsh) — ten curated palettes as ctx.theme override layers, with live whole-app preview in Settings",
   "type": "module",
   "license": "MIT",
-  "author": "Dennis Rongo",
+  "author": {
+    "name": "Dennis Rongo",
+    "url": "https://www.youtube.com/@codingmenace"
+  },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
@@ -60,5 +63,12 @@
   "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-theme#readme",
   "bugs": {
     "url": "https://github.com/dennisrongo/dsh-plugins/issues"
-  }
+  },
+  "keywords": [
+    "ai-coding-agent",
+    "claude-code-alternative",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin"
+  ]
 }

@@ -375,3 +375,11 @@ and a real control.
 which is also why **a backtick must never appear in the stylesheet's comments**:
 it is a template literal, so a stray one closes it early and silently truncates
 every rule after it.
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

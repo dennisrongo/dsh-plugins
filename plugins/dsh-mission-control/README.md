@@ -108,3 +108,11 @@ closure-factory convention, `ctx.slots.register` additive list entry,
 `save`.
 
 dsh is a fast-moving 0.1.x dev preview — re-verify seams on upgrade.
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

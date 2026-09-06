@@ -284,3 +284,11 @@ package into a profile; the host half (the first-paint bootstrap) needs a profil
 ## License
 
 MIT © Dennis Rongo
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

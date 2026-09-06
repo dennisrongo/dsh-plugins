@@ -4,7 +4,10 @@
   "description": "Weather bar for DeepSeek Harness (dsh) — current conditions at the bottom of the web UI via Open-Meteo, rendered into shell.overlay",
   "type": "module",
   "license": "MIT",
-  "author": "Dennis Rongo",
+  "author": {
+    "name": "Dennis Rongo",
+    "url": "https://www.youtube.com/@codingmenace"
+  },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
@@ -58,5 +61,12 @@
   "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-weather#readme",
   "bugs": {
     "url": "https://github.com/dennisrongo/dsh-plugins/issues"
-  }
+  },
+  "keywords": [
+    "ai-coding-agent",
+    "claude-code-alternative",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin"
+  ]
 }

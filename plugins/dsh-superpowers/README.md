@@ -182,3 +182,11 @@ run and were rewritten; see `AGENTS.md`.
   install. When this package is junctioned into a profile it resolves them through its own
   `node_modules/@deepseek-ai/*` — run `scripts/dev-link.ps1` to create those, or the
   harness fails to load the plugin with `ERR_MODULE_NOT_FOUND`.
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

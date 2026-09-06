@@ -147,3 +147,11 @@ Restart the profile afterwards — the Typert loader caches its per-package verd
 ## Requires
 
 `ctx.tools` and `ctx.workspaceRegistry`, both composed by `@deepseek-ai/dsh-web-app` by default, and `@deepseek-ai/dsh-plan-mode` on the agent roster — without plan mode there is no `exit_plan_mode` to capture, and the plugin sits inert rather than failing.
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

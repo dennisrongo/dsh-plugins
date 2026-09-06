@@ -67,3 +67,11 @@ catches it.
 `commander` is a real dependency; every `@deepseek-ai/*` is a peer supplied by your dsh install.
 
 See [AGENTS.md](AGENTS.md) for the mount rows, dev loop and verification recipe.
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

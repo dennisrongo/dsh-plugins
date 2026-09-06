@@ -4,7 +4,10 @@
   "description": "Durable plans for DeepSeek Harness (dsh) — captures every exit_plan_mode plan to <workspace>/.dsh/plans as markdown, opens a review window when one is presented, and keeps the history",
   "type": "module",
   "license": "MIT",
-  "author": "Dennis Rongo",
+  "author": {
+    "name": "Dennis Rongo",
+    "url": "https://www.youtube.com/@codingmenace"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": {
@@ -68,5 +71,12 @@
   "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-plan-board#readme",
   "bugs": {
     "url": "https://github.com/dennisrongo/dsh-plugins/issues"
-  }
+  },
+  "keywords": [
+    "ai-coding-agent",
+    "claude-code-alternative",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin"
+  ]
 }

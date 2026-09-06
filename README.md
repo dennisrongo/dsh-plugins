@@ -720,3 +720,11 @@ TROUBLESHOOTING.md   harness-level failure modes, mostly silent ones
 ## License
 
 MIT
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

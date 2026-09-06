@@ -4,7 +4,10 @@
   "description": "Claude Code-compatible hook lifecycle for DeepSeek Harness (dsh) — run shell commands at PreToolUse, PostToolUse, UserPromptSubmit, SessionStart/End, Stop, SubagentStop and Notification",
   "type": "module",
   "license": "MIT",
-  "author": "Dennis Rongo",
+  "author": {
+    "name": "Dennis Rongo",
+    "url": "https://www.youtube.com/@codingmenace"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": {
@@ -59,5 +62,12 @@
   "homepage": "https://github.com/dennisrongo/dsh-plugins/tree/main/plugins/dsh-hooks#readme",
   "bugs": {
     "url": "https://github.com/dennisrongo/dsh-plugins/issues"
-  }
+  },
+  "keywords": [
+    "ai-coding-agent",
+    "claude-code-alternative",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin"
+  ]
 }

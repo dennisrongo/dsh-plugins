@@ -124,3 +124,11 @@ Then restart the profile — the Typert loader caches its per-package verdict fo
 ## Requires
 
 `ctx.tools` and `ctx.subprocess`, both composed by `@deepseek-ai/dsh-web-app` by default. `ctx.settings` and `ctx.workspaceRegistry` are used when present and are **not** injected: a deployment composing neither still gets project-layer hooks and a working cwd-derived payload, rather than a service that never becomes injectable.
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

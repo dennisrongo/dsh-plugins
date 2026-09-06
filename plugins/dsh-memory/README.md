@@ -82,3 +82,11 @@ Restart the profile afterwards — the Typert loader caches its per-package verd
 ## Requires
 
 `ctx.workspaceRegistry` and `@deepseek-ai/dsh-agent-instructions`, both composed by the shipped presets. `ctx.commands` is picked up through a child fiber rather than injected, so a deployment that composes no command registry still gets the tab and the endpoints — it just has no `/remember`.
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).

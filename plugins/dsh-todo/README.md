@@ -487,3 +487,11 @@ original key is deliberately left in place rather than deleted.
 
 - The host half publishes a service, so it belongs to the profile's host
   composition — not to an agent preset.
+
+---
+
+## About the author
+
+Plugins and walkthroughs on [YouTube @codingmenace](https://www.youtube.com/@codingmenace) —
+I build AI coding tools in public, including DeepSeek Harness itself. More at
+[dennisrongo.com](https://dennisrongo.com/).
