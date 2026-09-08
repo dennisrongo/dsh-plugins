@@ -644,6 +644,58 @@ await test('turn:tests-missing is silenced by a test run in the same turn', () =
   assert.equal(engine.compute(withTests, CATALOG).some((h) => h.rule === 'turn:tests-missing'), false)
 })
 
+await test('nothing is suggested while a turn is running', () => {
+  const engine = new HintEngine()
+  const s = situation({ projectTypes: new Set(['dotnet']), lastPrompt: 'review my code', status: 'running' })
+  assert.deepEqual(engine.compute(s, CATALOG), [], 'a chip mid-turn is a control the user cannot act on')
+})
+
+await test('project chips show only before the first prompt', () => {
+  const engine = new HintEngine()
+  const fresh = engine.compute(situation({ projectTypes: new Set(['dotnet']), prompts: 0 }), CATALOG)
+  assert.ok(fresh.some((h) => h.rule === 'project:dotnet'))
+  const started = engine.compute(situation({ projectTypes: new Set(['dotnet']), prompts: 1 }), CATALOG)
+  assert.equal(started.some((h) => h.rule === 'project:dotnet'), false, 'work has started; the moment has passed')
+})
+
+await test('every chip carries an intent, and prompt rules echo the prompt', () => {
+  const engine = new HintEngine()
+  const hits = engine.compute(situation({ lastPrompt: 'Can you review my code before I push?' }), CATALOG)
+  assert.ok(hits.length > 0)
+  for (const h of hits) assert.ok(h.intent.length > 0, `${h.id} has an intent`)
+  const phrase = hits.find((h) => h.rule === 'prompt:phrase')
+  assert.equal(phrase.intent, 'Can you review my code before I push?')
+})
+
+await test('turn intents name the files the turn touched', () => {
+  const engine = new HintEngine()
+  const s = situation({
+    lastTurn: { ...emptyTurn(), edits: 3, paths: ['C:\\repo\\src\\Greeter.cs', '/repo/src/Calc.cs'] },
+    editedPaths: SOURCE_EDITS,
+  })
+  const review = engine.compute(s, CATALOG).find((h) => h.skill === 'code-review')
+  assert.equal(review.intent, 'review the changes from the last turn: Greeter.cs, Calc.cs')
+  const tests = engine.compute(s, CATALOG).find((h) => h.rule === 'turn:feature-done' && /test/.test(h.skill))
+  assert.equal(tests.intent, 'add tests for the changes from the last turn: Greeter.cs, Calc.cs')
+})
+
+await test('an intent is one line and capped', () => {
+  const engine = new HintEngine()
+  const long = 'review my code ' + 'x'.repeat(500) + '\n\nsecond paragraph'
+  const hit = engine.compute(situation({ lastPrompt: long }), CATALOG).find((h) => h.rule === 'prompt:phrase')
+  assert.ok(hit.intent.length <= 200)
+  assert.equal(hit.intent.includes('\n'), false)
+})
+
+await test('observeToolCall remembers the edited paths for the intent, without duplicates', () => {
+  const turn = emptyTurn()
+  observeToolCall('write', { file_path: 'C:/p/A.cs' }, false, turn)
+  observeToolCall('write', { file_path: 'C:/p/A.cs' }, false, turn)
+  observeToolCall('str_replace_editor', { command: 'str_replace', path: 'C:/p/B.cs' }, false, turn)
+  assert.deepEqual(turn.paths, ['C:/p/A.cs', 'C:/p/B.cs'])
+  assert.equal(turn.edits, 3)
+})
+
 await test('turn:feature-done survives early tool errors when the last call succeeded', () => {
   // The live case: `dotnet --version` failed, web search failed, then three
   // writes and a green build. That turn produced a working MCP server and got
@@ -725,7 +777,8 @@ await test('the cap is honoured and the order is priority then id', () => {
     editedPaths: SOURCE_EDITS,
     prompts: 40,
   })
-  // Eight rules fire here. The cap is what keeps the strip one row.
+  // Five rules fire here (project rules stand down once work has started).
+  // The cap is what keeps the row one line.
   assert.equal(new HintEngine({ maxHints: 2 }).compute(s, CATALOG).length, 2)
 
   const hit = new HintEngine({ maxHints: 3 }).compute(s, CATALOG)
@@ -767,10 +820,10 @@ await test('one skill is never offered twice, and the sharper rule wins', () => 
 
 await test('disableRules silences one rule and leaves the rest', () => {
   const engine = new HintEngine({ disableRules: ['session:long'] })
-  const s = situation({ prompts: 40, projectTypes: new Set(['dotnet']) })
+  const s = situation({ prompts: 40, lastPrompt: 'please review my code' })
   const hit = engine.compute(s, CATALOG)
   assert.equal(hit.some((h) => h.rule === 'session:long'), false)
-  assert.ok(hit.some((h) => h.rule === 'project:dotnet'))
+  assert.ok(hit.some((h) => h.rule === 'prompt:phrase'))
 })
 
 await test('maxHints is clamped into 1..MAX_MAX_HINTS', () => {

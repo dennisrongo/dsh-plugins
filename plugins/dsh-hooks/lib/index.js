@@ -91,6 +91,8 @@ var RECENT_LIMIT = 200;
 // plugins/dsh-hooks/src/hints.ts
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+var MAX_TURN_PATHS = 6;
+var MAX_INTENT = 200;
 var DEFAULT_MAX_HINTS = 3;
 var MAX_MAX_HINTS = 6;
 var MAX_REASON = 120;
@@ -205,6 +207,15 @@ function matchesPrompt(prompt, skill) {
   return void 0;
 }
 __name(matchesPrompt, "matchesPrompt");
+function lastTurnFiles(s) {
+  return s.lastTurn.paths.map((path) => path.split(/[\\/]/).pop() ?? path).join(", ");
+}
+__name(lastTurnFiles, "lastTurnFiles");
+function lastTurnChanges(s) {
+  const files = lastTurnFiles(s);
+  return files === "" ? "the changes from the last turn" : `the changes from the last turn: ${files}`;
+}
+__name(lastTurnChanges, "lastTurnChanges");
 var SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|cs|fs|vb|py|rb|go|rs|java|kt|swift|php|c|h|cc|cpp|hpp|m|mm|sql|sh|ps1|vue|svelte|razor|cshtml)$/i;
 var TEST_PATH = /(^|[\\/])(tests?|__tests__|spec)([\\/]|$)|\.(test|spec)\.[a-z]+$/i;
 function hasSourceEdits(paths) {
@@ -223,7 +234,8 @@ var RULES = [
     title: ".NET project",
     reason: "A .csproj/.sln is in this workspace.",
     patterns: [/dotnet/i],
-    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("dotnet"), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.prompts === 0 && s.projectTypes.has("dotnet"), "fires"),
+    intent: /* @__PURE__ */ __name(() => "for the .NET project in this workspace", "intent")
   },
   {
     id: "project:nextjs",
@@ -231,7 +243,8 @@ var RULES = [
     title: "Next.js project",
     reason: "package.json depends on next.",
     patterns: [/nextjs|next-js/i],
-    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("nextjs"), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.prompts === 0 && s.projectTypes.has("nextjs"), "fires"),
+    intent: /* @__PURE__ */ __name(() => "for the Next.js app in this workspace", "intent")
   },
   {
     id: "project:tauri",
@@ -239,7 +252,8 @@ var RULES = [
     title: "Tauri project",
     reason: "A Tauri config is in this workspace.",
     patterns: [/tauri/i],
-    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("tauri"), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.prompts === 0 && s.projectTypes.has("tauri"), "fires"),
+    intent: /* @__PURE__ */ __name(() => "for the Tauri app in this workspace", "intent")
   },
   {
     id: "project:remotion",
@@ -247,7 +261,8 @@ var RULES = [
     title: "Remotion project",
     reason: "package.json depends on remotion.",
     patterns: [/remotion-best-practices|^remotion/i],
-    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("remotion"), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.prompts === 0 && s.projectTypes.has("remotion"), "fires"),
+    intent: /* @__PURE__ */ __name(() => "for the Remotion project in this workspace", "intent")
   },
   {
     id: "project:shadcn",
@@ -255,7 +270,8 @@ var RULES = [
     title: "shadcn/ui project",
     reason: "components.json names the shadcn schema.",
     patterns: [/shadcn/i],
-    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("shadcn"), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.prompts === 0 && s.projectTypes.has("shadcn"), "fires"),
+    intent: /* @__PURE__ */ __name(() => "for the shadcn/ui components in this workspace", "intent")
   },
   {
     id: "prompt:bug",
@@ -266,7 +282,8 @@ var RULES = [
     // Only when the generic phrase rule found nothing: a skill that advertised
     // "debug this" already produced a sharper hint, and two chips for the same
     // intent is one chip too many.
-    fires: /* @__PURE__ */ __name((s, phraseHit) => !phraseHit && BUG_WORDS.test(s.lastPrompt), "fires")
+    fires: /* @__PURE__ */ __name((s, phraseHit) => !phraseHit && BUG_WORDS.test(s.lastPrompt), "fires"),
+    intent: /* @__PURE__ */ __name((s) => s.lastPrompt, "intent")
   },
   {
     id: "prompt:plan",
@@ -274,7 +291,8 @@ var RULES = [
     title: "Worth planning first",
     reason: "Your prompt is about design rather than a change.",
     patterns: [/plan-and-build|writing-plans|brainstorming/i],
-    fires: /* @__PURE__ */ __name((s, phraseHit) => !phraseHit && PLAN_WORDS.test(s.lastPrompt), "fires")
+    fires: /* @__PURE__ */ __name((s, phraseHit) => !phraseHit && PLAN_WORDS.test(s.lastPrompt), "fires"),
+    intent: /* @__PURE__ */ __name((s) => s.lastPrompt, "intent")
   },
   {
     id: "turn:feature-done",
@@ -282,7 +300,8 @@ var RULES = [
     title: "Work landed cleanly",
     reason: "The turn made several edits and its last tool call succeeded.",
     patterns: [/^code-review$|:code-review$|verification-before-completion/i, /write-tests|test-driven-development/i],
-    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && s.lastTurn.edits >= FEATURE_EDITS && !s.lastTurn.lastToolErrored && !s.lastTurn.usedSkill && hasSourceEdits(s.editedPaths), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && s.lastTurn.edits >= FEATURE_EDITS && !s.lastTurn.lastToolErrored && !s.lastTurn.usedSkill && hasSourceEdits(s.editedPaths), "fires"),
+    intent: /* @__PURE__ */ __name((s, skill) => /test/i.test(skill) ? `add tests for ${lastTurnChanges(s)}` : `review ${lastTurnChanges(s)}`, "intent")
   },
   {
     id: "turn:tests-missing",
@@ -290,7 +309,8 @@ var RULES = [
     title: "No tests ran",
     reason: "Several files changed and nothing ran a test command.",
     patterns: [/write-tests|test-driven-development/i],
-    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && s.lastTurn.edits >= FEATURE_EDITS && !s.lastTurn.ranTests && hasSourceEdits(s.editedPaths), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && s.lastTurn.edits >= FEATURE_EDITS && !s.lastTurn.ranTests && hasSourceEdits(s.editedPaths), "fires"),
+    intent: /* @__PURE__ */ __name((s) => `add tests for ${lastTurnChanges(s)}`, "intent")
   },
   {
     id: "turn:ready-to-ship",
@@ -298,7 +318,8 @@ var RULES = [
     title: "Ready to ship",
     reason: "This turn touched git, or the work has already been reviewed.",
     patterns: [/conventional-commits/i, /create-pr|finishing-a-development-branch|ship-it/i],
-    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && (s.lastTurn.committed || s.lastTurn.edits >= FEATURE_EDITS && [...s.skillsUsed].some((name) => /code-review/i.test(name))), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && (s.lastTurn.committed || s.lastTurn.edits >= FEATURE_EDITS && [...s.skillsUsed].some((name) => /code-review/i.test(name))), "fires"),
+    intent: /* @__PURE__ */ __name((s, skill) => /commit/i.test(skill) ? `commit ${lastTurnChanges(s)}` : "open a pull request for the work on this branch", "intent")
   },
   {
     id: "session:long",
@@ -306,7 +327,8 @@ var RULES = [
     title: "Long session",
     reason: "Capture the state before context runs short.",
     patterns: [/^handoff$|:handoff$/i],
-    fires: /* @__PURE__ */ __name((s) => s.prompts >= LONG_SESSION_PROMPTS, "fires")
+    fires: /* @__PURE__ */ __name((s) => s.prompts >= LONG_SESSION_PROMPTS, "fires"),
+    intent: /* @__PURE__ */ __name(() => "capture this session so it can resume cleanly in a fresh one", "intent")
   }
 ];
 var RULE_IDS = RULES.map((rule) => rule.id);
@@ -315,6 +337,11 @@ function clampReason(text) {
   return text.length <= MAX_REASON ? text : `${text.slice(0, MAX_REASON - 1)}\u2026`;
 }
 __name(clampReason, "clampReason");
+function clampIntent(text) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= MAX_INTENT ? flat : `${flat.slice(0, MAX_INTENT - 1)}\u2026`;
+}
+__name(clampIntent, "clampIntent");
 var _HintEngine = class _HintEngine {
   /**
    * @param options - initial configuration, normally from settings.
@@ -346,6 +373,7 @@ var _HintEngine = class _HintEngine {
    * @returns at most `maxHints` hints, sorted by priority then id.
    */
   compute(situation, catalog) {
+    if (situation.status === "running") return [];
     const usable = catalog.filter(
       (skill) => skill.invocation.userInvocable && !situation.skillsUsed.has(skill.name)
     );
@@ -371,6 +399,7 @@ var _HintEngine = class _HintEngine {
           skill: skill.name,
           title: "Matches your prompt",
           reason: clampReason(`This skill lists \u201C${phrase}\u201D as a trigger.`),
+          intent: clampIntent(situation.lastPrompt),
           priority: PHRASE_RULE.priority,
           rule: PHRASE_RULE.id
         });
@@ -394,6 +423,7 @@ var _HintEngine = class _HintEngine {
           skill: skill.name,
           title: rule.title,
           reason: clampReason(rule.reason),
+          intent: clampIntent(rule.intent(situation, skill.name)),
           priority: rule.priority,
           rule: rule.id
         });
@@ -409,7 +439,15 @@ var _HintEngine = class _HintEngine {
 __name(_HintEngine, "HintEngine");
 var HintEngine = _HintEngine;
 function emptyTurn() {
-  return { edits: 0, ranTests: false, committed: false, toolErrors: 0, lastToolErrored: false, usedSkill: false };
+  return {
+    edits: 0,
+    ranTests: false,
+    committed: false,
+    toolErrors: 0,
+    lastToolErrored: false,
+    usedSkill: false,
+    paths: []
+  };
 }
 __name(emptyTurn, "emptyTurn");
 var EDIT_TOOLS = /* @__PURE__ */ new Set(["edit", "write", "str_replace_editor", "create_file", "multi_edit"]);
@@ -448,7 +486,10 @@ function observeToolCall(name, args, isError, turn) {
   turn.edits += 1;
   for (const key of ["path", "file_path", "filePath"]) {
     const value = record[key];
-    if (typeof value === "string" && value !== "") return value;
+    if (typeof value === "string" && value !== "") {
+      if (turn.paths.length < MAX_TURN_PATHS && !turn.paths.includes(value)) turn.paths.push(value);
+      return value;
+    }
   }
   return void 0;
 }

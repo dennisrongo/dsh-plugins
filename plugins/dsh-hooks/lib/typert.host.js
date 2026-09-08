@@ -81,6 +81,7 @@ var hintSchema = z.object({
   skill: z.string(),
   title: z.string(),
   reason: z.string(),
+  intent: z.string(),
   priority: z.number(),
   rule: z.string()
 });

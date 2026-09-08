@@ -101,7 +101,17 @@ export interface TurnFacts {
   lastToolErrored: boolean
   /** True when the turn itself loaded a skill — the user is already on a path. */
   usedSkill: boolean
+  /**
+   * Paths the turn edited, in order, capped at {@link MAX_TURN_PATHS}. They
+   * feed the chip's INTENT — `/code-review review the changes from the last
+   * turn: Greeter.cs, Calculator.cs` — so the skill is told what it is for
+   * rather than invoked bare.
+   */
+  paths: string[]
 }
+
+/** How many edited paths one turn remembers for the intent text. */
+export const MAX_TURN_PATHS = 6
 
 /** One chip beside the composer. */
 export interface SkillHint {
@@ -119,11 +129,20 @@ export interface SkillHint {
   title: string
   /** One sentence saying why, capped at {@link MAX_REASON} characters. */
   reason: string
+  /**
+   * What the skill is being asked to do, inserted after the command:
+   * `/${skill} ${intent}`. A bare `/code-review` makes the skill ask what to
+   * review; this tells it. Capped at {@link MAX_INTENT} characters.
+   */
+  intent: string
   /** Lower sorts first. */
   priority: number
   /** Which rule produced this, so a user can silence it by id. */
   rule: string
 }
+
+/** Hard cap on an intent, so a long prompt echoed back does not flood the composer. */
+export const MAX_INTENT = 200
 
 /** Default cap on chips shown at once. Three fits one row beside the composer. */
 export const DEFAULT_MAX_HINTS = 3
@@ -373,6 +392,32 @@ interface Rule {
    * @returns whether to resolve {@link patterns} against the catalog.
    */
   fires: (s: SessionSituation, phraseHit: boolean) => boolean
+  /**
+   * The text inserted after `/${skill}` so the skill knows what it is for.
+   * @param s - the session situation.
+   * @param skill - the catalog skill this hint resolved to.
+   * @returns the intent, before clamping.
+   */
+  intent: (s: SessionSituation, skill: string) => string
+}
+
+/**
+ * Basenames of the last turn's edited files, joined for an intent.
+ * @param s - the session situation.
+ * @returns e.g. `Greeter.cs, Calculator.cs`, or an empty string.
+ */
+function lastTurnFiles(s: SessionSituation): string {
+  return s.lastTurn.paths.map((path) => path.split(/[\\/]/).pop() ?? path).join(', ')
+}
+
+/**
+ * "the changes from the last turn", naming the files when they are known.
+ * @param s - the session situation.
+ * @returns the phrase.
+ */
+function lastTurnChanges(s: SessionSituation): string {
+  const files = lastTurnFiles(s)
+  return files === '' ? 'the changes from the last turn' : `the changes from the last turn: ${files}`
 }
 
 /** File extensions that make an edit look like source rather than prose. */
@@ -412,7 +457,8 @@ const RULES: readonly Rule[] = [
     title: '.NET project',
     reason: 'A .csproj/.sln is in this workspace.',
     patterns: [/dotnet/i],
-    fires: (s) => s.projectTypes.has('dotnet'),
+    fires: (s) => s.prompts === 0 && s.projectTypes.has('dotnet'),
+    intent: () => 'for the .NET project in this workspace',
   },
   {
     id: 'project:nextjs',
@@ -420,7 +466,8 @@ const RULES: readonly Rule[] = [
     title: 'Next.js project',
     reason: 'package.json depends on next.',
     patterns: [/nextjs|next-js/i],
-    fires: (s) => s.projectTypes.has('nextjs'),
+    fires: (s) => s.prompts === 0 && s.projectTypes.has('nextjs'),
+    intent: () => 'for the Next.js app in this workspace',
   },
   {
     id: 'project:tauri',
@@ -428,7 +475,8 @@ const RULES: readonly Rule[] = [
     title: 'Tauri project',
     reason: 'A Tauri config is in this workspace.',
     patterns: [/tauri/i],
-    fires: (s) => s.projectTypes.has('tauri'),
+    fires: (s) => s.prompts === 0 && s.projectTypes.has('tauri'),
+    intent: () => 'for the Tauri app in this workspace',
   },
   {
     id: 'project:remotion',
@@ -436,7 +484,8 @@ const RULES: readonly Rule[] = [
     title: 'Remotion project',
     reason: 'package.json depends on remotion.',
     patterns: [/remotion-best-practices|^remotion/i],
-    fires: (s) => s.projectTypes.has('remotion'),
+    fires: (s) => s.prompts === 0 && s.projectTypes.has('remotion'),
+    intent: () => 'for the Remotion project in this workspace',
   },
   {
     id: 'project:shadcn',
@@ -444,7 +493,8 @@ const RULES: readonly Rule[] = [
     title: 'shadcn/ui project',
     reason: 'components.json names the shadcn schema.',
     patterns: [/shadcn/i],
-    fires: (s) => s.projectTypes.has('shadcn'),
+    fires: (s) => s.prompts === 0 && s.projectTypes.has('shadcn'),
+    intent: () => 'for the shadcn/ui components in this workspace',
   },
   {
     id: 'prompt:bug',
@@ -456,6 +506,7 @@ const RULES: readonly Rule[] = [
     // "debug this" already produced a sharper hint, and two chips for the same
     // intent is one chip too many.
     fires: (s, phraseHit) => !phraseHit && BUG_WORDS.test(s.lastPrompt),
+    intent: (s) => s.lastPrompt,
   },
   {
     id: 'prompt:plan',
@@ -464,6 +515,7 @@ const RULES: readonly Rule[] = [
     reason: 'Your prompt is about design rather than a change.',
     patterns: [/plan-and-build|writing-plans|brainstorming/i],
     fires: (s, phraseHit) => !phraseHit && PLAN_WORDS.test(s.lastPrompt),
+    intent: (s) => s.lastPrompt,
   },
   {
     id: 'turn:feature-done',
@@ -477,6 +529,7 @@ const RULES: readonly Rule[] = [
       !s.lastTurn.lastToolErrored &&
       !s.lastTurn.usedSkill &&
       hasSourceEdits(s.editedPaths),
+    intent: (s, skill) => (/test/i.test(skill) ? `add tests for ${lastTurnChanges(s)}` : `review ${lastTurnChanges(s)}`),
   },
   {
     id: 'turn:tests-missing',
@@ -489,6 +542,7 @@ const RULES: readonly Rule[] = [
       s.lastTurn.edits >= FEATURE_EDITS &&
       !s.lastTurn.ranTests &&
       hasSourceEdits(s.editedPaths),
+    intent: (s) => `add tests for ${lastTurnChanges(s)}`,
   },
   {
     id: 'turn:ready-to-ship',
@@ -500,6 +554,7 @@ const RULES: readonly Rule[] = [
       s.status === 'idle' &&
       (s.lastTurn.committed ||
         (s.lastTurn.edits >= FEATURE_EDITS && [...s.skillsUsed].some((name) => /code-review/i.test(name)))),
+    intent: (s, skill) => (/commit/i.test(skill) ? `commit ${lastTurnChanges(s)}` : 'open a pull request for the work on this branch'),
   },
   {
     id: 'session:long',
@@ -508,6 +563,7 @@ const RULES: readonly Rule[] = [
     reason: 'Capture the state before context runs short.',
     patterns: [/^handoff$|:handoff$/i],
     fires: (s) => s.prompts >= LONG_SESSION_PROMPTS,
+    intent: () => 'capture this session so it can resume cleanly in a fresh one',
   },
 ]
 
@@ -524,6 +580,18 @@ const PHRASE_RULE = { id: 'prompt:phrase', priority: 10 }
  */
 function clampReason(text: string): string {
   return text.length <= MAX_REASON ? text : `${text.slice(0, MAX_REASON - 1)}…`
+}
+
+/**
+ * Clamp an intent to {@link MAX_INTENT} and one line: it is inserted into the
+ * composer after the command, and a multi-paragraph prompt echoed back would
+ * bury the command it was meant to qualify.
+ * @param text - the candidate intent.
+ * @returns the intent, whitespace-collapsed and truncated with an ellipsis.
+ */
+function clampIntent(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length <= MAX_INTENT ? flat : `${flat.slice(0, MAX_INTENT - 1)}…`
 }
 
 /**
@@ -573,6 +641,10 @@ export class HintEngine {
   compute(situation: SessionSituation, catalog: readonly CatalogSkill[]): SkillHint[] {
     // Only user-invocable skills can be typed into the composer at all, so a
     // model-only skill in a chip would be a control that cannot work.
+    // Nothing while a turn runs. A chip mid-turn is a control the user cannot
+    // act on without steering the agent, and the situation it describes is
+    // about to change. Every hint waits for the composer to be idle.
+    if (situation.status === 'running') return []
     const usable = catalog.filter(
       (skill) => skill.invocation.userInvocable && !situation.skillsUsed.has(skill.name),
     )
@@ -613,6 +685,7 @@ export class HintEngine {
           skill: skill.name,
           title: 'Matches your prompt',
           reason: clampReason(`This skill lists “${phrase}” as a trigger.`),
+          intent: clampIntent(situation.lastPrompt),
           priority: PHRASE_RULE.priority,
           rule: PHRASE_RULE.id,
         })
@@ -639,6 +712,7 @@ export class HintEngine {
           skill: skill.name,
           title: rule.title,
           reason: clampReason(rule.reason),
+          intent: clampIntent(rule.intent(situation, skill.name)),
           priority: rule.priority,
           rule: rule.id,
         })
@@ -658,7 +732,15 @@ export class HintEngine {
 
 /** A fresh, empty turn record. */
 export function emptyTurn(): TurnFacts {
-  return { edits: 0, ranTests: false, committed: false, toolErrors: 0, lastToolErrored: false, usedSkill: false }
+  return {
+    edits: 0,
+    ranTests: false,
+    committed: false,
+    toolErrors: 0,
+    lastToolErrored: false,
+    usedSkill: false,
+    paths: [],
+  }
 }
 
 // ── signal classification (shared by the service and the tests) ────────────
@@ -750,7 +832,10 @@ export function observeToolCall(
   // `file_path`. Guessing one would silently stop counting edits on the other.
   for (const key of ['path', 'file_path', 'filePath']) {
     const value = record[key]
-    if (typeof value === 'string' && value !== '') return value
+    if (typeof value === 'string' && value !== '') {
+      if (turn.paths.length < MAX_TURN_PATHS && !turn.paths.includes(value)) turn.paths.push(value)
+      return value
+    }
   }
   return undefined
 }

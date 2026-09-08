@@ -107,7 +107,9 @@ That default is deliberate. One broken hook bricking every tool call is the fail
 
 ## Skill hints
 
-The same lifecycle signals the hooks run on also describe what you are doing, and this plugin uses them for a second thing: small chips above the chat input naming a **skill you could run next**. Clicking one writes `/skill-name ` into the composer — exactly what picking it from the slash menu does — and you still confirm with Enter. `▶` (or shift-click) runs it immediately. `×` dismisses it for the rest of the session.
+The same lifecycle signals the hooks run on also describe what you are doing, and this plugin uses them for a second thing: small chips in the composer's tool row, beside the `+` and access-mode controls, naming a **skill you could run next**. Clicking a chip runs it: the composer receives `/skill-name` followed by an **intent** that says what the skill is for — `/code-review review the changes from the last turn: Greeter.cs, Calculator.cs`, or `/diagnose` followed by your own words when your prompt described something broken — and submits. The chip then disappears. `×` dismisses it for the rest of the session without running anything.
+
+Chips appear **only while the composer is idle**. Nothing shows while a turn is running. Project chips (.NET, Next.js, …) show only on a fresh session, before your first prompt; once work has started, the turn rules take over.
 
 Every chip names a skill that is **actually installed and user-invocable in this deployment**. Rules carry patterns, not names; the pattern is resolved against `ctx.skills.list()` for your agent's scope, so no installed match means no chip. A skill you have already used this session is never suggested again.
 

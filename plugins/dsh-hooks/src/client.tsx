@@ -1,27 +1,28 @@
 /**
- * Browser half of dsh-hooks: the contextual skill-hint strip above the composer.
+ * Browser half of dsh-hooks: contextual skill-hint chips in the composer's tool row.
  *
- * ## Why `conversation.input.dock`
+ * ## Why `conversation.input.left`
  *
- * It is a `list` slot, session-scoped, sitting full-width directly above the
- * composer card — so an entry is additive (the goal strip already lives there
- * at order 10) and the chips read as a suggestion about what to type next
- * rather than as a footer. The alternatives were all worse: `conversation.
- * composer.dock` sits BELOW the card and reads as a status line;
- * `conversation.input.overlay` floats INSIDE the card and collides with the
- * slash/@ popup `dsh-client-ui-commands` self-registers there; and
- * `shell.overlay` would need the fixed-position measuring machinery
- * `dsh-plan-board` documents at length, for a strip that wants to be in normal
- * flow anyway.
+ * It is a `list` slot, session-scoped, rendered INSIDE the composer card on
+ * the bottom tool row beside the `+` and access-mode controls — so the chips
+ * sit where the user is already looking when deciding what to type, and add
+ * no row of their own to the conversation. It shipped first in
+ * `conversation.input.dock` (a full-width strip above the card); the owner
+ * asked for the tool row on the first day of use, because a strip above the
+ * card read as a banner rather than as a control. The shell renders this slot
+ * only while a session and its input exist, which suits chips that are
+ * meaningless without a composer to type into.
  *
- * ## Why a chip writes the draft instead of submitting it
+ * ## Why a chip RUNS the skill on click
  *
- * The shipped `/`-menu resolves a pick as `{ text: '/${name} ' }`
- * (`dsh-client-ui-skill/lib/client.js`), so `inputActions.setDraft('/name ')`
- * reproduces exactly what picking the skill from the slash menu does — the user
- * still confirms with Enter, and can edit or abandon it. A chip that submitted
- * on a single click would start a turn from a stray click near the composer.
- * The `▶` affordance is the explicit opt-in to that.
+ * The draft written is `/${skill} ${intent}` — the shipped `/`-menu's own
+ * pick shape (`{ text: '/${name} ' }`, `dsh-client-ui-skill/lib/client.js`)
+ * plus the words that say what the skill is for, e.g. `/code-review review
+ * the changes from the last turn: Greeter.cs, Calculator.cs`. A bare command
+ * makes the skill ask what to do; the intent tells it. The chip then submits
+ * and removes itself: it is a one-shot suggestion, and once taken (or ignored
+ * via `×`) it has nothing further to say. Chips only exist while the composer
+ * is idle, so a click cannot land on a running turn.
  *
  * ## Why it polls
  *
@@ -95,7 +96,7 @@ interface HooksRemote {
   dismissHint(request: { sessionId: string; id: string }): Promise<Reply<{ ok: boolean; token: number }>>
 }
 
-/** The composer actions the owning slot hands every `conversation.input.dock` entry. */
+/** The composer actions the shell hands every session-scoped composer slot entry. */
 interface InputActionsLike {
   setDraft(text: string): void
   submit(): void
@@ -240,34 +241,6 @@ export function HintStrip({ sessionId, remote, inputActions }: HintStripProps): 
   )
 }
 
-/**
- * Move keyboard focus from a chip into the composer's editor.
- *
- * `setDraft` writes the text but leaves focus on the chip button that was
- * clicked, so the natural next keystroke — Enter to send — re-fires the chip
- * instead of submitting (observed live 2026-09-07). The dock and the editor
- * share the `[data-slot="conversation.composer"]` ancestor, and the editor is
- * the only `contenteditable` under it, so the lookup is by slot name (the
- * documented plugin API) and never by a hashed class. Best-effort: when the
- * editor cannot be found the draft is still written and nothing throws.
- * @param from - the chip element the click landed on.
- */
-function focusComposer(from: Element): void {
-  const scope = from.closest('[data-slot="conversation.composer"]') ?? document
-  const editor = scope.querySelector<HTMLElement>('[contenteditable="true"]')
-  if (editor === null) return
-  editor.focus()
-  // Park the caret at the end of the inserted `/name ` so typing continues
-  // the command's arguments rather than prepending to it.
-  const selection = window.getSelection()
-  if (selection === null) return
-  const range = document.createRange()
-  range.selectNodeContents(editor)
-  range.collapse(false)
-  selection.removeAllRanges()
-  selection.addRange(range)
-}
-
 /** Props of one chip. */
 interface HintChipProps {
   hint: SkillHint
@@ -276,42 +249,35 @@ interface HintChipProps {
 }
 
 /**
- * One chip: the skill name, its reason, a run affordance and a dismiss.
+ * One chip: the skill name, which runs it, and a dismiss.
+ *
+ * Click writes `/${skill} ${intent}` and submits, then removes the chip —
+ * locally first so it vanishes on the click, and on the host so it stays gone.
+ * The reason lives in the tooltip: the tool row is a single line shared with
+ * the shell's own controls and has no room for a caption.
  * @param props - the hint, the composer actions and the dismiss callback.
  * @returns the chip.
  */
 function HintChip({ hint, onDismiss, inputActions: actions }: HintChipProps): React.ReactElement {
-  const draft = `/${hint.skill} `
+  const draft = hint.intent === '' ? `/${hint.skill} ` : `/${hint.skill} ${hint.intent}`
 
   return (
-    <span className="dshhk-chip" title={`${hint.title} — ${hint.reason}`}>
+    <span className="dshhk-chip" title={`${hint.title} — ${hint.reason}\nRuns: ${draft}`}>
       <button
         type="button"
         className="dshhk-name"
-        onClick={(event) => {
-          // Shift-click is the keyboard-only route to the same thing the ▶
-          // button does, so the gesture does not require hitting a 16px target.
-          actions?.setDraft(draft)
-          if (event.shiftKey) actions?.submit()
-          else focusComposer(event.currentTarget)
-        }}
-        aria-label={`Insert /${hint.skill} into the composer — ${hint.reason}`}
-      >
-        <span className="dshhk-slash">/</span>
-        {hint.skill}
-      </button>
-      <span className="dshhk-reason">{hint.reason}</span>
-      <button
-        type="button"
-        className="dshhk-run"
         onClick={() => {
           actions?.setDraft(draft)
           actions?.submit()
+          // Taken is a stronger form of dismissed: the same id must not come
+          // back on the next recompute, and the host already suppresses the
+          // skill itself once the turn records it as used.
+          onDismiss(hint.id)
         }}
-        aria-label={`Run /${hint.skill} now`}
-        title={`Run /${hint.skill} now`}
+        aria-label={`Run /${hint.skill}: ${hint.intent || hint.reason}`}
       >
-        ▶
+        <span className="dshhk-slash">/</span>
+        {hint.skill}
       </button>
       <button
         type="button"
@@ -360,32 +326,33 @@ export function injectStyles(): () => void {
 
 const CSS = `
 .dshhk-strip {
-  display: flex;
-  flex-wrap: wrap;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  /* No vertical margin above: the dock already spaces its entries, and a strip
-     that adds its own would double the gap under the goal bar. */
-  margin: 0 0 6px;
+  gap: 4px;
+  /* The tool row is one line; chips that cannot fit are clipped rather than
+     wrapped, so a long skill name never grows the composer. */
+  max-width: 60vw;
+  overflow: hidden;
   font-family: var(--dsw-font-family);
 }
 .dshhk-chip {
   display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  max-width: 100%;
-  padding: 3px 4px 3px 8px;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 2px 0 8px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 999px;
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-secondary);
+  -webkit-app-region: no-drag;
 }
 .dshhk-chip:hover {
-  border-color: var(--dsw-alias-border-l1);
+  border-color: var(--dsw-alias-brand-primary);
   background: var(--dsw-alias-bg-layer-2);
 }
 .dshhk-name {
-  flex: 0 0 auto;
   padding: 0;
   border: 0;
   background: transparent;
@@ -395,22 +362,11 @@ const CSS = `
   font-weight: 600;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
+  white-space: nowrap;
 }
 .dshhk-name:hover { color: var(--dsw-alias-brand-primary); }
 .dshhk-slash { color: var(--dsw-alias-label-tertiary); }
-.dshhk-reason {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--dsw-alias-label-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dshhk-run,
 .dshhk-x {
-  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -426,12 +382,7 @@ const CSS = `
   line-height: 1;
   color: var(--dsw-alias-label-tertiary);
   cursor: pointer;
-  /* DSH Desktop on Windows overlays a window-drag strip; the preload grants
-     buttons no-drag, and stating it here survives a future narrowing of that
-     allowlist at no cost in a browser. */
-  -webkit-app-region: no-drag;
 }
-.dshhk-run:hover { color: var(--dsw-alias-brand-primary); }
 .dshhk-x:hover {
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-layer-3);
@@ -489,13 +440,12 @@ export function apply(ctx: HooksClientContext): void {
       const remote = (readyCtx as unknown as { remote: Record<string, HooksRemote | undefined> }).remote
         ?.dshHooks
 
-      readyCtx.slots.inject('conversation.input.dock', () =>
+      readyCtx.slots.inject('conversation.input.left', () =>
         readyCtx.slots.register(
           {
-            name: 'conversation.input.dock',
+            name: 'conversation.input.left',
             id: 'dsh-hooks-hints',
-            // After the goal strip (10). Suggestions are the least important
-            // thing in this dock and must not push the goal off the top.
+            // After the shell's own compact controls; suggestions come last.
             order: 20,
             inject: (sessionId: string) => ({ sessionId: String(sessionId), remote }),
           },

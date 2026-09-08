@@ -13,10 +13,10 @@ src/matcher.ts      regex matcher over tool names, with compile + warn caches
 src/runner.ts       spawn one hook, fold a matcher set into a HookVerdict
 src/hints.ts        the PURE skill-hint engine: fingerprint, phrases, rule table
 src/index.ts        HooksService: settings registration, the listeners, endpoints
-src/client.tsx      conversation.input.dock chip strip + CSS
+src/client.tsx      conversation.input.left chip row (composer tool row) + CSS
 src/remote.ts       Typert descriptors (shared by both faces)
 src/typert.host.ts  the ./typert manifest the loader imports
-test/smoke.mjs      62 checks against BUILT lib/, incl. real child processes
+test/smoke.mjs      72 checks against BUILT lib/, incl. real child processes
 ```
 
 ## Build and verify
@@ -88,22 +88,31 @@ scripts, and the exit-code contract is genuinely exercised rather than mocked.
   pointless — the same trap `dsh-git`'s and `dsh-plan-board`'s `changeToken`
   both document. The counter moves only inside `recomputeHints`, and only when
   the hint ids actually differ, so an idle session polls a constant.
-- **The dock entry returns `null` when there are no hints.** That is the
-  common case. An entry that always drew a container would shrink the
-  conversation for every user of this plugin whether or not it had anything to
-  say. There is deliberately no loading treatment either — hints are ambient,
-  so `check-progress.mjs` has nothing to check here.
-- **A chip calls `setDraft`, never `submit`, on a plain click.** The shipped
-  `/`-menu resolves a pick as `{ text: '/${name} ' }`
-  (`dsh-client-ui-skill/lib/client.js`), so `setDraft('/name ')` reproduces
-  exactly what picking the skill from the slash menu does and the user still
-  confirms with Enter. Submitting on click would start a turn from a stray
-  click beside the composer; the `▶` button (and shift-click) is the explicit
-  opt-in. After `setDraft` the chip hands focus to the editor
-  (`focusComposer`): `setDraft` alone leaves focus on the chip button, so the
-  Enter the user presses next re-fires the chip instead of sending — observed
-  live on 2026-09-07. The editor is found by slot name
-  (`[data-slot="conversation.composer"] [contenteditable]`), never by class.
+- **The entry returns `null` when there are no hints.** That is the common
+  case. It lives in `conversation.input.left`, the composer's own tool row, so
+  an entry that always drew a container would widen the row for every user of
+  this plugin whether or not it had anything to say. There is deliberately no
+  loading treatment either — hints are ambient, so `check-progress.mjs` has
+  nothing to check here. It shipped first in `conversation.input.dock` (a strip
+  above the card) and moved on the owner's first day of use: a strip above the
+  card read as a banner, not a control.
+- **Chips exist only while the composer is idle.** `HintEngine.compute`
+  returns `[]` for `status === 'running'`, and project rules also require
+  `prompts === 0`. The first live session showed a .NET chip mid-turn, after
+  the work it would have informed had started — a control the user could not
+  act on, describing a moment that had passed. Prompt rules therefore surface
+  after the turn they describe ENDS, which is the trade the owner chose.
+- **A chip click RUNS the skill with an intent, then removes the chip.** The
+  draft is `/${skill} ${intent}` — the shipped `/`-menu's pick shape
+  (`{ text: '/${name} ' }`, `dsh-client-ui-skill/lib/client.js`) plus the
+  words that say what the skill is for — followed by `submit()` and a
+  dismiss. Every rule supplies an `intent`: prompt rules echo the user's own
+  prompt, turn rules name the files the turn touched (`TurnFacts.paths`,
+  capped at `MAX_TURN_PATHS`), project rules say which workspace. A bare
+  `/code-review` makes the skill ask what to review; the owner asked for the
+  chip to answer that itself. The first cut inserted the draft and waited for
+  Enter, with a separate run button; the owner wanted one click and no button.
+  Keep `clampIntent` — a long prompt echoed back must not bury the command.
 - **`inputActions` is threaded as a PROP, not a module variable.** It is a
   `SessionStandardProps` member the owning slot supplies to the registered
   view, and the shell can render two session-scoped docks at once — a single
