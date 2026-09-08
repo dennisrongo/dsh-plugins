@@ -32,6 +32,7 @@ import {
   type HooksConfig,
   type ResolvedHook,
 } from './types.ts'
+import { DEFAULT_MAX_HINTS, MAX_MAX_HINTS } from './hints.ts'
 
 /** Directory inside a workspace that carries harness-local state. */
 export const DOT_DSH = '.dsh'
@@ -66,6 +67,35 @@ const groupSchema = z.object({
 })
 
 /**
+ * The contextual skill-hint strip beside the composer.
+ *
+ * A separate block rather than top-level keys because it is a separate
+ * feature: `enabled: false` here leaves the hook runner completely untouched,
+ * which is what a user who wants hooks and not chips actually needs.
+ */
+const hintsSchema = z
+  .object({
+    enabled: z
+      .boolean()
+      .default(true)
+      .description('Master switch for the hint strip and the engine behind it.'),
+    max: z
+      .number()
+      .min(1)
+      .max(MAX_MAX_HINTS)
+      .default(DEFAULT_MAX_HINTS)
+      .description('How many chips may show at once.'),
+    disableRules: z
+      .array(z.string())
+      .default([])
+      .description('Rule ids to silence, e.g. ["session:long", "prompt:plan"].'),
+  })
+  // Schemastery wants the whole default value for a typed object, not `{}`,
+  // so the three defaults above are restated here. They must agree.
+  .default({ enabled: true, max: DEFAULT_MAX_HINTS, disableRules: [] })
+  .description('Contextual skill hints rendered above the composer.')
+
+/**
  * The settings namespace value.
  *
  * `shell` is explicit rather than derived because the derivation is a guess:
@@ -89,6 +119,7 @@ export const HooksSettings = z.object({
     .object(Object.fromEntries(HOOK_EVENTS.map((event) => [event, z.array(groupSchema).default([])])))
     .default({})
     .description('Matcher groups per lifecycle point.'),
+  hints: hintsSchema,
 })
 
 /** Resolved settings-namespace value. */
@@ -97,6 +128,14 @@ export interface HooksSettingsValue {
   shell: string[]
   projectHooks: boolean
   hooks: Record<HookEvent, HookMatcherGroup[]>
+  hints: HintsSettingsValue
+}
+
+/** Resolved `dsh-hooks.hints` block. */
+export interface HintsSettingsValue {
+  enabled: boolean
+  max: number
+  disableRules: string[]
 }
 
 /**

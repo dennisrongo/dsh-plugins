@@ -1,12 +1,14 @@
 /**
- * Build script: emits the host half and its Typert manifest.
+ * Build script: emits the host half, its Typert manifest, and the browser bundle.
  *
- * There is no client half — this plugin has no UI of its own; a configuration
- * surface reads it through the `dshHooks/describe` and `dshHooks/recent`
- * endpoints.
+ * The client half is the contextual skill-hint strip in
+ * `conversation.input.dock`. It follows dsh's client-module convention:
+ * `window.__ModuleLoader__.load({ id, factory })`, where the factory receives
+ * the loader's `require` (react and every `@deepseek-ai/*` come from the
+ * shell's module table, never from this bundle).
  */
 import { build } from 'esbuild'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -20,6 +22,9 @@ mkdirSync(outdir, { recursive: true })
  * `@Remote` marker table is a module-level WeakMap — a second copy means
  * markers the harness's registry cannot read.
  */
+/** Supplied by the shell's client module table. */
+const CLIENT_EXTERNAL = ['react', 'react-dom', 'react/jsx-runtime', '@deepseek-ai/cordis']
+
 const HOST_EXTERNAL = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/schemastery',
@@ -72,3 +77,33 @@ await build({
   entryPoints: [join(root, 'src/typert.host.ts')],
   outfile: join(outdir, 'typert.host.js'),
 })
+
+// Client half. Minifying is safe here — unlike the host half, nothing reads
+// parameter names off this code — and zod is bundled because the client
+// `$mount` rejects any descriptor whose codecs are not strict zod schemas.
+await build({
+  entryPoints: [join(root, 'src/client.tsx')],
+  bundle: true,
+  format: 'cjs',
+  platform: 'browser',
+  jsx: 'automatic',
+  external: CLIENT_EXTERNAL,
+  minify: true,
+  outfile: join(outdir, 'client.body.cjs'),
+  logLevel: 'info',
+})
+
+const body = readFileSync(join(outdir, 'client.body.cjs'), 'utf8')
+const client = [
+  'window.__ModuleLoader__.load({',
+  '\tid: "@dennisrongo/dsh-hooks",',
+  '\tfactory: (require) => {',
+  '\t\tvar module = { exports: {} };',
+  '\t\tvar exports = module.exports;',
+  body,
+  '\t\treturn module.exports;',
+  '\t}',
+  '});',
+].join('\n')
+writeFileSync(join(outdir, 'client.js'), client)
+console.log('wrote lib/client.js (%d bytes)', client.length)

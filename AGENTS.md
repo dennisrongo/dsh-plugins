@@ -28,10 +28,12 @@ plugins/dsh-skills       host          — skill provider over @dennisrongo/skil
 plugins/dsh-theme        client + host — Themes settings page; four ctx.theme override
                          layers (palette/accent/font/scale) + an inlined first-paint
                          script. Bundles two OFL fonts as data URLs.
-plugins/dsh-hooks        host          — Claude Code-compatible hook lifecycle, service
+plugins/dsh-hooks        host + client — Claude Code-compatible hook lifecycle, service
                          key dshHooks. Eight listeners over tools/*, agent/*,
                          subagent/end and approval/request; runs shell commands
-                         through ctx.subprocess with an owned deadline.
+                         through ctx.subprocess with an owned deadline. The same
+                         signals feed a skill-hint chip strip in
+                         conversation.input.dock, polled off an O(1) hintsToken.
 plugins/dsh-plan-board   host + client — durable plans, service key dshPlans. Wraps the
                          exit_plan_mode dispatch; markdown files under
                          <workspace>/.dsh/plans + a shell.overlay review window

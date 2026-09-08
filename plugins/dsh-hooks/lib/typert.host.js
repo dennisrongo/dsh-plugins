@@ -1,10 +1,10 @@
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
-// src/remote.ts
+// plugins/dsh-hooks/src/remote.ts
 import { z } from "zod";
 
-// src/types.ts
+// plugins/dsh-hooks/src/types.ts
 var HOOK_EVENTS = [
   /** `tools/pre-execute` — allow / deny / ask before a tool dispatches. */
   "PreToolUse",
@@ -26,7 +26,7 @@ var HOOK_EVENTS = [
 var HOOK_EVENT_SET = new Set(HOOK_EVENTS);
 var MAX_OUTPUT_BYTES = 256 * 1024;
 
-// src/remote.ts
+// plugins/dsh-hooks/src/remote.ts
 var hookOutputSchema = z.object({
   continue: z.boolean().optional(),
   stopReason: z.string().optional(),
@@ -76,6 +76,20 @@ var describeResultSchema = z.object({
 });
 var recentRequestSchema = z.object({ limit: z.number().optional() });
 var recentResultSchema = z.object({ runs: z.array(hookRunSchema) });
+var hintSchema = z.object({
+  id: z.string(),
+  skill: z.string(),
+  title: z.string(),
+  reason: z.string(),
+  priority: z.number(),
+  rule: z.string()
+});
+var hintsRequestSchema = z.object({ sessionId: z.string() });
+var hintsResultSchema = z.object({ hints: z.array(hintSchema), token: z.number() });
+var hintsTokenRequestSchema = z.object({ sessionId: z.string() });
+var hintsTokenResultSchema = z.object({ token: z.number() });
+var dismissHintRequestSchema = z.object({ sessionId: z.string(), id: z.string() });
+var dismissHintResultSchema = z.object({ ok: z.boolean(), token: z.number() });
 var PACKAGE = "@dennisrongo/dsh-hooks";
 function descriptor(method, request, result) {
   return {
@@ -111,11 +125,16 @@ var HOOKS_REMOTE = {
   package: PACKAGE,
   descriptors: [
     descriptor("describe", describeRequestSchema, describeResultSchema),
-    descriptor("recent", recentRequestSchema, recentResultSchema)
+    descriptor("recent", recentRequestSchema, recentResultSchema),
+    // The hint strip. `hintsToken` is the one the browser polls, so it is
+    // deliberately the cheapest shape on the wire: one number.
+    descriptor("hints", hintsRequestSchema, hintsResultSchema),
+    descriptor("hintsToken", hintsTokenRequestSchema, hintsTokenResultSchema),
+    descriptor("dismissHint", dismissHintRequestSchema, dismissHintResultSchema)
   ]
 };
 
-// src/typert.host.ts
+// plugins/dsh-hooks/src/typert.host.ts
 var PACKAGE2 = "@dennisrongo/dsh-hooks";
 var TYPERT = {
   package: PACKAGE2,
@@ -142,6 +161,24 @@ var TYPERT = {
             name: "recent",
             signature: "@Remote recent(request: HooksRecentRequest): Promise<HooksRecentResult>",
             summary: "The most recent settled hook runs, newest first."
+          },
+          {
+            kind: "method",
+            name: "hints",
+            signature: "@Remote hints(request: HooksHintsRequest): Promise<HooksHintsResult>",
+            summary: "Contextual skill hints computed for one session."
+          },
+          {
+            kind: "method",
+            name: "hintsToken",
+            signature: "@Remote hintsToken(request: HooksHintsTokenRequest): Promise<HooksHintsTokenResult>",
+            summary: "O(1) change token for one session\u2019s hints; the polled endpoint."
+          },
+          {
+            kind: "method",
+            name: "dismissHint",
+            signature: "@Remote dismissHint(request: HooksDismissHintRequest): Promise<HooksDismissHintResult>",
+            summary: "Silence one hint id for the rest of the session."
           }
         ],
         types: [
@@ -160,6 +197,34 @@ var TYPERT = {
           {
             name: "HooksRecentResult",
             declaration: "export interface HooksRecentResult {\n    runs: HookRun[];\n}"
+          },
+          {
+            name: "HooksHintsRequest",
+            declaration: "export interface HooksHintsRequest {\n    sessionId: string;\n}"
+          },
+          {
+            name: "HooksHintsResult",
+            declaration: "export interface HooksHintsResult {\n    hints: SkillHint[];\n    token: number;\n}"
+          },
+          {
+            name: "HooksHintsTokenRequest",
+            declaration: "export interface HooksHintsTokenRequest {\n    sessionId: string;\n}"
+          },
+          {
+            name: "HooksHintsTokenResult",
+            declaration: "export interface HooksHintsTokenResult {\n    token: number;\n}"
+          },
+          {
+            name: "HooksDismissHintRequest",
+            declaration: "export interface HooksDismissHintRequest {\n    sessionId: string;\n    id: string;\n}"
+          },
+          {
+            name: "HooksDismissHintResult",
+            declaration: "export interface HooksDismissHintResult {\n    ok: boolean;\n    token: number;\n}"
+          },
+          {
+            name: "SkillHint",
+            declaration: "export interface SkillHint {\n    id: string;\n    skill: string;\n    title: string;\n    reason: string;\n    priority: number;\n    rule: string;\n}"
           },
           {
             name: "HookRun",

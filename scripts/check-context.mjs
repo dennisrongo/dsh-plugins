@@ -203,11 +203,11 @@ const moduleTable = {
  * is parked on it — so the check must supply them or it measures nothing.
  */
 /** Bare namespace names a plugin publishes for itself through `remote.$mount`. */
-const MOUNTED_NAMESPACES = ['dshTodo', 'dshGit', 'dshPlans', 'dshMemory', 'dshMissionControl']
+const MOUNTED_NAMESPACES = ['dshTodo', 'dshGit', 'dshPlans', 'dshMemory', 'dshMissionControl', 'dshHooks']
 
 const REMOTE_NAMESPACES = [
   'remote.dshTodo', 'remote.dshGit', 'remote.dshPlans',
-  'remote.dshMemory', 'remote.dshMissionControl',
+  'remote.dshMemory', 'remote.dshMissionControl', 'remote.dshHooks',
 ]
 /**
  * Optional services a plugin reads off the ROOT ctx without declaring them.

@@ -47,17 +47,17 @@ var __privateGet = (obj, member, getter) => (__accessCheck(obj, member, "read fr
 var __privateSet = (obj, member, value, setter) => (__accessCheck(obj, member, "write to private field"), setter ? setter.call(obj, value) : member.set(obj, value), value);
 var __privateMethod = (obj, member, method) => (__accessCheck(obj, member, "access private method"), method);
 
-// src/index.ts
+// plugins/dsh-hooks/src/index.ts
 import { Service } from "@deepseek-ai/cordis";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 
-// src/config.ts
-import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+// plugins/dsh-hooks/src/config.ts
+import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
+import { join as join2 } from "node:path";
 import z from "@deepseek-ai/schemastery";
 
-// src/types.ts
+// plugins/dsh-hooks/src/types.ts
 var HOOK_EVENTS = [
   /** `tools/pre-execute` — allow / deny / ask before a tool dispatches. */
   "PreToolUse",
@@ -88,7 +88,369 @@ var MAX_TIMEOUT_SECONDS = 600;
 var MAX_OUTPUT_BYTES = 256 * 1024;
 var RECENT_LIMIT = 200;
 
-// src/config.ts
+// plugins/dsh-hooks/src/hints.ts
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+var DEFAULT_MAX_HINTS = 3;
+var MAX_MAX_HINTS = 6;
+var MAX_REASON = 120;
+var LONG_SESSION_PROMPTS = 25;
+var FEATURE_EDITS = 3;
+var SKIP_DIRS = /* @__PURE__ */ new Set(["node_modules", "bin", "obj", "dist", "build", "out", "target", "vendor", ".git"]);
+var MAX_ENTRIES = 400;
+var FINGERPRINT_TTL_MS = 3e4;
+var fingerprintCache = /* @__PURE__ */ new Map();
+function resetFingerprintCache() {
+  fingerprintCache.clear();
+}
+__name(resetFingerprintCache, "resetFingerprintCache");
+function dependencyNames(path) {
+  const names = /* @__PURE__ */ new Set();
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    for (const field of ["dependencies", "devDependencies", "peerDependencies"]) {
+      const block = parsed[field];
+      if (block === null || typeof block !== "object") continue;
+      for (const key of Object.keys(block)) names.add(key);
+    }
+  } catch {
+  }
+  return names;
+}
+__name(dependencyNames, "dependencyNames");
+function fingerprint(cwd) {
+  const now = Date.now();
+  let topMtime = 0;
+  try {
+    topMtime = statSync(cwd).mtimeMs;
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+  const cached = fingerprintCache.get(cwd);
+  if (cached !== void 0 && cached.mtimeMs === topMtime && now - cached.at < FINGERPRINT_TTL_MS) {
+    return cached.types;
+  }
+  const types = /* @__PURE__ */ new Set();
+  let budget = MAX_ENTRIES;
+  const seen = [];
+  try {
+    const top = readdirSync(cwd, { withFileTypes: true });
+    const subdirs = [];
+    for (const entry of top) {
+      if (budget-- <= 0) break;
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue;
+        subdirs.push(entry.name);
+        continue;
+      }
+      seen.push({ dir: cwd, name: entry.name });
+    }
+    for (const sub of subdirs) {
+      if (budget <= 0) break;
+      const dir = join(cwd, sub);
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (budget-- <= 0) break;
+          if (!entry.isDirectory()) seen.push({ dir, name: entry.name });
+        }
+      } catch {
+      }
+    }
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+  for (const { dir, name } of seen) {
+    if (/\.(csproj|sln|slnx)$/i.test(name) || name === "global.json") types.add("dotnet");
+    if (name === "tauri.conf.json") types.add("tauri");
+    if (name === "components.json") {
+      try {
+        const raw = readFileSync(join(dir, name), "utf8");
+        if (/"\$schema"\s*:\s*"[^"]*shadcn/i.test(raw)) types.add("shadcn");
+      } catch {
+      }
+    }
+    if (name === "package.json") {
+      const deps = dependencyNames(join(dir, name));
+      if (deps.has("next")) types.add("nextjs");
+      if (deps.has("remotion") || deps.has("@remotion/cli")) types.add("remotion");
+      if (deps.has("@tauri-apps/api") || deps.has("@tauri-apps/cli")) types.add("tauri");
+    }
+  }
+  fingerprintCache.set(cwd, { types, mtimeMs: topMtime, at: now });
+  return types;
+}
+__name(fingerprint, "fingerprint");
+var phraseCache = /* @__PURE__ */ new WeakMap();
+var MIN_PHRASE = 6;
+function phrasesOf(skill) {
+  const hit = phraseCache.get(skill);
+  if (hit !== void 0) return hit;
+  const out = /* @__PURE__ */ new Set();
+  const source = `${skill.description} ${skill.whenToUse ?? ""}`;
+  for (const match of source.matchAll(/["“”']([^"“”']{6,80})["“”']/g)) {
+    const phrase = match[1]?.trim().toLowerCase();
+    if (phrase !== void 0 && phrase.length >= MIN_PHRASE) out.add(phrase);
+  }
+  const phrases = [...out];
+  phraseCache.set(skill, phrases);
+  return phrases;
+}
+__name(phrasesOf, "phrasesOf");
+function matchesPrompt(prompt, skill) {
+  if (prompt === "") return void 0;
+  const haystack = prompt.toLowerCase();
+  for (const phrase of phrasesOf(skill)) {
+    if (haystack.includes(phrase)) return phrase;
+  }
+  return void 0;
+}
+__name(matchesPrompt, "matchesPrompt");
+var SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|cs|fs|vb|py|rb|go|rs|java|kt|swift|php|c|h|cc|cpp|hpp|m|mm|sql|sh|ps1|vue|svelte|razor|cshtml)$/i;
+var TEST_PATH = /(^|[\\/])(tests?|__tests__|spec)([\\/]|$)|\.(test|spec)\.[a-z]+$/i;
+function hasSourceEdits(paths) {
+  for (const path of paths) {
+    if (SOURCE_EXT.test(path) && !TEST_PATH.test(path)) return true;
+  }
+  return false;
+}
+__name(hasSourceEdits, "hasSourceEdits");
+var BUG_WORDS = /\b(bug|broken|failing|fails|crash(es|ed|ing)?|error|regression|flaky|stack ?trace)\b/i;
+var PLAN_WORDS = /\b(plan|design|architect(ure)?|spec)\b/i;
+var RULES = [
+  {
+    id: "project:dotnet",
+    priority: 20,
+    title: ".NET project",
+    reason: "A .csproj/.sln is in this workspace.",
+    patterns: [/dotnet/i],
+    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("dotnet"), "fires")
+  },
+  {
+    id: "project:nextjs",
+    priority: 20,
+    title: "Next.js project",
+    reason: "package.json depends on next.",
+    patterns: [/nextjs|next-js/i],
+    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("nextjs"), "fires")
+  },
+  {
+    id: "project:tauri",
+    priority: 20,
+    title: "Tauri project",
+    reason: "A Tauri config is in this workspace.",
+    patterns: [/tauri/i],
+    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("tauri"), "fires")
+  },
+  {
+    id: "project:remotion",
+    priority: 20,
+    title: "Remotion project",
+    reason: "package.json depends on remotion.",
+    patterns: [/remotion-best-practices|^remotion/i],
+    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("remotion"), "fires")
+  },
+  {
+    id: "project:shadcn",
+    priority: 25,
+    title: "shadcn/ui project",
+    reason: "components.json names the shadcn schema.",
+    patterns: [/shadcn/i],
+    fires: /* @__PURE__ */ __name((s) => s.projectTypes.has("shadcn"), "fires")
+  },
+  {
+    id: "prompt:bug",
+    priority: 12,
+    title: "Sounds like a bug",
+    reason: "Your prompt describes something failing.",
+    patterns: [/^diagnose$|systematic-debugging|:debug$|^debug$/i],
+    // Only when the generic phrase rule found nothing: a skill that advertised
+    // "debug this" already produced a sharper hint, and two chips for the same
+    // intent is one chip too many.
+    fires: /* @__PURE__ */ __name((s, phraseHit) => !phraseHit && BUG_WORDS.test(s.lastPrompt), "fires")
+  },
+  {
+    id: "prompt:plan",
+    priority: 12,
+    title: "Worth planning first",
+    reason: "Your prompt is about design rather than a change.",
+    patterns: [/plan-and-build|writing-plans|brainstorming/i],
+    fires: /* @__PURE__ */ __name((s, phraseHit) => !phraseHit && PLAN_WORDS.test(s.lastPrompt), "fires")
+  },
+  {
+    id: "turn:feature-done",
+    priority: 5,
+    title: "Work landed cleanly",
+    reason: "The turn made several edits with no tool errors.",
+    patterns: [/^code-review$|:code-review$|verification-before-completion/i, /write-tests|test-driven-development/i],
+    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && s.lastTurn.edits >= FEATURE_EDITS && s.lastTurn.toolErrors === 0 && !s.lastTurn.usedSkill && hasSourceEdits(s.editedPaths), "fires")
+  },
+  {
+    id: "turn:tests-missing",
+    priority: 8,
+    title: "No tests ran",
+    reason: "Several files changed and nothing ran a test command.",
+    patterns: [/write-tests|test-driven-development/i],
+    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && s.lastTurn.edits >= FEATURE_EDITS && !s.lastTurn.ranTests && hasSourceEdits(s.editedPaths), "fires")
+  },
+  {
+    id: "turn:ready-to-ship",
+    priority: 6,
+    title: "Ready to ship",
+    reason: "This turn touched git, or the work has already been reviewed.",
+    patterns: [/conventional-commits/i, /create-pr|finishing-a-development-branch|ship-it/i],
+    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && (s.lastTurn.committed || s.lastTurn.edits >= FEATURE_EDITS && [...s.skillsUsed].some((name) => /code-review/i.test(name))), "fires")
+  },
+  {
+    id: "session:long",
+    priority: 30,
+    title: "Long session",
+    reason: "Capture the state before context runs short.",
+    patterns: [/^handoff$|:handoff$/i],
+    fires: /* @__PURE__ */ __name((s) => s.prompts >= LONG_SESSION_PROMPTS, "fires")
+  }
+];
+var RULE_IDS = RULES.map((rule) => rule.id);
+var PHRASE_RULE = { id: "prompt:phrase", priority: 10 };
+function clampReason(text) {
+  return text.length <= MAX_REASON ? text : `${text.slice(0, MAX_REASON - 1)}\u2026`;
+}
+__name(clampReason, "clampReason");
+var _HintEngine = class _HintEngine {
+  /**
+   * @param options - initial configuration, normally from settings.
+   */
+  constructor(options = {}) {
+    __publicField(this, "maxHints");
+    __publicField(this, "disabled");
+    this.maxHints = DEFAULT_MAX_HINTS;
+    this.disabled = /* @__PURE__ */ new Set();
+    this.configure(options);
+  }
+  /**
+   * Re-read configuration in place.
+   *
+   * The engine is held by the service for the process lifetime and settings
+   * reload live, so replacing the instance on every settings commit would
+   * throw away nothing useful but would make the ownership harder to follow.
+   * @param options - the new configuration.
+   */
+  configure(options) {
+    const max = options.maxHints;
+    this.maxHints = typeof max === "number" && Number.isFinite(max) ? Math.min(Math.max(1, Math.trunc(max)), MAX_MAX_HINTS) : DEFAULT_MAX_HINTS;
+    this.disabled = new Set(options.disableRules ?? []);
+  }
+  /**
+   * Compute the chips for one session.
+   * @param situation - what is happening in the session.
+   * @param catalog - the skills actually installed and visible to this agent.
+   * @returns at most `maxHints` hints, sorted by priority then id.
+   */
+  compute(situation, catalog) {
+    const usable = catalog.filter(
+      (skill) => skill.invocation.userInvocable && !situation.skillsUsed.has(skill.name)
+    );
+    if (usable.length === 0) return [];
+    const bySkill = /* @__PURE__ */ new Map();
+    const offer = /* @__PURE__ */ __name((hint) => {
+      if (situation.dismissed.has(hint.id)) return;
+      const existing = bySkill.get(hint.skill);
+      if (existing !== void 0) {
+        const better = hint.priority < existing.priority || hint.priority === existing.priority && hint.id < existing.id;
+        if (!better) return;
+      }
+      bySkill.set(hint.skill, hint);
+    }, "offer");
+    let phraseHit = false;
+    if (this.enabled(PHRASE_RULE.id) && situation.lastPrompt !== "") {
+      for (const skill of usable) {
+        const phrase = matchesPrompt(situation.lastPrompt, skill);
+        if (phrase === void 0) continue;
+        phraseHit = true;
+        offer({
+          id: `${PHRASE_RULE.id}:${skill.name}`,
+          skill: skill.name,
+          title: "Matches your prompt",
+          reason: clampReason(`This skill lists \u201C${phrase}\u201D as a trigger.`),
+          priority: PHRASE_RULE.priority,
+          rule: PHRASE_RULE.id
+        });
+      }
+    }
+    for (const rule of RULES) {
+      if (!this.enabled(rule.id)) continue;
+      let applies;
+      try {
+        applies = rule.fires(situation, phraseHit);
+      } catch (err) {
+        console.warn(`[dsh-hooks] hints: rule ${rule.id} threw:`, err);
+        continue;
+      }
+      if (!applies) continue;
+      for (const pattern of rule.patterns) {
+        const skill = usable.find((candidate) => pattern.test(candidate.name));
+        if (skill === void 0) continue;
+        offer({
+          id: `${rule.id}:${skill.name}`,
+          skill: skill.name,
+          title: rule.title,
+          reason: clampReason(rule.reason),
+          priority: rule.priority,
+          rule: rule.id
+        });
+      }
+    }
+    return [...bySkill.values()].sort((a, b) => a.priority !== b.priority ? a.priority - b.priority : a.id < b.id ? -1 : 1).slice(0, this.maxHints);
+  }
+  /** Whether a rule id survived `disableRules`. */
+  enabled(rule) {
+    return !this.disabled.has(rule);
+  }
+};
+__name(_HintEngine, "HintEngine");
+var HintEngine = _HintEngine;
+function emptyTurn() {
+  return { edits: 0, ranTests: false, committed: false, toolErrors: 0, usedSkill: false };
+}
+__name(emptyTurn, "emptyTurn");
+var EDIT_TOOLS = /* @__PURE__ */ new Set(["edit", "write", "str_replace_editor", "create_file", "multi_edit"]);
+var SHELL_TOOLS = /* @__PURE__ */ new Set(["bash", "pwsh", "bash_persistent", "pwsh_persistent"]);
+var TEST_COMMAND = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\b(vitest|jest|mocha|pytest|phpunit|rspec)\b|\bdotnet\s+test\b|\bcargo\s+test\b|\bgo\s+test\b|\bpytest\b|\bnode\s+--test\b/i;
+var COMMIT_COMMAND = /\bgit\s+(add|commit)\b/i;
+function observeToolCall(name, args, isError, turn) {
+  if (isError) turn.toolErrors += 1;
+  const record = args !== null && typeof args === "object" ? args : {};
+  if (name === "skill") {
+    turn.usedSkill = true;
+    return void 0;
+  }
+  if (SHELL_TOOLS.has(name)) {
+    const command = typeof record.command === "string" ? record.command : "";
+    if (TEST_COMMAND.test(command)) turn.ranTests = true;
+    if (COMMIT_COMMAND.test(command)) turn.committed = true;
+    return void 0;
+  }
+  if (!EDIT_TOOLS.has(name)) return void 0;
+  if (name === "str_replace_editor" && record.command === "view") return void 0;
+  if (isError) return void 0;
+  turn.edits += 1;
+  for (const key of ["path", "file_path", "filePath"]) {
+    const value = record[key];
+    if (typeof value === "string" && value !== "") return value;
+  }
+  return void 0;
+}
+__name(observeToolCall, "observeToolCall");
+function invokedSkillNames(prompt) {
+  const names = [];
+  for (const match of prompt.matchAll(/(^|\s)\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/g)) {
+    const name = match[2];
+    if (name !== void 0 && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+__name(invokedSkillNames, "invokedSkillNames");
+
+// plugins/dsh-hooks/src/config.ts
 var DOT_DSH = ".dsh";
 var PROJECT_FILE = "hooks.json";
 var commandSchema = z.object({
@@ -103,13 +465,19 @@ var groupSchema = z.object({
   matcher: z.string().default("").description("Regular expression over the tool name. Empty or `*` matches every tool."),
   hooks: z.array(commandSchema).default([]).description("Commands run in parallel when the matcher hits.")
 });
+var hintsSchema = z.object({
+  enabled: z.boolean().default(true).description("Master switch for the hint strip and the engine behind it."),
+  max: z.number().min(1).max(MAX_MAX_HINTS).default(DEFAULT_MAX_HINTS).description("How many chips may show at once."),
+  disableRules: z.array(z.string()).default([]).description('Rule ids to silence, e.g. ["session:long", "prompt:plan"].')
+}).default({ enabled: true, max: DEFAULT_MAX_HINTS, disableRules: [] }).description("Contextual skill hints rendered above the composer.");
 var HooksSettings = z.object({
   enabled: z.boolean().default(true).description("Master switch for every hook in both layers."),
   shell: z.array(z.string()).default([]).description(
     'argv prefix the command line is appended to, e.g. ["bash","-lc"]. Empty picks the platform default: pwsh/powershell on Windows, bash elsewhere.'
   ),
   projectHooks: z.boolean().default(true).description("Also read <workspace>/.dsh/hooks.json. Turn off to trust only your own settings."),
-  hooks: z.object(Object.fromEntries(HOOK_EVENTS.map((event) => [event, z.array(groupSchema).default([])]))).default({}).description("Matcher groups per lifecycle point.")
+  hooks: z.object(Object.fromEntries(HOOK_EVENTS.map((event) => [event, z.array(groupSchema).default([])]))).default({}).description("Matcher groups per lifecycle point."),
+  hints: hintsSchema
 });
 function defaultShell() {
   return process.platform === "win32" ? ["pwsh", "-NoProfile", "-NonInteractive", "-Command"] : ["bash", "-lc"];
@@ -176,10 +544,10 @@ var _ProjectHooks = class _ProjectHooks {
    * @returns the parsed document, or an empty one when absent or unreadable.
    */
   read(workspaceDir) {
-    const path = join(workspaceDir, DOT_DSH, PROJECT_FILE);
+    const path = join2(workspaceDir, DOT_DSH, PROJECT_FILE);
     let stamp;
     try {
-      const stat = statSync(path);
+      const stat = statSync2(path);
       stamp = `${stat.mtimeMs}:${stat.size}`;
     } catch {
       this.cache.delete(path);
@@ -188,7 +556,7 @@ var _ProjectHooks = class _ProjectHooks {
     const cached = this.cache.get(path);
     if (cached?.stamp === stamp) return { config: cached.config, dropped: cached.dropped, path };
     try {
-      const { config, dropped } = coerceDocument(JSON.parse(readFileSync(path, "utf8")));
+      const { config, dropped } = coerceDocument(JSON.parse(readFileSync2(path, "utf8")));
       this.cache.set(path, { stamp, config, dropped });
       return { config, dropped, path };
     } catch (err) {
@@ -220,7 +588,7 @@ function resolveHooks(event, user, project, userOrigin, projectOrigin) {
 }
 __name(resolveHooks, "resolveHooks");
 
-// src/matcher.ts
+// plugins/dsh-hooks/src/matcher.ts
 var compiled = /* @__PURE__ */ new Map();
 var warned = /* @__PURE__ */ new Set();
 function isWildcard(matcher) {
@@ -264,7 +632,7 @@ function resetMatcherCache() {
 }
 __name(resetMatcherCache, "resetMatcherCache");
 
-// src/runner.ts
+// plugins/dsh-hooks/src/runner.ts
 var GRACE_MS = 2e3;
 function parseHookOutput(stdout) {
   const trimmed = stdout.trim();
@@ -420,9 +788,17 @@ async function runHooks(deps, hooks, payload, cwd, signal) {
 }
 __name(runHooks, "runHooks");
 
-// src/index.ts
+// plugins/dsh-hooks/src/index.ts
 var MAX_STOP_CONTINUATIONS = 5;
 var NAMESPACE = "dsh-hooks";
+var RECOMPUTE_DEBOUNCE_MS = 250;
+var CATALOG_TTL_MS = 6e4;
+var MAX_TRACKED_SESSIONS = 200;
+var MAX_TRACKED_PATHS = 500;
+function joinIds(hints) {
+  return hints.map((hint) => hint.id).join("\n");
+}
+__name(joinIds, "joinIds");
 function settingsNamespace(value) {
   if (!/^[a-z][a-z0-9-]*$/.test(value)) {
     throw new TypeError(`settings namespace "${value}" must match /^[a-z][a-z0-9-]*$/`);
@@ -434,9 +810,10 @@ var EMPTY_SETTINGS = {
   enabled: true,
   shell: [],
   projectHooks: true,
-  hooks: Object.fromEntries(HOOK_EVENTS.map((event) => [event, []]))
+  hooks: Object.fromEntries(HOOK_EVENTS.map((event) => [event, []])),
+  hints: { enabled: true, max: 3, disableRules: [] }
 };
-var _recent_dec, _describe_dec, _a, _init, _b;
+var _dismissHint_dec, _hintsToken_dec, _hints_dec, _recent_dec, _describe_dec, _a, _init, _b;
 var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
   /**
    * @param ctx - host context carrying the tool registry and subprocess seam.
@@ -465,12 +842,24 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
     __publicField(this, "stopDepth", /* @__PURE__ */ new WeakMap());
     /** Working directory captured at `subagent/start`, keyed by run id. */
     __publicField(this, "subagentCwd", /* @__PURE__ */ new Map());
+    /** Hint engine, reconfigured in place on every settings commit. */
+    __publicField(this, "engine", new HintEngine());
+    /**
+     * Per-session hint state, keyed by `String(agent.id)` — the same value
+     * `basePayload` puts on the wire as `session_id`, so the client can address
+     * a session with the id it already has.
+     *
+     * Insertion-ordered, which is what makes the {@link MAX_TRACKED_SESSIONS}
+     * bound an LRU-by-first-seen rather than an arbitrary eviction.
+     */
+    __publicField(this, "hintStates", /* @__PURE__ */ new Map());
   }
   /** Register the settings namespace, then wire every lifecycle listener. */
-  async [(_a = Service.init, _describe_dec = [Remote], _recent_dec = [Remote], _a)]() {
+  async [(_a = Service.init, _describe_dec = [Remote], _recent_dec = [Remote], _hints_dec = [Remote], _hintsToken_dec = [Remote], _dismissHint_dec = [Remote], _a)]() {
     this.ctx.inject(["settings"], (scoped) => {
       const scope = scoped.settings.register(settingsNamespace(NAMESPACE), HooksSettings, { applies: "live" });
       this.settings = scope.get();
+      this.applyHintSettings();
       this.userOrigin = scoped.settings.documentPath;
       scoped.effect(
         () => scope.watch((next) => {
@@ -478,6 +867,8 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
           resetMatcherCache();
           this.project.clear();
           this.userConfigCache = void 0;
+          this.applyHintSettings();
+          for (const sessionId of this.hintStates.keys()) this.scheduleHints(sessionId);
         }),
         "dsh-hooks: settings watcher"
       );
@@ -485,6 +876,12 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
     this.wireToolEvents();
     this.wireAgentEvents();
     this.wireObserverEvents();
+    this.wireHintEvents();
+  }
+  /** Push the resolved `hints` block into the engine. */
+  applyHintSettings() {
+    const hints = this.settings.hints;
+    this.engine.configure({ maxHints: hints.max, disableRules: hints.disableRules });
   }
   // ── configuration ────────────────────────────────────────────────────────
   /**
@@ -647,6 +1044,7 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
           tool_input: exec.arguments,
           tool_response: result.isError ? { isError: true, error: result.error } : result.value
         };
+        this.captureToolCall(exec, result);
         const verdict = await this.dispatch("PostToolUse", payload, payload.cwd, exec.signal);
         const contexts = verdict.additionalContext.map((text) => this.contextMessage("PostToolUse", text));
         if (verdict.denied !== void 0) {
@@ -662,6 +1060,30 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
       }
     );
   }
+  /**
+   * Fold one settled tool call into the session's turn facts.
+   *
+   * Wrapped whole: this is an addition to a listener the harness awaits, and
+   * a hint-engine bug must not be able to break a tool result.
+   * @param exec - the tool execution.
+   * @param result - the settled result.
+   */
+  captureToolCall(exec, result) {
+    if (!this.settings.hints.enabled) return;
+    try {
+      const state = this.hintStateFor(exec.agent);
+      if (state === void 0) return;
+      const path = observeToolCall(exec.name, exec.arguments, result.isError, state.currentTurn);
+      if (path !== void 0 && state.editedPaths.size < MAX_TRACKED_PATHS) state.editedPaths.add(path);
+      if (exec.name === "skill" && !result.isError) {
+        const args = exec.arguments;
+        this.noteSkillUsed(state, args?.name);
+      }
+      this.scheduleHints(String(exec.agent?.id));
+    } catch (err) {
+      console.warn("[dsh-hooks] hints: tool capture failed:", err);
+    }
+  }
   // ── agent lifecycle ──────────────────────────────────────────────────────
   /** `UserPromptSubmit`, `SessionStart` and `Stop`. */
   wireAgentEvents() {
@@ -671,6 +1093,7 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
         const prompts = payload.messages.filter((message) => message.source.kind === "user");
         if (prompts.length === 0) return next();
         const text = prompts.flatMap((message) => message.content).filter((block) => block.type === "text").map((block) => block.text).join("\n");
+        this.capturePrompt(payload.agent, text);
         const hookPayload = { ...this.basePayload("UserPromptSubmit", payload.agent), prompt: text };
         const verdict = await this.dispatch("UserPromptSubmit", hookPayload, hookPayload.cwd, payload.signal);
         if (verdict.denied !== void 0) {
@@ -694,6 +1117,7 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
         ...this.basePayload("SessionStart", payload.agent),
         source: payload.source
       };
+      this.captureSessionStart(payload.agent);
       void this.dispatch("SessionStart", hookPayload, hookPayload.cwd).then((verdict) => {
         for (const text of verdict.additionalContext) {
           payload.agent.inject(this.contextMessage("SessionStart", text));
@@ -703,6 +1127,7 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
     this.ctx.on(
       "agent/turn-stopping",
       async (payload) => {
+        this.captureTurnEnd(payload.agent);
         const depth = this.stopDepth.get(payload.agent) ?? 0;
         const hookPayload = {
           ...this.basePayload("Stop", payload.agent),
@@ -725,10 +1150,65 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
       }
     );
   }
+  /**
+   * Note a session's workspace shape at start or resume.
+   * @param agent - the agent whose session started.
+   */
+  captureSessionStart(agent) {
+    if (!this.settings.hints.enabled) return;
+    try {
+      const state = this.hintStateFor(agent);
+      if (state === void 0) return;
+      state.cwd = this.cwdOf(agent);
+      state.projectTypes = fingerprint(state.cwd);
+      this.scheduleHints(String(agent?.id));
+    } catch (err) {
+      console.warn("[dsh-hooks] hints: session-start capture failed:", err);
+    }
+  }
+  /**
+   * Note a claimed user prompt: it opens a turn and it is the prompt rules' input.
+   * @param agent - the agent entering the step.
+   * @param text - the joined text of the user-sourced messages.
+   */
+  capturePrompt(agent, text) {
+    if (!this.settings.hints.enabled) return;
+    try {
+      const state = this.hintStateFor(agent);
+      if (state === void 0) return;
+      state.lastPrompt = text;
+      state.prompts += 1;
+      state.status = "running";
+      state.currentTurn = emptyTurn();
+      for (const name of invokedSkillNames(text)) state.skillsUsed.add(name);
+      if (state.projectTypes.size === 0) state.projectTypes = fingerprint(state.cwd);
+      this.scheduleHints(String(agent.id));
+    } catch (err) {
+      console.warn("[dsh-hooks] hints: prompt capture failed:", err);
+    }
+  }
+  /**
+   * Close the turn in flight and hand its facts to the turn rules.
+   * @param agent - the agent whose turn is stopping.
+   */
+  captureTurnEnd(agent) {
+    if (!this.settings.hints.enabled) return;
+    try {
+      const state = this.hintStateFor(agent);
+      if (state === void 0) return;
+      state.lastTurn = state.currentTurn;
+      state.currentTurn = emptyTurn();
+      state.status = "idle";
+      this.scheduleHints(String(agent.id));
+    } catch (err) {
+      console.warn("[dsh-hooks] hints: turn capture failed:", err);
+    }
+  }
   // ── observers ────────────────────────────────────────────────────────────
   /** `SessionEnd`, `SubagentStop` and `Notification` — effect only, no verdict. */
   wireObserverEvents() {
     this.ctx.on("agent/disposed", (payload) => {
+      this.dropHintState(String(payload.agent.id));
       const hookPayload = this.basePayload("SessionEnd", payload.agent);
       void this.dispatch("SessionEnd", hookPayload, hookPayload.cwd);
     });
@@ -763,6 +1243,141 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
       }
     );
   }
+  // ── skill hints ──────────────────────────────────────────────────────────
+  /**
+   * The hint state for one agent, created on first sight.
+   *
+   * @param agent - the agent the signal belongs to.
+   * @returns the state, or undefined when there is no agent to key on.
+   */
+  hintStateFor(agent) {
+    if (agent === void 0) return void 0;
+    const sessionId = String(agent.id);
+    const existing = this.hintStates.get(sessionId);
+    if (existing !== void 0) {
+      existing.scope = agent;
+      return existing;
+    }
+    const cwd = this.cwdOf(agent);
+    const state = {
+      cwd,
+      scope: agent,
+      projectTypes: /* @__PURE__ */ new Set(),
+      skillsUsed: /* @__PURE__ */ new Set(),
+      editedPaths: /* @__PURE__ */ new Set(),
+      lastTurn: emptyTurn(),
+      currentTurn: emptyTurn(),
+      lastPrompt: "",
+      prompts: 0,
+      status: "idle",
+      dismissed: /* @__PURE__ */ new Set(),
+      hints: [],
+      token: 0,
+      catalog: void 0,
+      timer: void 0
+    };
+    this.hintStates.set(sessionId, state);
+    while (this.hintStates.size > MAX_TRACKED_SESSIONS) {
+      const oldest = this.hintStates.keys().next();
+      if (oldest.done === true) break;
+      this.dropHintState(oldest.value);
+    }
+    return state;
+  }
+  /** Forget one session's hint state, clearing any pending recompute. */
+  dropHintState(sessionId) {
+    const state = this.hintStates.get(sessionId);
+    if (state?.timer !== void 0) clearTimeout(state.timer);
+    this.hintStates.delete(sessionId);
+  }
+  /**
+   * Queue a coalesced recompute for one session.
+   *
+   * A pending timer is left alone rather than reset, so a long burst of tool
+   * calls still recomputes on a fixed cadence instead of being starved by its
+   * own signals.
+   * @param sessionId - the session to recompute.
+   */
+  scheduleHints(sessionId) {
+    if (!this.settings.hints.enabled) return;
+    const state = this.hintStates.get(sessionId);
+    if (state === void 0 || state.timer !== void 0) return;
+    const timer = setTimeout(() => {
+      state.timer = void 0;
+      void this.recomputeHints(sessionId);
+    }, RECOMPUTE_DEBOUNCE_MS);
+    timer.unref?.();
+    state.timer = timer;
+  }
+  /**
+   * The skills visible to one session's agent, cached per session.
+   *
+   * @param state - the session's hint state.
+   * @returns the user-visible catalog, or an empty list when no registry is composed.
+   */
+  async catalogFor(state) {
+    const now = Date.now();
+    if (state.catalog !== void 0 && now - state.catalog.at < CATALOG_TTL_MS) return state.catalog.skills;
+    const skills = this.ctx.get("skills");
+    if (skills === void 0) return [];
+    const summaries = await skills.list({
+      cwd: state.cwd,
+      ...state.scope !== void 0 ? { scope: state.scope } : {}
+    });
+    const list = summaries.map((skill) => skill);
+    state.catalog = { skills: list, at: now };
+    return list;
+  }
+  /**
+   * Recompute one session's chips, bumping the token only if they changed.
+   *
+   * Never throws and never rejects: this is driven from listeners that must
+   * not be able to fail because a hint could not be computed.
+   * @param sessionId - the session to recompute.
+   */
+  async recomputeHints(sessionId) {
+    const state = this.hintStates.get(sessionId);
+    if (state === void 0) return;
+    try {
+      const next = this.settings.hints.enabled ? this.engine.compute(this.situationOf(state), await this.catalogFor(state)) : [];
+      if (this.hintStates.get(sessionId) !== state) return;
+      const before = joinIds(state.hints);
+      const after = joinIds(next);
+      if (before === after) return;
+      state.hints = next;
+      state.token += 1;
+    } catch (err) {
+      console.warn("[dsh-hooks] hints: recompute failed:", err);
+    }
+  }
+  /** Snapshot one session's state as the engine's input. */
+  situationOf(state) {
+    return {
+      cwd: state.cwd,
+      projectTypes: state.projectTypes,
+      skillsUsed: state.skillsUsed,
+      editedPaths: state.editedPaths,
+      lastTurn: state.lastTurn,
+      lastPrompt: state.lastPrompt,
+      prompts: state.prompts,
+      status: state.status,
+      dismissed: state.dismissed
+    };
+  }
+  /** Note a skill as used, so it is never suggested again this session. */
+  noteSkillUsed(state, name) {
+    if (typeof name !== "string" || name === "") return;
+    state.skillsUsed.add(name);
+  }
+  /** Invalidate every cached catalog when the skill registry says it may have changed. */
+  wireHintEvents() {
+    this.ctx.on("skills/change", () => {
+      for (const [sessionId, state] of this.hintStates) {
+        state.catalog = void 0;
+        this.scheduleHints(sessionId);
+      }
+    });
+  }
   async describe(request) {
     const cwd = this.workspaceDirFor(request?.workspaceId);
     const rows = [];
@@ -792,6 +1407,29 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
     const limit = Math.min(Math.max(1, request?.limit ?? 50), RECENT_LIMIT);
     return { runs: this.runs.slice(-limit).reverse() };
   }
+  async hints(request) {
+    const state = this.hintStates.get(String(request?.sessionId ?? ""));
+    if (state === void 0 || !this.settings.hints.enabled) return { hints: [], token: 0 };
+    return { hints: state.hints, token: state.token };
+  }
+  async hintsToken(request) {
+    if (!this.settings.hints.enabled) return { token: 0 };
+    return { token: this.hintStates.get(String(request?.sessionId ?? ""))?.token ?? 0 };
+  }
+  async dismissHint(request) {
+    const sessionId = String(request?.sessionId ?? "");
+    const id = String(request?.id ?? "");
+    const state = this.hintStates.get(sessionId);
+    if (state === void 0 || id === "") return { ok: false, token: 0 };
+    state.dismissed.add(id);
+    const remaining = state.hints.filter((hint) => hint.id !== id);
+    if (remaining.length !== state.hints.length) {
+      state.hints = remaining;
+      state.token += 1;
+    }
+    this.scheduleHints(sessionId);
+    return { ok: true, token: state.token };
+  }
   /** Resolve a workspace id to its directory, for the endpoints. */
   workspaceDirFor(workspaceId) {
     if (typeof workspaceId !== "string" || workspaceId === "") return void 0;
@@ -804,23 +1442,38 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
 _init = __decoratorStart(_b);
 __decorateElement(_init, 1, "describe", _describe_dec, _HooksService);
 __decorateElement(_init, 1, "recent", _recent_dec, _HooksService);
+__decorateElement(_init, 1, "hints", _hints_dec, _HooksService);
+__decorateElement(_init, 1, "hintsToken", _hintsToken_dec, _HooksService);
+__decorateElement(_init, 1, "dismissHint", _dismissHint_dec, _HooksService);
 __decoratorMetadata(_init, _HooksService);
 __name(_HooksService, "HooksService");
 __publicField(_HooksService, "inject", ["tools", "subprocess"]);
 var HooksService = _HooksService;
 var index_default = HooksService;
 export {
+  DEFAULT_MAX_HINTS,
   HOOK_EVENTS,
+  HintEngine,
   HooksService,
   HooksSettings,
+  MAX_MAX_HINTS,
+  MAX_REASON,
   ProjectHooks,
+  RULE_IDS,
   coerceDocument,
   index_default as default,
   defaultShell,
+  emptyTurn,
+  fingerprint,
   hookEnv,
+  invokedSkillNames,
   isWildcard,
+  matchesPrompt,
   matchesTool,
+  observeToolCall,
   parseHookOutput,
+  phrasesOf,
+  resetFingerprintCache,
   resetMatcherCache,
   resolveHooks,
   runHook,

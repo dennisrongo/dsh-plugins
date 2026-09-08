@@ -52,6 +52,13 @@ import type { Workspace } from '@deepseek-ai/dsh-workspace'
 // other half of what scripts/anchor.mjs derives its links from.
 import type { SubagentRunEndInfo, SubagentRunInfo } from '@deepseek-ai/dsh-subagent'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
+// Type-only, and deliberately NOT a package.json peer: this contributes the
+// `ctx.skills` service and the `skills/change` event to cordis' interfaces, but
+// nothing is imported from it at runtime — the registry is read through
+// `ctx.get('skills')`, which yields `undefined` in a deployment that composes
+// no skill provider. It IS in tsconfig `paths`, which is the other half of what
+// scripts/anchor.mjs derives its links from.
+import type { SkillSummary } from '@deepseek-ai/dsh-skill'
 import {
   HooksSettings,
   ProjectHooks,
@@ -62,6 +69,18 @@ import {
 } from './config.ts'
 import { runHooks } from './runner.ts'
 import { matchesTool, resetMatcherCache } from './matcher.ts'
+import {
+  HintEngine,
+  emptyTurn,
+  fingerprint,
+  invokedSkillNames,
+  observeToolCall,
+  type CatalogSkill,
+  type ProjectType,
+  type SessionSituation,
+  type SkillHint,
+  type TurnFacts,
+} from './hints.ts'
 import {
   HOOK_EVENTS,
   RECENT_LIMIT,
@@ -77,6 +96,26 @@ export { matchesTool, isWildcard, resetMatcherCache } from './matcher.ts'
 export { parseHookOutput, hookEnv, runHook, runHooks, type RunnerDeps } from './runner.ts'
 export { coerceDocument, resolveHooks, defaultShell, HooksSettings, ProjectHooks } from './config.ts'
 export { HOOK_EVENTS } from './types.ts'
+export {
+  HintEngine,
+  DEFAULT_MAX_HINTS,
+  MAX_MAX_HINTS,
+  MAX_REASON,
+  RULE_IDS,
+  emptyTurn,
+  fingerprint,
+  invokedSkillNames,
+  matchesPrompt,
+  observeToolCall,
+  phrasesOf,
+  resetFingerprintCache,
+  type CatalogSkill,
+  type HintOptions,
+  type ProjectType,
+  type SessionSituation,
+  type SkillHint,
+  type TurnFacts,
+} from './hints.ts'
 
 /**
  * How many times in a row a `Stop` hook may steer one agent back into work.
@@ -91,6 +130,117 @@ const MAX_STOP_CONTINUATIONS = 5
 
 /** The settings namespace this plugin owns; also its config file section name. */
 const NAMESPACE = 'dsh-hooks'
+
+/**
+ * How long a signal waits before the hints are recomputed.
+ *
+ * `tools/post-execute` fires once per tool call, and a busy turn is dozens of
+ * them. Coalescing means a burst costs one catalog read and one compute rather
+ * than one per call — and the strip is ambient, so a quarter second of lag on
+ * a chip is invisible.
+ */
+const RECOMPUTE_DEBOUNCE_MS = 250
+
+/** How long a per-session skill catalog is trusted before it is re-read. */
+const CATALOG_TTL_MS = 60_000
+
+/**
+ * Sessions kept in the situation map.
+ *
+ * `agent/disposed` drops a session normally; this bound is for the deployment
+ * where it does not fire (a crashed driver, a provider that never disposes) so
+ * a long-lived harness cannot accumulate state forever.
+ */
+const MAX_TRACKED_SESSIONS = 200
+
+/** Paths remembered per session, bounded so a big refactor cannot grow forever. */
+const MAX_TRACKED_PATHS = 500
+
+/**
+ * A comparable identity for one computed hint list.
+ *
+ * The change token must move when the CONTENT changes and not merely when a
+ * recompute ran, so the two lists are compared as strings. The separator is a
+ * newline because a hint id is `${rule}:${skill}` and both halves are
+ * kebab-case — it cannot appear inside one, so two different lists can never
+ * fold to the same key.
+ * @param hints - a computed hint list.
+ * @returns a stable key for equality comparison.
+ */
+function joinIds(hints: readonly SkillHint[]): string {
+  return hints.map((hint) => hint.id).join('\n')
+}
+
+/** Everything the hint engine needs about one live session. */
+interface HintState {
+  /** The session's working directory. */
+  cwd: string
+  /**
+   * The agent, used as the `scope` argument to `ctx.skills.list`.
+   *
+   * Omitting it reads the GLOBAL layer alone, which misses every provider a
+   * preset's standing composition mounted — so a preset-scoped skill would
+   * never be suggested. `dsh-tool-skill` passes `scope: exec.agent`, and the
+   * agent object IS the `ScopeKey`; this mirrors it exactly.
+   */
+  scope: object | undefined
+  projectTypes: ReadonlySet<ProjectType>
+  skillsUsed: Set<string>
+  editedPaths: Set<string>
+  /** Facts from the turn that most recently stopped. */
+  lastTurn: TurnFacts
+  /** Facts accumulating for the turn in flight. */
+  currentTurn: TurnFacts
+  lastPrompt: string
+  prompts: number
+  status: 'idle' | 'running'
+  dismissed: Set<string>
+  /** Last computed chips, served by `hints`. */
+  hints: SkillHint[]
+  /** Bumped only when {@link hints} actually changes; served by `hintsToken`. */
+  token: number
+  /** Cached catalog read, invalidated by `skills/change` and by TTL. */
+  catalog: { skills: CatalogSkill[]; at: number } | undefined
+  /** Pending coalesced recompute. */
+  timer: ReturnType<typeof setTimeout> | undefined
+}
+
+/** Request shape of the `hints` endpoint. */
+export interface HooksHintsRequest {
+  /** The session whose chips to read. */
+  sessionId: string
+}
+
+/** Reply shape of the `hints` endpoint. */
+export interface HooksHintsResult {
+  hints: SkillHint[]
+  /** The token the returned list corresponds to. */
+  token: number
+}
+
+/** Request shape of the `hintsToken` endpoint. */
+export interface HooksHintsTokenRequest {
+  sessionId: string
+}
+
+/** Reply shape of the `hintsToken` endpoint. */
+export interface HooksHintsTokenResult {
+  token: number
+}
+
+/** Request shape of the `dismissHint` endpoint. */
+export interface HooksDismissHintRequest {
+  sessionId: string
+  /** The {@link SkillHint.id} the user dismissed. */
+  id: string
+}
+
+/** Reply shape of the `dismissHint` endpoint. */
+export interface HooksDismissHintResult {
+  /** False when the session is unknown; never an error. */
+  ok: boolean
+  token: number
+}
 
 /**
  * Validate a settings-namespace name.
@@ -127,6 +277,7 @@ const EMPTY_SETTINGS: HooksSettingsValue = {
   shell: [],
   projectHooks: true,
   hooks: Object.fromEntries(HOOK_EVENTS.map((event) => [event, []])) as unknown as HooksSettingsValue['hooks'],
+  hints: { enabled: true, max: 3, disableRules: [] },
 }
 
 /** Request shape of the `describe` endpoint. */
@@ -205,6 +356,19 @@ export class HooksService extends TypertRemoteService {
   /** Working directory captured at `subagent/start`, keyed by run id. */
   private readonly subagentCwd = new Map<string, string>()
 
+  /** Hint engine, reconfigured in place on every settings commit. */
+  private readonly engine = new HintEngine()
+
+  /**
+   * Per-session hint state, keyed by `String(agent.id)` — the same value
+   * `basePayload` puts on the wire as `session_id`, so the client can address
+   * a session with the id it already has.
+   *
+   * Insertion-ordered, which is what makes the {@link MAX_TRACKED_SESSIONS}
+   * bound an LRU-by-first-seen rather than an arbitrary eviction.
+   */
+  private readonly hintStates = new Map<string, HintState>()
+
   /**
    * @param ctx - host context carrying the tool registry and subprocess seam.
    */
@@ -219,6 +383,7 @@ export class HooksService extends TypertRemoteService {
     this.ctx.inject(['settings'], (scoped: Context) => {
       const scope = scoped.settings.register(settingsNamespace(NAMESPACE), HooksSettings, { applies: 'live' })
       this.settings = scope.get() as HooksSettingsValue
+      this.applyHintSettings()
       this.userOrigin = scoped.settings.documentPath
       scoped.effect(
         () =>
@@ -229,6 +394,11 @@ export class HooksService extends TypertRemoteService {
             resetMatcherCache()
             this.project.clear()
             this.userConfigCache = undefined
+            this.applyHintSettings()
+            // A changed `max` or `disableRules` changes what the strip should
+            // show, and nothing else will wake the recompute — the session may
+            // be idle for hours after a settings edit.
+            for (const sessionId of this.hintStates.keys()) this.scheduleHints(sessionId)
           }),
         'dsh-hooks: settings watcher',
       )
@@ -237,6 +407,13 @@ export class HooksService extends TypertRemoteService {
     this.wireToolEvents()
     this.wireAgentEvents()
     this.wireObserverEvents()
+    this.wireHintEvents()
+  }
+
+  /** Push the resolved `hints` block into the engine. */
+  private applyHintSettings(): void {
+    const hints = this.settings.hints
+    this.engine.configure({ maxHints: hints.max, disableRules: hints.disableRules })
   }
 
   // ── configuration ────────────────────────────────────────────────────────
@@ -424,6 +601,11 @@ export class HooksService extends TypertRemoteService {
           tool_input: exec.arguments,
           tool_response: result.isError ? { isError: true, error: result.error } : result.value,
         }
+        // Signal capture lives HERE and never in `tools/pre-execute`: that
+        // listener is awaited before every dispatch, and a feature as
+        // discretionary as a hint chip has no business on that path.
+        this.captureToolCall(exec, result)
+
         const verdict = await this.dispatch('PostToolUse', payload, payload.cwd, exec.signal)
         const contexts = verdict.additionalContext.map((text) => this.contextMessage('PostToolUse', text))
 
@@ -442,6 +624,33 @@ export class HooksService extends TypertRemoteService {
         return { ...base, additionalContexts: [...(base.additionalContexts ?? []), ...contexts] }
       },
     )
+  }
+
+  /**
+   * Fold one settled tool call into the session's turn facts.
+   *
+   * Wrapped whole: this is an addition to a listener the harness awaits, and
+   * a hint-engine bug must not be able to break a tool result.
+   * @param exec - the tool execution.
+   * @param result - the settled result.
+   */
+  private captureToolCall(exec: ToolExecution, result: Readonly<ToolExecutionResult>): void {
+    if (!this.settings.hints.enabled) return
+    try {
+      const state = this.hintStateFor(exec.agent)
+      if (state === undefined) return
+      const path = observeToolCall(exec.name, exec.arguments, result.isError, state.currentTurn)
+      if (path !== undefined && state.editedPaths.size < MAX_TRACKED_PATHS) state.editedPaths.add(path)
+      if (exec.name === 'skill' && !result.isError) {
+        const args = exec.arguments as Record<string, unknown> | null
+        // `{ name }` is the `skill` tool's only parameter
+        // (dsh-tool-skill/lib/index.js:62).
+        this.noteSkillUsed(state, args?.name)
+      }
+      this.scheduleHints(String(exec.agent?.id))
+    } catch (err) {
+      console.warn('[dsh-hooks] hints: tool capture failed:', err)
+    }
   }
 
   // ── agent lifecycle ──────────────────────────────────────────────────────
@@ -465,6 +674,8 @@ export class HooksService extends TypertRemoteService {
           .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
           .map((block) => block.text)
           .join('\n')
+
+        this.capturePrompt(payload.agent, text)
 
         const hookPayload: HookPayload = { ...this.basePayload('UserPromptSubmit', payload.agent), prompt: text }
         const verdict = await this.dispatch('UserPromptSubmit', hookPayload, hookPayload.cwd, payload.signal)
@@ -491,6 +702,8 @@ export class HooksService extends TypertRemoteService {
         ...this.basePayload('SessionStart', payload.agent),
         source: payload.source,
       }
+      this.captureSessionStart(payload.agent)
+
       // Emit-mode: cordis does not await this listener, so the hooks race the
       // first step. `inject` is the documented seam for exactly this — a
       // running driver claims queued context at its nearest step boundary — so
@@ -505,6 +718,8 @@ export class HooksService extends TypertRemoteService {
     this.ctx.on(
       'agent/turn-stopping',
       async (payload: { agent: Agent; turn: number; signal: AbortSignal }) => {
+        this.captureTurnEnd(payload.agent)
+
         const depth = this.stopDepth.get(payload.agent) ?? 0
         const hookPayload: HookPayload = {
           ...this.basePayload('Stop', payload.agent),
@@ -531,11 +746,86 @@ export class HooksService extends TypertRemoteService {
     )
   }
 
+  /**
+   * Note a session's workspace shape at start or resume.
+   * @param agent - the agent whose session started.
+   */
+  private captureSessionStart(agent: Agent | undefined): void {
+    if (!this.settings.hints.enabled) return
+    try {
+      const state = this.hintStateFor(agent)
+      if (state === undefined) return
+      state.cwd = this.cwdOf(agent)
+      // `fingerprint` never throws and caches per cwd, so a resume of a session
+      // in an already-seen directory costs a stat.
+      state.projectTypes = fingerprint(state.cwd)
+      this.scheduleHints(String(agent?.id))
+    } catch (err) {
+      console.warn('[dsh-hooks] hints: session-start capture failed:', err)
+    }
+  }
+
+  /**
+   * Note a claimed user prompt: it opens a turn and it is the prompt rules' input.
+   * @param agent - the agent entering the step.
+   * @param text - the joined text of the user-sourced messages.
+   */
+  private capturePrompt(agent: Agent, text: string): void {
+    if (!this.settings.hints.enabled) return
+    try {
+      const state = this.hintStateFor(agent)
+      if (state === undefined) return
+      state.lastPrompt = text
+      state.prompts += 1
+      state.status = 'running'
+      // The new turn's facts start empty, and the previous turn's stay in
+      // `lastTurn` — the turn rules describe the turn that FINISHED, so
+      // clearing both here would blank the strip the moment the user replies.
+      state.currentTurn = emptyTurn()
+      // A skill the user typed is a skill they are already using; suggesting it
+      // back is the most obvious way for this feature to feel broken. Detected
+      // from the prompt's own `/name` gesture rather than from the injected
+      // `skill-invocation` message, because that message is appended by
+      // dsh-tool-skill's own `agent/pre-step` listener and whether this one
+      // sees it depends on registration order between two plugins.
+      for (const name of invokedSkillNames(text)) state.skillsUsed.add(name)
+      // The project fingerprint is cheap and TTL-cached, and a session whose
+      // first signal is a prompt (no session-start listener composed) would
+      // otherwise never get project hints at all.
+      if (state.projectTypes.size === 0) state.projectTypes = fingerprint(state.cwd)
+      this.scheduleHints(String(agent.id))
+    } catch (err) {
+      console.warn('[dsh-hooks] hints: prompt capture failed:', err)
+    }
+  }
+
+  /**
+   * Close the turn in flight and hand its facts to the turn rules.
+   * @param agent - the agent whose turn is stopping.
+   */
+  private captureTurnEnd(agent: Agent): void {
+    if (!this.settings.hints.enabled) return
+    try {
+      const state = this.hintStateFor(agent)
+      if (state === undefined) return
+      state.lastTurn = state.currentTurn
+      state.currentTurn = emptyTurn()
+      state.status = 'idle'
+      this.scheduleHints(String(agent.id))
+    } catch (err) {
+      console.warn('[dsh-hooks] hints: turn capture failed:', err)
+    }
+  }
+
   // ── observers ────────────────────────────────────────────────────────────
 
   /** `SessionEnd`, `SubagentStop` and `Notification` — effect only, no verdict. */
   private wireObserverEvents(): void {
     this.ctx.on('agent/disposed', (payload: { agent: Agent }) => {
+      // The session is gone, so its hint state is dead weight and its pending
+      // recompute would resolve against nothing.
+      this.dropHintState(String(payload.agent.id))
+
       const hookPayload = this.basePayload('SessionEnd', payload.agent)
       // Teardown is never delayed on a hook: `agent/disposed` is emit-mode and
       // the session is already gone, so this runs for its side effects only.
@@ -582,6 +872,173 @@ export class HooksService extends TypertRemoteService {
     )
   }
 
+  // ── skill hints ──────────────────────────────────────────────────────────
+
+  /**
+   * The hint state for one agent, created on first sight.
+   *
+   * @param agent - the agent the signal belongs to.
+   * @returns the state, or undefined when there is no agent to key on.
+   */
+  private hintStateFor(agent: Agent | undefined): HintState | undefined {
+    if (agent === undefined) return undefined
+    const sessionId = String(agent.id)
+    const existing = this.hintStates.get(sessionId)
+    if (existing !== undefined) {
+      // The scope can arrive later than the first signal (a session resumed
+      // before any agent-scoped listener fired), so keep taking the newest.
+      existing.scope = agent
+      return existing
+    }
+    const cwd = this.cwdOf(agent)
+    const state: HintState = {
+      cwd,
+      scope: agent,
+      projectTypes: new Set(),
+      skillsUsed: new Set(),
+      editedPaths: new Set(),
+      lastTurn: emptyTurn(),
+      currentTurn: emptyTurn(),
+      lastPrompt: '',
+      prompts: 0,
+      status: 'idle',
+      dismissed: new Set(),
+      hints: [],
+      token: 0,
+      catalog: undefined,
+      timer: undefined,
+    }
+    this.hintStates.set(sessionId, state)
+    // First-seen eviction, and the timer goes with the entry: a pending
+    // recompute for a dropped session would resolve against nothing and hold a
+    // handle for its debounce window.
+    while (this.hintStates.size > MAX_TRACKED_SESSIONS) {
+      const oldest = this.hintStates.keys().next()
+      if (oldest.done === true) break
+      this.dropHintState(oldest.value)
+    }
+    return state
+  }
+
+  /** Forget one session's hint state, clearing any pending recompute. */
+  private dropHintState(sessionId: string): void {
+    const state = this.hintStates.get(sessionId)
+    if (state?.timer !== undefined) clearTimeout(state.timer)
+    this.hintStates.delete(sessionId)
+  }
+
+  /**
+   * Queue a coalesced recompute for one session.
+   *
+   * A pending timer is left alone rather than reset, so a long burst of tool
+   * calls still recomputes on a fixed cadence instead of being starved by its
+   * own signals.
+   * @param sessionId - the session to recompute.
+   */
+  private scheduleHints(sessionId: string): void {
+    if (!this.settings.hints.enabled) return
+    const state = this.hintStates.get(sessionId)
+    if (state === undefined || state.timer !== undefined) return
+    const timer = setTimeout(() => {
+      state.timer = undefined
+      void this.recomputeHints(sessionId)
+    }, RECOMPUTE_DEBOUNCE_MS)
+    // The strip is ambient; a pending recompute must never be the reason a
+    // `dsh` CLI invocation refuses to exit.
+    timer.unref?.()
+    state.timer = timer
+  }
+
+  /**
+   * The skills visible to one session's agent, cached per session.
+   *
+   * @param state - the session's hint state.
+   * @returns the user-visible catalog, or an empty list when no registry is composed.
+   */
+  private async catalogFor(state: HintState): Promise<CatalogSkill[]> {
+    const now = Date.now()
+    if (state.catalog !== undefined && now - state.catalog.at < CATALOG_TTL_MS) return state.catalog.skills
+    // Read through `ctx.get`: a cordis context is a Proxy and a bare property
+    // read for an undeclared service THROWS. `skills` is deliberately not in
+    // `static inject` for the same reason `settings` is not — this cordis has
+    // no optional inject, so listing it would make the plugin never mount in a
+    // deployment that composes no skill registry.
+    const skills = this.ctx.get('skills')
+    if (skills === undefined) return []
+    const summaries: readonly SkillSummary[] = await skills.list({
+      cwd: state.cwd,
+      ...(state.scope !== undefined ? { scope: state.scope } : {}),
+    })
+    const list = summaries.map((skill) => skill as CatalogSkill)
+    state.catalog = { skills: list, at: now }
+    return list
+  }
+
+  /**
+   * Recompute one session's chips, bumping the token only if they changed.
+   *
+   * Never throws and never rejects: this is driven from listeners that must
+   * not be able to fail because a hint could not be computed.
+   * @param sessionId - the session to recompute.
+   */
+  private async recomputeHints(sessionId: string): Promise<void> {
+    const state = this.hintStates.get(sessionId)
+    if (state === undefined) return
+    try {
+      const next = this.settings.hints.enabled
+        ? this.engine.compute(this.situationOf(state), await this.catalogFor(state))
+        : []
+      // The state may have been dropped while the catalog read was in flight.
+      if (this.hintStates.get(sessionId) !== state) return
+      const before = joinIds(state.hints)
+      const after = joinIds(next)
+      if (before === after) return
+      state.hints = next
+      // The token is what the client polls, so it moves ONLY here. Bumping it
+      // on every signal would make an idle session poll a rising counter and
+      // refetch a list that never changed — which is the trap `dsh-git`'s
+      // changeToken documents, one layer up.
+      state.token += 1
+    } catch (err) {
+      console.warn('[dsh-hooks] hints: recompute failed:', err)
+    }
+  }
+
+  /** Snapshot one session's state as the engine's input. */
+  private situationOf(state: HintState): SessionSituation {
+    return {
+      cwd: state.cwd,
+      projectTypes: state.projectTypes,
+      skillsUsed: state.skillsUsed,
+      editedPaths: state.editedPaths,
+      lastTurn: state.lastTurn,
+      lastPrompt: state.lastPrompt,
+      prompts: state.prompts,
+      status: state.status,
+      dismissed: state.dismissed,
+    }
+  }
+
+  /** Note a skill as used, so it is never suggested again this session. */
+  private noteSkillUsed(state: HintState, name: unknown): void {
+    if (typeof name !== 'string' || name === '') return
+    state.skillsUsed.add(name)
+  }
+
+  /** Invalidate every cached catalog when the skill registry says it may have changed. */
+  private wireHintEvents(): void {
+    // `skills/change` is unfiltered: a provider mounted, a runtime skill was
+    // registered, or a catalog was invalidated. Dropping the caches and
+    // recomputing is the whole response — a hint naming a skill that has since
+    // been removed is exactly what this prevents.
+    this.ctx.on('skills/change', () => {
+      for (const [sessionId, state] of this.hintStates) {
+        state.catalog = undefined
+        this.scheduleHints(sessionId)
+      }
+    })
+  }
+
   // ── endpoints ────────────────────────────────────────────────────────────
 
   /**
@@ -625,6 +1082,67 @@ export class HooksService extends TypertRemoteService {
   async recent(request: HooksRecentRequest): Promise<HooksRecentResult> {
     const limit = Math.min(Math.max(1, request?.limit ?? 50), RECENT_LIMIT)
     return { runs: this.runs.slice(-limit).reverse() }
+  }
+
+  /**
+   * The chips currently computed for one session.
+   *
+   * An unknown session is an empty list and token 0, never an error: the strip
+   * mounts as soon as a session view does, which is before any signal has
+   * necessarily reached this service.
+   * @param request - the session to read.
+   * @returns the hints and the token they correspond to.
+   */
+  @Remote
+  async hints(request: HooksHintsRequest): Promise<HooksHintsResult> {
+    const state = this.hintStates.get(String(request?.sessionId ?? ''))
+    if (state === undefined || !this.settings.hints.enabled) return { hints: [], token: 0 }
+    return { hints: state.hints, token: state.token }
+  }
+
+  /**
+   * The change token for one session's hints.
+   *
+   * This is the POLLED endpoint and it must stay O(1): it reads an in-memory
+   * counter that only {@link recomputeHints} moves, and it does no fs work, no
+   * catalog read and no compute. The moment it computes anything it costs what
+   * `hints` costs and the polling design is pointless — the same trap
+   * `dsh-git`'s and `dsh-plan-board`'s `changeToken` both document.
+   * @param request - the session to read.
+   * @returns the counter, frozen at 0 while hints are disabled.
+   */
+  @Remote
+  async hintsToken(request: HooksHintsTokenRequest): Promise<HooksHintsTokenResult> {
+    if (!this.settings.hints.enabled) return { token: 0 }
+    return { token: this.hintStates.get(String(request?.sessionId ?? ''))?.token ?? 0 }
+  }
+
+  /**
+   * Silence one chip for the rest of the session.
+   *
+   * Dismissal is per session and per hint id. Hint ids are `${rule}:${skill}`,
+   * which is stable for a given rule/skill pair — so a dismissed chip does not
+   * reappear on the next recompute, while the same rule firing for a DIFFERENT
+   * skill still gets its chance.
+   * @param request - the session and the hint id.
+   * @returns whether the session was known, and the resulting token.
+   */
+  @Remote
+  async dismissHint(request: HooksDismissHintRequest): Promise<HooksDismissHintResult> {
+    const sessionId = String(request?.sessionId ?? '')
+    const id = String(request?.id ?? '')
+    const state = this.hintStates.get(sessionId)
+    if (state === undefined || id === '') return { ok: false, token: 0 }
+    state.dismissed.add(id)
+    const remaining = state.hints.filter((hint) => hint.id !== id)
+    if (remaining.length !== state.hints.length) {
+      state.hints = remaining
+      state.token += 1
+    }
+    // Dropping the chip may free a slot under `max`, so re-resolve rather than
+    // leaving the strip one shorter than the user configured.
+    this.scheduleHints(sessionId)
+    return { ok: true, token: state.token }
   }
 
   /** Resolve a workspace id to its directory, for the endpoints. */

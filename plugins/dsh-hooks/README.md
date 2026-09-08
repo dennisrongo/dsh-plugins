@@ -2,7 +2,7 @@
 
 **npm:** [`@dennisrongo/dsh-hooks`](https://www.npmjs.com/package/@dennisrongo/dsh-hooks)
 
-A Claude Code-compatible hook lifecycle for [dsh](https://github.com/deepseek-ai/deepseek-harness). Attach a shell command to a lifecycle point and it runs there — to block a tool call, feed the model context, format a file after an edit, or notify you when the agent stops.
+A Claude Code-compatible hook lifecycle for [dsh](https://github.com/deepseek-ai/deepseek-harness). Attach a shell command to a lifecycle point and it runs there — to block a tool call, feed the model context, format a file after an edit, or notify you when the agent stops. It also reads those same signals to suggest a skill beside the composer — see [Skill hints](#skill-hints).
 
 dsh already had the lifecycle. `tools/pre-execute` is a waterfall returning `allow | deny | ask`, `tools/post-execute` can block a settled result or attach model-facing context, `agent/pre-step` can reject or rewrite the messages entering a step, and `agent/turn-stopping` can steer an agent back into work. What it had no way to do was attach a **command** to any of that from configuration. This plugin is that runner and nothing else: it owns no policy, and with an empty config it is inert.
 
@@ -105,13 +105,58 @@ That default is deliberate. One broken hook bricking every tool call is the fail
 
 `Stop` gets a second guard. The protocol's own loop-breaker is `stop_hook_active`, which this plugin passes faithfully; the cap of **five consecutive continuations** exists for the hook that ignores it, because `{"decision":"block"}` on `Stop` is otherwise an infinite loop that burns tokens until you notice.
 
+## Skill hints
+
+The same lifecycle signals the hooks run on also describe what you are doing, and this plugin uses them for a second thing: small chips above the chat input naming a **skill you could run next**. Clicking one writes `/skill-name ` into the composer — exactly what picking it from the slash menu does — and you still confirm with Enter. `▶` (or shift-click) runs it immediately. `×` dismisses it for the rest of the session.
+
+Every chip names a skill that is **actually installed and user-invocable in this deployment**. Rules carry patterns, not names; the pattern is resolved against `ctx.skills.list()` for your agent's scope, so no installed match means no chip. A skill you have already used this session is never suggested again.
+
+| Rule id | Fires when | Suggests |
+|---|---|---|
+| `prompt:phrase` | your prompt contains a phrase a skill quotes in its own description (`"review my code"`, `"debug this"`) | that skill |
+| `prompt:bug` | your prompt mentions a bug / crash / failure and no phrase matched | a diagnosis skill |
+| `prompt:plan` | your prompt is about planning, design or architecture | a planning skill |
+| `turn:feature-done` | the turn made ≥ 3 source edits with no tool errors and loaded no skill | a code-review skill, then a tests skill |
+| `turn:tests-missing` | ≥ 3 source edits and nothing ran a test command | a tests skill |
+| `turn:ready-to-ship` | the turn ran `git add`/`git commit`, or the work was already reviewed | a commit-message skill, then a PR skill |
+| `project:dotnet` | a `.csproj` / `.sln` / `.slnx` / `global.json` in the workspace | a .NET skill |
+| `project:nextjs` | `package.json` depends on `next` | a Next.js skill |
+| `project:tauri` | a Tauri config or `@tauri-apps/*` dependency | a Tauri skill |
+| `project:remotion` | `package.json` depends on `remotion` | a Remotion skill |
+| `project:shadcn` | `components.json` whose `$schema` names shadcn | a shadcn skill |
+| `session:long` | 25 or more prompts in the session | a hand-off skill |
+
+Turn rules outrank project rules, so a chip about what just happened beats a standing fact about the workspace. The workspace scan reads the top level plus one level of subdirectories (skipping `node_modules`, `bin`, `obj`, `dist` and friends, bounded to 400 entries) and is cached for 30 seconds — a `.csproj` at `src/Web/Web.csproj` is found, which a root-only scan would miss.
+
+The rules are deliberately cheap regexes and quoted-phrase matches, not a classifier. A false positive costs you one ignorable chip, so paying model latency to sharpen it would be the wrong trade — and a rule you can predict is one you can turn off:
+
+```yaml
+dsh-hooks:
+  hints:
+    enabled: true          # master switch for the strip and the engine
+    max: 3                 # 1..6 chips at once
+    disableRules:          # silence rules by id
+      - session:long
+      - prompt:plan
+```
+
+`enabled: false` leaves the hook runner completely untouched. There is **no project layer for hints** — `.dsh/hints.json` is not a thing yet, and neither are user-defined rules; both are on the list, not in the box.
+
+The strip renders nothing at all when there are no hints, so it costs no vertical space in a session it has nothing to say about.
+
 ## Endpoints
 
 `POST /api/dshHooks/describe` → `{ enabled, shell, userOrigin?, projectOrigin?, hooks: [...] }` — every hook in force across both layers, with the document each came from. Takes `{ workspaceId? }`.
 
 `POST /api/dshHooks/recent` → `{ runs: [...] }` — the last 200 settled runs with exit codes, durations, stdout/stderr tails and parsed output. Takes `{ limit? }`.
 
-Both take a single parameter named `request`.
+`POST /api/dshHooks/hints` → `{ hints: [...], token }` — the chips computed for one session. Takes `{ sessionId }`.
+
+`POST /api/dshHooks/hintsToken` → `{ token }` — an in-memory counter that moves **only** when the computed list actually changes. This is what the strip polls (every 1.5s while the tab is visible), so it does no work at all; an idle session polls a constant and never refetches. Takes `{ sessionId }`.
+
+`POST /api/dshHooks/dismissHint` → `{ ok, token }` — silence one hint id for the session. Takes `{ sessionId, id }`.
+
+An unknown session is an empty list and token `0` on all three, never an error. Every endpoint takes a single parameter named `request`.
 
 ## Install
 
@@ -123,7 +168,7 @@ Then restart the profile — the Typert loader caches its per-package verdict fo
 
 ## Requires
 
-`ctx.tools` and `ctx.subprocess`, both composed by `@deepseek-ai/dsh-web-app` by default. `ctx.settings` and `ctx.workspaceRegistry` are used when present and are **not** injected: a deployment composing neither still gets project-layer hooks and a working cwd-derived payload, rather than a service that never becomes injectable.
+`ctx.tools` and `ctx.subprocess`, both composed by `@deepseek-ai/dsh-web-app` by default. `ctx.settings`, `ctx.workspaceRegistry` and `ctx.skills` are used when present and are **not** injected: a deployment composing none of them still gets project-layer hooks and a working cwd-derived payload, rather than a service that never becomes injectable. With no skill registry composed, the hint strip simply stays empty.
 
 ---
 

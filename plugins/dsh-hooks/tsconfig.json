@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
@@ -11,8 +12,8 @@
     // context.addInitializer), not a legacy TypeScript one. This must stay
     // false or the marker never registers.
     "experimentalDecorators": false,
-    "lib": ["ES2022"],
-    "types": ["node"],
+    "lib": ["ES2022", "DOM"],
+    "types": ["react", "node"],
     "baseUrl": ".",
     "paths": {
       // Typecheck against the RUNNING dsh install, which is also what these
@@ -39,7 +40,11 @@
       "@deepseek-ai/dsh-subagent": ["./node_modules/@deepseek-ai/dsh-subagent/lib/types/index.d.ts"],
       "@deepseek-ai/dsh-user-approval": [
         "./node_modules/@deepseek-ai/dsh-user-approval/lib/types/index.d.ts"
-      ]
+      ],
+      // Type-only as well: contributes `ctx.skills` and the `skills/change`
+      // event. The registry is read through `ctx.get('skills')`, so no value
+      // is imported and it is not a package.json peer.
+      "@deepseek-ai/dsh-skill": ["./node_modules/@deepseek-ai/dsh-skill/lib/types/index.d.ts"]
     }
   },
   "include": ["src"]

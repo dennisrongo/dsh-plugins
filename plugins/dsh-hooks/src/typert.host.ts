@@ -53,6 +53,24 @@ export const TYPERT = {
             signature: '@Remote recent(request: HooksRecentRequest): Promise<HooksRecentResult>',
             summary: 'The most recent settled hook runs, newest first.',
           },
+          {
+            kind: 'method' as const,
+            name: 'hints',
+            signature: '@Remote hints(request: HooksHintsRequest): Promise<HooksHintsResult>',
+            summary: 'Contextual skill hints computed for one session.',
+          },
+          {
+            kind: 'method' as const,
+            name: 'hintsToken',
+            signature: '@Remote hintsToken(request: HooksHintsTokenRequest): Promise<HooksHintsTokenResult>',
+            summary: 'O(1) change token for one session’s hints; the polled endpoint.',
+          },
+          {
+            kind: 'method' as const,
+            name: 'dismissHint',
+            signature: '@Remote dismissHint(request: HooksDismissHintRequest): Promise<HooksDismissHintResult>',
+            summary: 'Silence one hint id for the rest of the session.',
+          },
         ],
         types: [
           {
@@ -71,6 +89,35 @@ export const TYPERT = {
           {
             name: 'HooksRecentResult',
             declaration: 'export interface HooksRecentResult {\n    runs: HookRun[];\n}',
+          },
+          {
+            name: 'HooksHintsRequest',
+            declaration: 'export interface HooksHintsRequest {\n    sessionId: string;\n}',
+          },
+          {
+            name: 'HooksHintsResult',
+            declaration: 'export interface HooksHintsResult {\n    hints: SkillHint[];\n    token: number;\n}',
+          },
+          {
+            name: 'HooksHintsTokenRequest',
+            declaration: 'export interface HooksHintsTokenRequest {\n    sessionId: string;\n}',
+          },
+          {
+            name: 'HooksHintsTokenResult',
+            declaration: 'export interface HooksHintsTokenResult {\n    token: number;\n}',
+          },
+          {
+            name: 'HooksDismissHintRequest',
+            declaration: 'export interface HooksDismissHintRequest {\n    sessionId: string;\n    id: string;\n}',
+          },
+          {
+            name: 'HooksDismissHintResult',
+            declaration: 'export interface HooksDismissHintResult {\n    ok: boolean;\n    token: number;\n}',
+          },
+          {
+            name: 'SkillHint',
+            declaration:
+              'export interface SkillHint {\n    id: string;\n    skill: string;\n    title: string;\n    reason: string;\n    priority: number;\n    rule: string;\n}',
           },
           {
             name: 'HookRun',

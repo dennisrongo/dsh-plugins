@@ -79,6 +79,25 @@ const describeResultSchema = z.object({
 const recentRequestSchema = z.object({ limit: z.number().optional() })
 const recentResultSchema = z.object({ runs: z.array(hookRunSchema) })
 
+/** One contextual skill-hint chip. */
+const hintSchema = z.object({
+  id: z.string(),
+  skill: z.string(),
+  title: z.string(),
+  reason: z.string(),
+  priority: z.number(),
+  rule: z.string(),
+})
+
+const hintsRequestSchema = z.object({ sessionId: z.string() })
+const hintsResultSchema = z.object({ hints: z.array(hintSchema), token: z.number() })
+
+const hintsTokenRequestSchema = z.object({ sessionId: z.string() })
+const hintsTokenResultSchema = z.object({ token: z.number() })
+
+const dismissHintRequestSchema = z.object({ sessionId: z.string(), id: z.string() })
+const dismissHintResultSchema = z.object({ ok: z.boolean(), token: z.number() })
+
 const PACKAGE = '@dennisrongo/dsh-hooks'
 
 /**
@@ -124,6 +143,11 @@ export const HOOKS_REMOTE = {
   descriptors: [
     descriptor('describe', describeRequestSchema, describeResultSchema),
     descriptor('recent', recentRequestSchema, recentResultSchema),
+    // The hint strip. `hintsToken` is the one the browser polls, so it is
+    // deliberately the cheapest shape on the wire: one number.
+    descriptor('hints', hintsRequestSchema, hintsResultSchema),
+    descriptor('hintsToken', hintsTokenRequestSchema, hintsTokenResultSchema),
+    descriptor('dismissHint', dismissHintRequestSchema, dismissHintResultSchema),
   ],
 }
 
