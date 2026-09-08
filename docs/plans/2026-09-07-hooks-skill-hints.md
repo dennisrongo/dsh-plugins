@@ -1,6 +1,6 @@
 # dsh-hooks: contextual skill hints beside the composer
 
-**Status:** plan approved for execution, 2026-09-07. Author: Fable (plan), Opus (execution).
+**Status:** shipped in 0.2.0 and verified live end to end on 2026-09-07 (throwaway harness, Claude Sonnet 4.6, .NET workspace: project hint, turn-done hints, prompt bug rule, dismiss, skill-use suppression, chip click → draft, Run → real skill turn). Author: Fable (plan), Opus (execution).
 **Package:** `plugins/dsh-hooks` (`@dennisrongo/dsh-hooks`), 0.1.1 → 0.2.0.
 
 ## The ask

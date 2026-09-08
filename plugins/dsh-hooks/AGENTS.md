@@ -99,7 +99,11 @@ scripts, and the exit-code contract is genuinely exercised rather than mocked.
   exactly what picking the skill from the slash menu does and the user still
   confirms with Enter. Submitting on click would start a turn from a stray
   click beside the composer; the `▶` button (and shift-click) is the explicit
-  opt-in.
+  opt-in. After `setDraft` the chip hands focus to the editor
+  (`focusComposer`): `setDraft` alone leaves focus on the chip button, so the
+  Enter the user presses next re-fires the chip instead of sending — observed
+  live on 2026-09-07. The editor is found by slot name
+  (`[data-slot="conversation.composer"] [contenteditable]`), never by class.
 - **`inputActions` is threaded as a PROP, not a module variable.** It is a
   `SessionStandardProps` member the owning slot supplies to the registered
   view, and the shell can render two session-scoped docks at once — a single

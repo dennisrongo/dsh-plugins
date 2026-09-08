@@ -240,6 +240,34 @@ export function HintStrip({ sessionId, remote, inputActions }: HintStripProps): 
   )
 }
 
+/**
+ * Move keyboard focus from a chip into the composer's editor.
+ *
+ * `setDraft` writes the text but leaves focus on the chip button that was
+ * clicked, so the natural next keystroke — Enter to send — re-fires the chip
+ * instead of submitting (observed live 2026-09-07). The dock and the editor
+ * share the `[data-slot="conversation.composer"]` ancestor, and the editor is
+ * the only `contenteditable` under it, so the lookup is by slot name (the
+ * documented plugin API) and never by a hashed class. Best-effort: when the
+ * editor cannot be found the draft is still written and nothing throws.
+ * @param from - the chip element the click landed on.
+ */
+function focusComposer(from: Element): void {
+  const scope = from.closest('[data-slot="conversation.composer"]') ?? document
+  const editor = scope.querySelector<HTMLElement>('[contenteditable="true"]')
+  if (editor === null) return
+  editor.focus()
+  // Park the caret at the end of the inserted `/name ` so typing continues
+  // the command's arguments rather than prepending to it.
+  const selection = window.getSelection()
+  if (selection === null) return
+  const range = document.createRange()
+  range.selectNodeContents(editor)
+  range.collapse(false)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
 /** Props of one chip. */
 interface HintChipProps {
   hint: SkillHint
@@ -265,6 +293,7 @@ function HintChip({ hint, onDismiss, inputActions: actions }: HintChipProps): Re
           // button does, so the gesture does not require hitting a 16px target.
           actions?.setDraft(draft)
           if (event.shiftKey) actions?.submit()
+          else focusComposer(event.currentTarget)
         }}
         aria-label={`Insert /${hint.skill} into the composer — ${hint.reason}`}
       >
