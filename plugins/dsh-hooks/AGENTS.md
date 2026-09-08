@@ -122,6 +122,23 @@ scripts, and the exit-code contract is genuinely exercised rather than mocked.
   `tools/post-execute`, which runs after the result has settled. The argument
   inspection is cheap, but "cheap" on a path awaited before every dispatch is
   how a session acquires a stall nobody can attribute.
+- **`agent/disposed` DETACHES hint state; it does not drop it.** A UI reopens a
+  finished session without composing an agent until the next prompt, and the
+  strip polls by session id the whole time. Dropping on dispose blanked the
+  chips the moment the harness released the agent, which read as "the feature
+  does not work" (Desktop, 2026-09-07). `detachHintState` cancels the pending
+  recompute and clears the `scope`; the LRU bound reclaims memory.
+- **A turn with edits re-fingerprints the cwd, bypassing the cache.** The first
+  real session started in an EMPTY folder and `dotnet new`-ed the project into
+  a subdirectory; the top-level mtime never moved and the 30 s TTL had not
+  elapsed when the turn ended, so no .NET chip appeared until the next prompt.
+  `fingerprint(cwd, true)` from `captureTurnEnd` is the fix; the smoke test
+  pins the scaffold-into-subdirectory case.
+- **`turn:feature-done` reads the LAST tool call's error, not the error count.**
+  Real turns fail a probe early (`dotnet --version`, a keyless web search) and
+  then land the whole feature green. Counting every error kept the review chip
+  off a session that had just produced a working MCP server. A final call that
+  failed still blocks the hint — that is the case worth blocking on.
 - **The upgrade path off polling is `@Remote({ mode: 'stream' })`.** There is
   no plugin-defined host→client event — `dsh-api-remotes`' `remote-events` is a
   fixed allowlist — and stream mode is supported by `dsh-typert-protocol` but

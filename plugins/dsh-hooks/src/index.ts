@@ -811,6 +811,13 @@ export class HooksService extends TypertRemoteService {
       state.lastTurn = state.currentTurn
       state.currentTurn = emptyTurn()
       state.status = 'idle'
+      // A turn that wrote files may have scaffolded the project itself — an
+      // empty folder at session start, a `.csproj` in a subdirectory by the
+      // time the turn ends. The cache cannot see that (a new subdirectory's
+      // contents change no mtime the top level owns), so a turn with edits
+      // re-reads the disk. Observed live: a Hello-World MCP server built from
+      // nothing showed no .NET chip until the NEXT prompt.
+      if (state.lastTurn.edits > 0) state.projectTypes = fingerprint(state.cwd, true)
       this.scheduleHints(String(agent.id))
     } catch (err) {
       console.warn('[dsh-hooks] hints: turn capture failed:', err)
@@ -822,9 +829,13 @@ export class HooksService extends TypertRemoteService {
   /** `SessionEnd`, `SubagentStop` and `Notification` — effect only, no verdict. */
   private wireObserverEvents(): void {
     this.ctx.on('agent/disposed', (payload: { agent: Agent }) => {
-      // The session is gone, so its hint state is dead weight and its pending
-      // recompute would resolve against nothing.
-      this.dropHintState(String(payload.agent.id))
+      // The AGENT is gone; the session is not. A UI reopens a finished session
+      // without composing an agent until the next prompt, and the strip polls
+      // by session id the whole time — so dropping the state here would blank
+      // the chips the moment the harness released the agent, which reads as
+      // the feature not working. Keep the computed hints, release only what
+      // referenced the live agent; the LRU bound is what reclaims memory.
+      this.detachHintState(String(payload.agent.id))
 
       const hookPayload = this.basePayload('SessionEnd', payload.agent)
       // Teardown is never delayed on a hook: `agent/disposed` is emit-mode and
@@ -918,6 +929,23 @@ export class HooksService extends TypertRemoteService {
       this.dropHintState(oldest.value)
     }
     return state
+  }
+
+  /**
+   * Release a disposed agent from its session's hint state, keeping the hints.
+   *
+   * The pending recompute is cancelled because it would read the catalog
+   * through a scope that no longer exists; the chips already computed stay
+   * addressable by session id until the LRU bound evicts them.
+   * @param sessionId - the session whose agent was disposed.
+   */
+  private detachHintState(sessionId: string): void {
+    const state = this.hintStates.get(sessionId)
+    if (state === undefined) return
+    if (state.timer !== undefined) clearTimeout(state.timer)
+    state.timer = undefined
+    state.scope = undefined
+    state.status = 'idle'
   }
 
   /** Forget one session's hint state, clearing any pending recompute. */

@@ -116,7 +116,7 @@ Every chip names a skill that is **actually installed and user-invocable in this
 | `prompt:phrase` | your prompt contains a phrase a skill quotes in its own description (`"review my code"`, `"debug this"`) | that skill |
 | `prompt:bug` | your prompt mentions a bug / crash / failure and no phrase matched | a diagnosis skill |
 | `prompt:plan` | your prompt is about planning, design or architecture | a planning skill |
-| `turn:feature-done` | the turn made ≥ 3 source edits with no tool errors and loaded no skill | a code-review skill, then a tests skill |
+| `turn:feature-done` | the turn made ≥ 3 source edits, its last tool call succeeded, and it loaded no skill | a code-review skill, then a tests skill |
 | `turn:tests-missing` | ≥ 3 source edits and nothing ran a test command | a tests skill |
 | `turn:ready-to-ship` | the turn ran `git add`/`git commit`, or the work was already reviewed | a commit-message skill, then a PR skill |
 | `project:dotnet` | a `.csproj` / `.sln` / `.slnx` / `global.json` in the workspace | a .NET skill |

@@ -644,6 +644,59 @@ await test('turn:tests-missing is silenced by a test run in the same turn', () =
   assert.equal(engine.compute(withTests, CATALOG).some((h) => h.rule === 'turn:tests-missing'), false)
 })
 
+await test('turn:feature-done survives early tool errors when the last call succeeded', () => {
+  // The live case: `dotnet --version` failed, web search failed, then three
+  // writes and a green build. That turn produced a working MCP server and got
+  // no review chip because every error counted. Only the LAST call decides.
+  const engine = new HintEngine()
+  const probesFailed = situation({
+    lastTurn: { ...emptyTurn(), edits: 3, toolErrors: 2, lastToolErrored: false },
+    editedPaths: SOURCE_EDITS,
+  })
+  assert.ok(engine.compute(probesFailed, CATALOG).some((h) => h.rule === 'turn:feature-done'))
+  const endedRed = situation({
+    lastTurn: { ...emptyTurn(), edits: 3, toolErrors: 1, lastToolErrored: true },
+    editedPaths: SOURCE_EDITS,
+  })
+  assert.equal(engine.compute(endedRed, CATALOG).some((h) => h.rule === 'turn:feature-done'), false)
+})
+
+await test('observeToolCall tracks whether the LAST call errored, not just how many did', () => {
+  const turn = emptyTurn()
+  observeToolCall('pwsh', { command: 'dotnet --version' }, true, turn)
+  assert.equal(turn.lastToolErrored, true)
+  observeToolCall('write', { file_path: 'C:/p/Program.cs' }, false, turn)
+  assert.equal(turn.lastToolErrored, false)
+  assert.equal(turn.toolErrors, 1)
+  assert.equal(turn.edits, 1)
+})
+
+await test('observeToolCall reads arguments handed over as a JSON string', () => {
+  // The session log stores `arguments` as a string; a host that passed it
+  // through unparsed must not silently stop counting edited paths.
+  const turn = emptyTurn()
+  const path = observeToolCall('write', '{"file_path":"C:/p/Program.cs","content":"x"}', false, turn)
+  assert.equal(path, 'C:/p/Program.cs')
+  assert.equal(observeToolCall('write', 'not json', false, emptyTurn()), undefined)
+})
+
+await test('fingerprint(cwd, true) sees a project scaffolded into a subdirectory mid-session', () => {
+  resetFingerprintCache()
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hints-scaffold-'))
+  try {
+    assert.equal(fingerprint(dir).has('dotnet'), false, 'empty at session start')
+    // A `dotnet new` lands the project one level down. Writing INTO that
+    // subdirectory changes no mtime the top level owns, so the cached answer
+    // would stand for the whole TTL.
+    mkdirSync(join(dir, 'hello'))
+    writeFileSync(join(dir, 'hello', 'Hello.csproj'), '<Project />')
+    assert.equal(fingerprint(dir, true).has('dotnet'), true, 'forced read finds it')
+    assert.equal(fingerprint(dir).has('dotnet'), true, 'and the cache now carries it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 await test('a phrase quoted in a skill description matches the prompt', () => {
   const engine = new HintEngine()
   const s = situation({ lastPrompt: 'Can you review my code before I push?' })

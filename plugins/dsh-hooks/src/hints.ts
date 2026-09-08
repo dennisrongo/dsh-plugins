@@ -88,6 +88,17 @@ export interface TurnFacts {
   committed: boolean
   /** How many tool calls came back as errors. */
   toolErrors: number
+  /**
+   * Whether the LAST tool call of the turn came back as an error.
+   *
+   * This, not `toolErrors`, is what "landed cleanly" reads. A real turn
+   * routinely fails a probe early — `dotnet --version` on a box without the
+   * SDK, a web search with no key — and then writes the whole feature and
+   * builds it green. Counting those probes as failures kept the review hint
+   * off a session that had just produced a working MCP server (observed live,
+   * 2026-09-07). A final call that failed is the case worth blocking on.
+   */
+  lastToolErrored: boolean
   /** True when the turn itself loaded a skill — the user is already on a path. */
   usedSkill: boolean
 }
@@ -197,9 +208,14 @@ function dependencyNames(path: string): Set<string> {
  * Never throws. A directory the harness cannot read is reported as "no project
  * types", which degrades to no project hints rather than to a broken listener.
  * @param cwd - absolute workspace directory.
+ * @param force - bypass the cache. The turn-end path passes true when the turn
+ *   wrote files: a project scaffolded INSIDE a session (`dotnet new` into an
+ *   empty folder, observed live 2026-09-07) lands in a subdirectory, which
+ *   changes neither the parent's mtime nor anything the TTL would notice in
+ *   time for the chip to appear when the turn ends.
  * @returns the project shapes detected.
  */
-export function fingerprint(cwd: string): ReadonlySet<ProjectType> {
+export function fingerprint(cwd: string, force = false): ReadonlySet<ProjectType> {
   const now = Date.now()
   let topMtime = 0
   try {
@@ -211,7 +227,7 @@ export function fingerprint(cwd: string): ReadonlySet<ProjectType> {
   // Both guards are needed: mtime catches a file appearing at the top level,
   // and the TTL catches one appearing in a SUBdirectory, which does not touch
   // the parent's mtime at all.
-  if (cached !== undefined && cached.mtimeMs === topMtime && now - cached.at < FINGERPRINT_TTL_MS) {
+  if (!force && cached !== undefined && cached.mtimeMs === topMtime && now - cached.at < FINGERPRINT_TTL_MS) {
     return cached.types
   }
 
@@ -453,12 +469,12 @@ const RULES: readonly Rule[] = [
     id: 'turn:feature-done',
     priority: 5,
     title: 'Work landed cleanly',
-    reason: 'The turn made several edits with no tool errors.',
+    reason: 'The turn made several edits and its last tool call succeeded.',
     patterns: [/^code-review$|:code-review$|verification-before-completion/i, /write-tests|test-driven-development/i],
     fires: (s) =>
       s.status === 'idle' &&
       s.lastTurn.edits >= FEATURE_EDITS &&
-      s.lastTurn.toolErrors === 0 &&
+      !s.lastTurn.lastToolErrored &&
       !s.lastTurn.usedSkill &&
       hasSourceEdits(s.editedPaths),
   },
@@ -642,7 +658,7 @@ export class HintEngine {
 
 /** A fresh, empty turn record. */
 export function emptyTurn(): TurnFacts {
-  return { edits: 0, ranTests: false, committed: false, toolErrors: 0, usedSkill: false }
+  return { edits: 0, ranTests: false, committed: false, toolErrors: 0, lastToolErrored: false, usedSkill: false }
 }
 
 // ── signal classification (shared by the service and the tests) ────────────
@@ -667,6 +683,29 @@ const TEST_COMMAND =
 const COMMIT_COMMAND = /\bgit\s+(add|commit)\b/i
 
 /**
+ * The tool arguments as a record, whatever shape the harness handed over.
+ *
+ * `dsh-agent-loop` parses the model's JSON before dispatch on every version
+ * seen so far, but the session log stores the same field as a JSON string and
+ * a future host could pass it through unparsed. A string that parses to an
+ * object is read; anything else reads as no arguments rather than as a throw.
+ * @param args - the tool's arguments as received.
+ * @returns a (possibly empty) record.
+ */
+function argumentRecord(args: unknown): Record<string, unknown> {
+  if (args !== null && typeof args === 'object') return args as Record<string, unknown>
+  if (typeof args === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(args)
+      if (parsed !== null && typeof parsed === 'object') return parsed as Record<string, unknown>
+    } catch {
+      // Not JSON: nothing to read.
+    }
+  }
+  return {}
+}
+
+/**
  * Read one settled tool call as turn facts.
  *
  * Called from `tools/post-execute` only. `tools/pre-execute` is awaited before
@@ -686,7 +725,8 @@ export function observeToolCall(
   turn: TurnFacts,
 ): string | undefined {
   if (isError) turn.toolErrors += 1
-  const record = args !== null && typeof args === 'object' ? (args as Record<string, unknown>) : {}
+  turn.lastToolErrored = isError
+  const record = argumentRecord(args)
 
   if (name === 'skill') {
     turn.usedSkill = true

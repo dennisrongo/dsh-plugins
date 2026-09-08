@@ -118,7 +118,7 @@ function dependencyNames(path) {
   return names;
 }
 __name(dependencyNames, "dependencyNames");
-function fingerprint(cwd) {
+function fingerprint(cwd, force = false) {
   const now = Date.now();
   let topMtime = 0;
   try {
@@ -127,7 +127,7 @@ function fingerprint(cwd) {
     return /* @__PURE__ */ new Set();
   }
   const cached = fingerprintCache.get(cwd);
-  if (cached !== void 0 && cached.mtimeMs === topMtime && now - cached.at < FINGERPRINT_TTL_MS) {
+  if (!force && cached !== void 0 && cached.mtimeMs === topMtime && now - cached.at < FINGERPRINT_TTL_MS) {
     return cached.types;
   }
   const types = /* @__PURE__ */ new Set();
@@ -280,9 +280,9 @@ var RULES = [
     id: "turn:feature-done",
     priority: 5,
     title: "Work landed cleanly",
-    reason: "The turn made several edits with no tool errors.",
+    reason: "The turn made several edits and its last tool call succeeded.",
     patterns: [/^code-review$|:code-review$|verification-before-completion/i, /write-tests|test-driven-development/i],
-    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && s.lastTurn.edits >= FEATURE_EDITS && s.lastTurn.toolErrors === 0 && !s.lastTurn.usedSkill && hasSourceEdits(s.editedPaths), "fires")
+    fires: /* @__PURE__ */ __name((s) => s.status === "idle" && s.lastTurn.edits >= FEATURE_EDITS && !s.lastTurn.lastToolErrored && !s.lastTurn.usedSkill && hasSourceEdits(s.editedPaths), "fires")
   },
   {
     id: "turn:tests-missing",
@@ -409,16 +409,29 @@ var _HintEngine = class _HintEngine {
 __name(_HintEngine, "HintEngine");
 var HintEngine = _HintEngine;
 function emptyTurn() {
-  return { edits: 0, ranTests: false, committed: false, toolErrors: 0, usedSkill: false };
+  return { edits: 0, ranTests: false, committed: false, toolErrors: 0, lastToolErrored: false, usedSkill: false };
 }
 __name(emptyTurn, "emptyTurn");
 var EDIT_TOOLS = /* @__PURE__ */ new Set(["edit", "write", "str_replace_editor", "create_file", "multi_edit"]);
 var SHELL_TOOLS = /* @__PURE__ */ new Set(["bash", "pwsh", "bash_persistent", "pwsh_persistent"]);
 var TEST_COMMAND = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\b(vitest|jest|mocha|pytest|phpunit|rspec)\b|\bdotnet\s+test\b|\bcargo\s+test\b|\bgo\s+test\b|\bpytest\b|\bnode\s+--test\b/i;
 var COMMIT_COMMAND = /\bgit\s+(add|commit)\b/i;
+function argumentRecord(args) {
+  if (args !== null && typeof args === "object") return args;
+  if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args);
+      if (parsed !== null && typeof parsed === "object") return parsed;
+    } catch {
+    }
+  }
+  return {};
+}
+__name(argumentRecord, "argumentRecord");
 function observeToolCall(name, args, isError, turn) {
   if (isError) turn.toolErrors += 1;
-  const record = args !== null && typeof args === "object" ? args : {};
+  turn.lastToolErrored = isError;
+  const record = argumentRecord(args);
   if (name === "skill") {
     turn.usedSkill = true;
     return void 0;
@@ -1199,6 +1212,7 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
       state.lastTurn = state.currentTurn;
       state.currentTurn = emptyTurn();
       state.status = "idle";
+      if (state.lastTurn.edits > 0) state.projectTypes = fingerprint(state.cwd, true);
       this.scheduleHints(String(agent.id));
     } catch (err) {
       console.warn("[dsh-hooks] hints: turn capture failed:", err);
@@ -1208,7 +1222,7 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
   /** `SessionEnd`, `SubagentStop` and `Notification` — effect only, no verdict. */
   wireObserverEvents() {
     this.ctx.on("agent/disposed", (payload) => {
-      this.dropHintState(String(payload.agent.id));
+      this.detachHintState(String(payload.agent.id));
       const hookPayload = this.basePayload("SessionEnd", payload.agent);
       void this.dispatch("SessionEnd", hookPayload, hookPayload.cwd);
     });
@@ -1283,6 +1297,22 @@ var _HooksService = class _HooksService extends (_b = TypertRemoteService) {
       this.dropHintState(oldest.value);
     }
     return state;
+  }
+  /**
+   * Release a disposed agent from its session's hint state, keeping the hints.
+   *
+   * The pending recompute is cancelled because it would read the catalog
+   * through a scope that no longer exists; the chips already computed stay
+   * addressable by session id until the LRU bound evicts them.
+   * @param sessionId - the session whose agent was disposed.
+   */
+  detachHintState(sessionId) {
+    const state = this.hintStates.get(sessionId);
+    if (state === void 0) return;
+    if (state.timer !== void 0) clearTimeout(state.timer);
+    state.timer = void 0;
+    state.scope = void 0;
+    state.status = "idle";
   }
   /** Forget one session's hint state, clearing any pending recompute. */
   dropHintState(sessionId) {
